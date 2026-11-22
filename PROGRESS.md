@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3v)
+Last updated: 2026-11-22 (session 3z)
 
 ## Legend
 
@@ -14,10 +14,10 @@ Last updated: 2026-11-22 (session 3v)
 |---|---|---|---|
 | hg | renderer/libs/hg | 105 | **DONE** (session 1) |
 | imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar + vector/matrix layers done (sessions 2-3) |
-| gerbera/core | .../gerbera/core/implementation | 318 | **IN PROGRESS** - foundations + vertex pipeline + clears + culling + clipper done (sessions 3-3m) |
-| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | SCAFFOLDED |
+| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z) - all functions ported, 1088 checks green |
+| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z) - clears, blit, texture rect |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
-| gerbera/hc | .../gerbera/hc | 296 | SCAFFOLDED |
+| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - starting (x86 backend; EPOC ARM build is unnamed) |
 | egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
 | egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
 | crt/platform | Symbian + MSL runtime | 44 | n/a (reference) |
@@ -1425,3 +1425,28 @@ Committed: texture-rect draw with decompile-matching assert sites.
   Early-outs: zero-size rect, fully off-screen, degenerate after clipping.
 - Tests: test_renderrect (+2 checks, 1086 -> 1088): compilationFailed
   early-out. 295 hg / 311 imath / 1088 core, 0 failures.
+
+## Session 4a — hc module foundation (hcOpcode.h/c)
+
+Committed: HC instruction encoding with decompile-matching assert sites.
+
+- **HCInstr_s** (hcOpcode.h): two 32-bit words. instr0: bits 0-7 = opcode,
+  bit 8 = hasImm, bits 10-20 = dst, bits 21-31 = src0. instr1: src1 or imm.
+- **HC_opcodeDecls[55]** transcribed verbatim from the DLL (docs/libGLES_CM.dll.c:5820).
+  Each byte: bits 0-2 = argc, bits 3-4 = type (0=ALUOP, 1=MEMOP, 2=BRANCH),
+  bit 5 = commutative, bits 6-7 = dst flags.
+- **Opcode enum** (order pinned by table + range checks): 0-22 ALUOP
+  (NOP, MOV, MOVN, ADD, SUB, SUBR, AND, OR, XOR, BIC, MULS, MULU, LSL, LSR,
+  ASR, ROL, ROR, EOP=16, ASD, MAXS, MINS, MAXU, MINU), 23-38 MEMOP
+  (LBS, LSD, SB, SW, SW2, LD, SD, LD4, SD4), 39-54 BRANCH (BRA=39, LABEL=40,
+  CBEQ..CBA). EOP at 16 (argc=0), BRA at 39 (argc=0), LABEL at 40 (argc=1).
+- **Instruction generation**: HC_genOp0/1/1Imm/2/2Imm/3/3Imm/3Raw/3ImmRaw
+  (genOp3Internal/genOp3ImmInternal with range asserts).
+- **Opcode accessors**: HC_getOpcodeOper/ArgCountOp/ArgCount/Dst/Src0Raw/
+  Src0/Src1Raw/Src1/TypeOp/Flags/HasImm/IsCommutative/Imm/Label/Type,
+  HC_isStoreOp (31-38), HC_isLoadOp (23-30), HC_isBranchOp (40-52),
+  HC_isCondBranchOp (41-52), HC_isBranch, HC_opcodeDstFlagsOp,
+  HC_setOpcodeDst/Src0/Src1/Imm/NoImm.
+- Tests: test_hcopcode (+32 checks, 1088 -> 1120): genOp3/3Imm/2/0 round-trips,
+  type/store/load/branch range checks, setOpcodeDst. 295 hg / 311 imath /
+  1120 core, 0 failures.

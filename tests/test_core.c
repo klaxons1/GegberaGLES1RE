@@ -140,6 +140,7 @@ static void test_signature(void);
 static void test_setuprendering(void);
 static void test_texturerect(void);
 static void test_renderrect(void);
+static void test_hcopcode(void);
 static void test_gradients(void);
 
 int main(void)
@@ -180,6 +181,7 @@ int main(void)
     test_setuprendering();
     test_texturerect();
     test_renderrect();
+    test_hcopcode();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -370,6 +372,7 @@ static void test_util_helpers(void)
 
 /* --- grState.h / grApiSmall.c ---------------------------------------------- */
 #include "gerbera/grState.h"
+#include "gerbera/hc/hcOpcode.h"
 
 extern int g_orderedDitherKernel[4];
 
@@ -3621,4 +3624,66 @@ static void test_renderrect(void)
         executed = 1;
     }
     CHECK(executed == 1);
+}
+
+/* --- test_hcopcode: HC opcode encoding ------------------------------------ */
+static void test_hcopcode(void)
+{
+    HCInstr_s instr;
+
+    /* genOp3: op=3 (ADD), dst=5, src0=7, src1=9 */
+    instr = HC_genOp3(3, 5, 7, 9);
+    CHECK(HC_getOpcodeOper(&instr) == 3);
+    CHECK(HC_getOpcodeDst(&instr) == 5);
+    CHECK(HC_getOpcodeSrc0(&instr) == 7);
+    CHECK(HC_getOpcodeSrc1(&instr) == 9);
+    CHECK(HC_opcodeHasImm(&instr) == 0);
+    CHECK(HC_getOpcodeArgCount(&instr) == 3);
+
+    /* genOp3Imm: op=3, dst=5, src0=7, imm=0x1234 */
+    instr = HC_genOp3Imm(3, 5, 7, 0x1234);
+    CHECK(HC_getOpcodeOper(&instr) == 3);
+    CHECK(HC_getOpcodeDst(&instr) == 5);
+    CHECK(HC_getOpcodeSrc0(&instr) == 7);
+    CHECK(HC_getOpcodeImm(&instr) == 0x1234);
+    CHECK(HC_opcodeHasImm(&instr) != 0);
+
+    /* genOp2: op=14 (2-arg op), dst=3, src0=4 */
+    instr = HC_genOp2(14, 3, 4);
+    CHECK(HC_getOpcodeOper(&instr) == 14);
+    CHECK(HC_getOpcodeDst(&instr) == 3);
+    CHECK(HC_getOpcodeSrc0(&instr) == 4);
+    CHECK(HC_getOpcodeArgCount(&instr) == 2);
+
+    /* genOp0: op=16 (EOP, argc=0) */
+    instr = HC_genOp0(16);
+    CHECK(HC_getOpcodeOper(&instr) == 16);
+    CHECK(HC_getOpcodeArgCount(&instr) == 0);
+
+    /* opcode types: 0-22 ALUOP, 23-38 MEMOP, 39-54 BRANCH */
+    CHECK(HC_getOpcodeTypeOp(3) == 0);   /* ADD */
+    CHECK(HC_getOpcodeTypeOp(28) == 1);  /* LD */
+    CHECK(HC_getOpcodeTypeOp(40) == 2);  /* LABEL */
+
+    /* store ops: 31-38 */
+    CHECK(HC_isStoreOp(31) != 0);
+    CHECK(HC_isStoreOp(38) != 0);
+    CHECK(HC_isStoreOp(30) == 0);
+
+    /* load ops: 23-30 */
+    CHECK(HC_isLoadOp(23) != 0);
+    CHECK(HC_isLoadOp(30) != 0);
+    CHECK(HC_isLoadOp(31) == 0);
+
+    /* branch ops: 40-52 */
+    CHECK(HC_isBranchOp(40) != 0);
+    CHECK(HC_isBranchOp(52) != 0);
+    CHECK(HC_isBranchOp(39) == 0);
+
+    /* setOpcodeDst */
+    instr = HC_genOp3(3, 5, 7, 9);
+    HC_setOpcodeDst(&instr, 10);
+    CHECK(HC_getOpcodeDst(&instr) == 10);
+    CHECK(HC_getOpcodeSrc0(&instr) == 7);
+    CHECK(HC_getOpcodeSrc1(&instr) == 9);
 }
