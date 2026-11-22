@@ -123,6 +123,7 @@ static void test_update_lights(void);
 static void test_itc_transform(void);
 static void test_fetch_stages(void);
 static void test_update_pipeline(void);
+static void test_transform_vertex(void);
 
 int main(void)
 {
@@ -144,6 +145,7 @@ int main(void)
     test_itc_transform();
     test_fetch_stages();
     test_update_pipeline();
+    test_transform_vertex();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -893,6 +895,165 @@ static void test_update_pipeline(void)
     CHECK(st.defaultTexCoord.x[2][1] == 0);
     /* disabled unit -> NULL */
     CHECK(st.fetchTexCoord[1] == NULL);
+}
+
+/* --- grTransformVertex / grFetchWeightAndIndex / clip codes ------------------ */
+
+static void test_transform_vertex(void)
+{
+    Gerbera_s st;
+    _IMatrix4x4 id;
+    _IFVector4 eq;
+    unsigned char *pool = (unsigned char *)malloc(1332 + 2048);
+    _grVertex *vb;
+    float verts[8] = {1.0f, 2.0f, 3.0f, 1.0f, -1.0f, 0.5f, 0.25f, 1.0f};
+    unsigned char k;
+
+    memset(&st, 0, sizeof(st));
+    IMatrix4x4_identity(&id);
+    IVertexTransform_copy(&st.objectToClipTransform, &id);
+    st.renderStack = pool;
+    vb = (_grVertex *)(pool + 1332);
+    st.vertexArray[0].data = verts;
+    st.vertexArray[0].stride = 16;
+    st.vertexArray[0].size = 4;
+    st.vertexArray[0].type = GR_DATATYPE_FLOAT;
+
+    /* float (1,2,3,1) through the identity: clip = same, e = max exp byte,
+     * m shifted down per component; clip codes: z>w -> bit 1, y>w -> bit 9 */
+    vb[0].index = 0;
+    grTransformVertex(&st, &vb[0]);
+    CHECK(grGetVertexPositionState(&vb[0]) == GR_POSITION_OBJECT_SPACE_FLOAT);
+    CHECK((vb[0].stateMask & GR_VERTEXMASK_TRANSFORMED) != 0);
+    CHECK(vb[0].clipPosition.e == 0x80);
+    CHECK(vb[0].clipPosition.m[0] == 268435456);       /* 1.0 */
+    CHECK(vb[0].clipPosition.m[1] == 536870912);       /* 2.0 */
+    CHECK(vb[0].clipPosition.m[2] == 805306368);       /* 3.0 */
+    CHECK(vb[0].clipPosition.m[3] == 268435456);       /* 1.0 */
+    CHECK(vb[0].clipMask == 0x202u);
+    /* (-1, 0.5, 0.25, 1): all inside */
+    vb[1].index = 1;
+    grTransformVertex(&st, &vb[1]);
+    CHECK(vb[1].clipMask == 0);
+    CHECK(vb[1].clipPosition.m[0] == -536870912);
+
+    /* fixed 16.16 (1, -2, 0.5, 1): int view {x,y,z,w} through the identity */
+    memset(pool + 1332, 0, 512);
+    memset(&st, 0, sizeof(st));
+    IVertexTransform_copy(&st.objectToClipTransform, &id);
+    st.renderStack = pool;
+    vb = (_grVertex *)(pool + 1332);
+    {
+        int fverts[4] = {65536, -131072, 32768, 65536};
+        st.vertexArray[0].data = fverts;
+        st.vertexArray[0].stride = 16;
+        st.vertexArray[0].size = 4;
+        st.vertexArray[0].type = GR_DATATYPE_FIXED;
+        vb[0].index = 0;
+        grTransformVertex(&st, &vb[0]);
+        CHECK(grGetVertexPositionState(&vb[0]) == GR_POSITION_OBJECT_SPACE_FIXED);
+        CHECK(vb[0].clipPosition.m[0] == 268435456);
+        CHECK(vb[0].clipPosition.m[1] == -536870912);
+        CHECK(vb[0].clipPosition.m[2] == 134217728);
+        CHECK(vb[0].clipPosition.m[3] == 268435456);
+    }
+
+    /* user clip plane x <= 2 on slot 5, vertex (1,0,0,1): inside; plane
+     * x <= 0.5: outside -> clip bit = digit+9 = 15 */
+    memset(pool + 1332, 0, 512);
+    memset(&st, 0, sizeof(st));
+    IVertexTransform_copy(&st.objectToClipTransform, &id);
+    st.renderStack = pool;
+    vb = (_grVertex *)(pool + 1332);
+    IFVector4_set(&eq, FIN(1.0f), FIN(0.0f), FIN(0.0f), FIN(-2.0f));
+    grSetUserClipPlane(&st, GR_CLIP_USER0 + 5, &eq, &id);
+    grSetCapability(&st, 30 + 5, 1);
+    st.enabledUserClipPlaneIndices = 6;                /* plane 5 -> digit 6 */
+    {
+        float v2[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+        st.vertexArray[0].data = v2;
+        st.vertexArray[0].stride = 16;
+        st.vertexArray[0].size = 4;
+        st.vertexArray[0].type = GR_DATATYPE_FLOAT;
+        vb[0].index = 0;
+        /* the clip-plane transform is grSetupCulling's job; do it by hand:
+         * identity modelview keeps the equation */
+        st.userClipPlanes[5] = st.origUserClipPlanes[5];
+        grTransformVertex(&st, &vb[0]);
+        CHECK(st.userClipPlanes[5].m[0] == 536870912); /* 6.26 mantissa of 1.0 */
+        CHECK(st.userClipPlanes[5].m[3] == -536870912);/* of -2.0 */
+        CHECK(vb[0].clipMask == 0x8000u);              /* bit 6+9: 1-2 < 0 */
+        /* grIsOutsideUserClipPlane directly */
+        CHECK(grIsOutsideUserClipPlane(&st.userClipPlanes[5], &vb[0].clipPosition) == 1);
+    }
+
+    /* grFetchWeightAndIndex: FIXED weights, UINT8 indices (9 clamps to 8) */
+    {
+        int wfix[2] = {65536, 65536};
+        unsigned char idx[2] = {3, 9};
+        int weights[4];
+        unsigned int packed;
+        st.vertexArray[3].data = wfix;
+        st.vertexArray[3].stride = 8;
+        st.vertexArray[3].size = 2;
+        st.vertexArray[3].type = GR_DATATYPE_FIXED;
+        st.vertexArray[4].data = idx;
+        st.vertexArray[4].stride = 2;
+        st.vertexArray[4].size = 2;
+        st.vertexArray[4].type = GR_DATATYPE_UINT8;
+        packed = grFetchWeightAndIndex(&st, weights, 0);
+        CHECK(weights[0] == 1065353216);               /* IScalar 1.0 */
+        CHECK(weights[1] == 1065353216);
+        CHECK(packed == 0x0803u);                      /* bytes: 3, 8 */
+    }
+
+    /* matrix palette path: identity matrices, weight (1,0), indices (0,1):
+     * position (1,2,3,1) unchanged, state -> EYE_SPACE, clip via projection */
+    memset(pool + 1332, 0, 512);
+    memset(&st, 0, sizeof(st));
+    IVertexTransform_copy(&st.objectToClipTransform, &id);
+    IVertexTransform_copy(&st.projectionTransform, &id);
+    for (k = 0; k < 9; ++k)
+        IVertexTransform_copy(&st.matrixPalTransform[k], &id);
+    st.renderStack = pool;
+    vb = (_grVertex *)(pool + 1332);
+    {
+        float v3[4] = {1.0f, 2.0f, 3.0f, 1.0f};
+        int wfix[2] = {65536, 0};
+        unsigned char idx[2] = {0, 1};
+        st.vertexArray[0].data = v3;
+        st.vertexArray[0].stride = 16;
+        st.vertexArray[0].size = 4;
+        st.vertexArray[0].type = GR_DATATYPE_FLOAT;
+        st.vertexArray[3].data = wfix;
+        st.vertexArray[3].stride = 8;
+        st.vertexArray[3].size = 2;
+        st.vertexArray[3].type = GR_DATATYPE_FIXED;
+        st.vertexArray[4].data = idx;
+        st.vertexArray[4].stride = 2;
+        st.vertexArray[4].size = 2;
+        st.vertexArray[4].type = GR_DATATYPE_UINT8;
+        grSetCapability(&st, GR_CAPABILITY_MATRIX_PALETTE, 1);
+        grSetCapability(&st, GR_CAPABILITY_MATRIX_INDEX_ARRAY, 1);
+        grSetCapability(&st, GR_CAPABILITY_WEIGHT_ARRAY, 1);
+        vb[0].index = 0;
+        grTransformVertex(&st, &vb[0]);
+        CHECK(grGetVertexPositionState(&vb[0]) == GR_POSITION_EYE_SPACE);
+        /* accfv output: per-component exponent bytes, m normalized */
+        CHECK(vb[0].position.objectSpaceFloat[0].e == 0x7f80807fu);
+        CHECK(vb[0].position.objectSpaceFloat[0].m[0] == 536870912);
+        CHECK(vb[0].position.objectSpaceFloat[0].m[1] == 536870912);
+        CHECK(vb[0].position.objectSpaceFloat[0].m[2] == 805306368);
+        CHECK(vb[0].position.objectSpaceFloat[0].m[3] == 536870912);
+        CHECK(vb[0].clipPosition.e == 0x80);
+        CHECK(vb[0].clipPosition.m[0] == 268435456);
+        CHECK(vb[0].clipPosition.m[2] == 805306368);
+        CHECK(vb[0].clipMask == 0x202u);
+    }
+
+    /* vertex record size: the render stack addresses vertices with << 7 */
+    CHECK(sizeof(_grVertex) == 128);
+    free(pool);
 }
 
 static void test_state_lights(void)

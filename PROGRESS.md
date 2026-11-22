@@ -110,6 +110,42 @@ per-translation-unit inline clones that were deduped).
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
 
+## DONE session 3i (grTransformVertex + matrix palette skinning + clip codes)
+
+- **grTransformVertex** (27926-28117) ported with all 11 assert sites:
+  float path IFVector4_setfv(state 0), fixed path builds the 16.16 int view
+  {x,y,z,w} in the position union's fixedView (x in the float-view e slot;
+  INT16/INT8 <<16, FIXED raw; z/w default 0/0x10000), matrix-palette skin
+  (weights via grFetchWeightAndIndex, count = min(wt.size, idx.size, 4),
+  IVertexTransform_mulxv4s/mulfv4s per nonzero weight, IFVector4_accfv into
+  position, state 2 = EYE_SPACE, clipPosition = projection), else
+  objectToClip direct. Ends with grComputeVertexClipCodes.
+- **_grVertex updated**: clipPosition@72 / clipMask@108 / stateMask (offsets
+  flagged guesses - named-only), fixedView[4] (union now 20 bytes,
+  sizeof(_grVertex) == 128 asserted).
+- **clip codes decoded** (WINSCW + EPOC agree): enabledUserClipPlaneIndices
+  packs (plane+1) per enabled plane base-16 (planes walked 5..0); the
+  consumer reads plane digit-1 (EPOC base+4728+20*digit-20) and ORs the
+  outside test into **bit digit+9**. IVector4_clip guard-band codes: bits
+  0/1 = z beyond -/+w, 6/7 = x, 8/9 = y; bits 2-5 = the >>guardBand versions
+  (guardBand=2 at the call site).
+- **grFetchWeightAndIndex** (27862-27923): vertexArray[3] = weights (FLOAT
+  iftos / FIXED fixedToScalar(16), size 1..4), vertexArray[4] = matrix
+  indices (UINT8, each clamped to 8, packed one byte per slot, first index
+  in the low byte).
+- imath: IVertexTransform_mulfv4 (_IVector4-out: identity fast path
+  renormalizes to shared exponent; dp4l rows + w passthrough when cl byte7
+  == 0x80) and IVertexTransform_mulfv4s (_IFVector4-out per-component
+  exponent bytes; w passthrough when cl byte7 == 0x80 AND w==16.16 1).
+  mulxv4s existed already. WEIGHT_ARRAY=27 / MATRIX_INDEX_ARRAY=28 caps are
+  flagged guesses (unpinned internal gaps).
+- grSetupRendering/grCleanupRendering surveyed - they need the HC compiler
+  + grr layer (grFlushBufferClears, grrBeginRendering/UpdateState/
+  EndRendering, grCheckPixelPipeConsistency, grGetBackend/HC_extraStackSpace,
+  grScratchGrowMemory, grStackAllocate, grVertexCacheInvalidate); deferred
+  until the grr/HC foundations exist.
+- +33 checks (364 core, 963 total).
+
 ## DONE session 3h (ITC transform use + vertex fetch stages + grUpdateVertexPipeline)
 
 - **GR_CAPABILITY_FOG = 7** - the "unresolved" 0x0B60 key was GL_FOG all

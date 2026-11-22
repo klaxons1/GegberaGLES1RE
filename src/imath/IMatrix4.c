@@ -1304,3 +1304,185 @@ int IVertexTransform_zmulxv4(_IVertexTransform *pT, int *pS)
         return IScalar_set(e, m);
     }
 }
+
+/* --- IVertexTransform_mulfv4s (decompile 56718-56881) -----------------------
+ * _IFVector4-out variant used by the matrix-palette vertex path: computes
+ * up to 4 rows into a float-vector with per-component exponent bytes
+ * packed in pD->e (w passthrough when the w row classifies as identity). */
+
+void IVertexTransform_mulfv4s(_IFVector4 *pD, _IVertexTransform *pT, _IFVector4 *pB)
+{
+    unsigned int eAcc;
+    unsigned int pBe;
+    int bm[4];
+    int eb[4];
+    int r;
+    int last;
+
+    if (!(pD != NULL && pT != NULL && pB != NULL))
+        imAssert("pD && pT && pB", "IMatrix4.c", 2636);
+    if (IScalar_isValid(IFVector4_getf(pB, 0)) == 0)
+        imAssert("IScalar_isValid(IFVector4_getf(pB,0))", "IMatrix4.c", 2646);
+    if (IScalar_isValid(IFVector4_getf(pB, 1)) == 0)
+        imAssert("IScalar_isValid(IFVector4_getf(pB,1))", "IMatrix4.c", 2647);
+    if (IScalar_isValid(IFVector4_getf(pB, 2)) == 0)
+        imAssert("IScalar_isValid(IFVector4_getf(pB,2))", "IMatrix4.c", 2648);
+    if (IScalar_isValid(IFVector4_getf(pB, 3)) == 0)
+        imAssert("IScalar_isValid(IFVector4_getf(pB,3))", "IMatrix4.c", 2649);
+    pBe = pB->e;
+    bm[0] = pB->m[0];
+    bm[1] = pB->m[1];
+    bm[2] = pB->m[2];
+    bm[3] = pB->m[3];
+    last = ((pT->cl & 0xFF000000u) == 0x80000000u) ? 2 : 3;
+    eAcc = (pBe >> 24) & 0xFFu;          /* seed byte 3 with pB's w exponent */
+    pD->m[3] = bm[3];
+    for (r = last; r >= 0; --r)
+    {
+        unsigned int rowE = pT->v[r].e;
+        int maxExp;
+        int acc = 0;
+        int c;
+
+        for (c = 0; c < 4; ++c)
+        {
+            int e = (int)((rowE >> (8 * c)) & 0xFFu);
+
+            if (e != 0 && (int)((pBe >> (8 * c)) & 0xFFu) != 0)
+                e += (int)((pBe >> (8 * c)) & 0xFFu);
+            else
+                e = 0;
+            eb[c] = e;
+        }
+        maxExp = eb[0];
+        for (c = 1; c < 4; ++c)
+            if (maxExp < eb[c])
+                maxExp = eb[c];
+        ++maxExp;
+        for (c = 0; c < 4; ++c)
+        {
+            if (eb[c] != 0)
+                acc += hgMul64h(pT->v[r].m[c], bm[c]) >> hgMinu32(maxExp - eb[c], 31);
+        }
+        if (acc != 0)
+        {
+            int clz = hgClz32((unsigned int)hgAbs32(acc));
+
+            maxExp = maxExp + 3 - (clz - 1 + 127);
+            acc = (int)((unsigned int)acc << (clz - 1)) >> 1;
+            if (maxExp <= 0)
+            {
+                maxExp = 0;
+                acc = 0;
+            }
+            if (maxExp > 0xFE)
+            {
+                maxExp = 254;
+                acc = (acc >= 0) ? 0x3FFFFFFF : -1073741823;
+            }
+        }
+        else
+        {
+            maxExp = 0;
+            acc = 0;
+        }
+        pD->m[r] = acc;
+        eAcc = (unsigned int)maxExp | (eAcc << 8);
+    }
+    pD->e = eAcc;
+    if (IScalar_isValid(IFVector4_getf(pD, 0)) == 0)
+        imAssert("IScalar_isValid(IFVector4_getf(pD,0))", "IMatrix4.c", 2754);
+    if (IScalar_isValid(IFVector4_getf(pD, 1)) == 0)
+        imAssert("IScalar_isValid(IFVector4_getf(pD,1))", "IMatrix4.c", 2755);
+    if (IScalar_isValid(IFVector4_getf(pD, 2)) == 0)
+        imAssert("IScalar_isValid(IFVector4_getf(pD,2))", "IMatrix4.c", 2756);
+    if (IScalar_isValid(IFVector4_getf(pD, 3)) == 0)
+        imAssert("IScalar_isValid(IFVector4_getf(pD,3))", "IMatrix4.c", 2757);
+}
+
+/* --- IVertexTransform_mulfv4 (decompile 55585-55693) ------------------------
+ * _IVector4-out float transform: fast path for the identity-classified
+ * record renormalizes the input to a shared exponent; otherwise rows are
+ * dp4l'd and the result renormalized into an _IVector4. */
+
+void IVertexTransform_mulfv4(_IVector4 *pD, _IVertexTransform *pT, _IFVector4 *pS)
+{
+    if (pT->cl == 0x80200802u)
+    {
+        unsigned int pe = pS->e;
+        int eb[4];
+        unsigned int maxE;
+        int c;
+
+        for (c = 0; c < 4; ++c)
+            eb[c] = (int)((pe >> (8 * c)) & 0xFFu);
+        maxE = (unsigned int)eb[0];
+        for (c = 1; c < 4; ++c)
+            if (maxE < (unsigned int)eb[c])
+                maxE = (unsigned int)eb[c];
+        pD->e = maxE;
+        for (c = 0; c < 4; ++c)
+            pD->m[c] = pS->m[c] >> hgMin32(maxE - (unsigned int)eb[c], 31);
+    }
+    else
+    {
+        HGint64 t;
+        int e[4], m[4];
+        unsigned int maxE;
+        unsigned int probe = 0;
+        int c;
+
+        t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[0], pS);
+        e[0] = hgGet64l(t);
+        m[0] = hgGet64h(t);
+        t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[1], pS);
+        e[1] = hgGet64l(t);
+        m[1] = hgGet64h(t);
+        t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[2], pS);
+        e[2] = hgGet64l(t);
+        m[2] = hgGet64h(t);
+        if ((pT->cl & 0xFF000000u) == 0x80000000u)
+        {
+            int w = IFVector4_getf(pS, 3);
+
+            e[3] = IScalar_getExponent(w) + 125;
+            m[3] = IScalar_getMantissa(w);
+        }
+        else
+        {
+            t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[3], pS);
+            e[3] = hgGet64l(t);
+            m[3] = hgGet64h(t);
+        }
+        maxE = (unsigned int)e[0];
+        for (c = 1; c < 4; ++c)
+            if (maxE < (unsigned int)e[c])
+                maxE = (unsigned int)e[c];
+        for (c = 0; c < 4; ++c)
+            probe |= (unsigned int)hgAbs32(m[c]) >> hgMin32((int)(maxE - (unsigned int)e[c]), 31);
+        if (probe != 0)
+        {
+            int clz = hgClz32(probe) - 2;
+            int newExp = (int)maxE + 2 - (clz - 1 + 127);
+
+            if (newExp > 0)
+            {
+                int sh, mm;
+
+                for (c = 0; c < 4; ++c)
+                {
+                    sh = clz - ((int)maxE - e[c]);
+                    if (sh >= 0)
+                        mm = (int)((unsigned int)m[c] << sh);
+                    else
+                        mm = m[c];
+                    mm >>= hgClamp32_0_x(-sh, 31);
+                    m[c] = mm;
+                }
+                IVector4_set(pD, (unsigned int)newExp, m[0], m[1], m[2], m[3]);
+                return;
+            }
+        }
+        IVector4_zero(pD);
+    }
+}

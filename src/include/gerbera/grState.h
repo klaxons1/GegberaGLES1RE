@@ -69,6 +69,19 @@ enum GR_PRIMITIVETYPE_e
     GR_PRIMITIVETYPE_TEXTURE_RECT = 3 /* order unpinned */
 };
 
+/* position states stored in the top 2 bits of _grVertex.stateMask
+ * (grTransformVertex / grGetFogZ): names 2/3 partially pinned - the assert
+ * names GR_POSITION_OBJECT_SPACE_FIXED (358) and GR_POSITION_EYE_SPACE_
+ * CARTESIAN (1911); 2 = eye space from the matrix-palette path (accfv into
+ * position then projection), exact name unpinned. */
+enum GR_POSITION_e
+{
+    GR_POSITION_OBJECT_SPACE_FLOAT = 0,
+    GR_POSITION_OBJECT_SPACE_FIXED = 1,
+    GR_POSITION_EYE_SPACE = 2,           /* name unpinned */
+    GR_POSITION_EYE_SPACE_CARTESIAN = 3
+};
+
 /* grVertex stateMask bits (grTransformVertex / grRasterizer asserts). The
  * top 2 bits (14..15) hold the position state (grGetVertexPositionState:
  * stateMask >> 14): 0 = object space float, 1 = object space fixed(?),
@@ -197,6 +210,9 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_COLOR_ARRAY = 23,
     GR_CAPABILITY_TEXTURE_COORD_ARRAY_0 = 25,
     GR_CAPABILITY_TEXTURE_COORD_ARRAY_1 = 26,
+    GR_CAPABILITY_WEIGHT_ARRAY = 27,      /* flagged guess: unpinned gap; not
+                                           * in the GL keys table (internal) */
+    GR_CAPABILITY_MATRIX_INDEX_ARRAY = 28,/* flagged guess: unpinned gap */
     GR_CAPABILITY_POINT_SIZE_ARRAY = 29,
     GR_CAPABILITY_POLYGON_OFFSET_FILL = 14,
     GR_CAPABILITY_SCISSOR_TEST = 15,
@@ -301,29 +317,29 @@ typedef union _grVertexColor
 } _grVertexColor;
 
 typedef union _grVertexPosition
-{                                     /* decompile vertex->position */
-    _IFVector4 objectSpaceFloat[1];   /* float view (20 bytes) */
-    int fixedView[9];                 /* int view used by the fixed-point
-                                       * path; layout pins with
-                                       * grTransformVertex */
+{                                     /* decompile vertex->position (20B) */
+    _IFVector4 objectSpaceFloat[1];   /* float view */
+    int fixedView[4];                 /* int view used by the fixed-point
+                                       * path: {x,y,z,w} in 16.16, x lands
+                                       * in the float view's e slot */
 } _grVertexPosition;
 
 typedef struct _grVertex
 {
     int index;                                        /* +0   */
     _grVertexPosition position;                       /* +4   */
+    unsigned char unpinned1[16];                      /* +24  */
     _grVertexColor color;                             /* +40  */
     struct { int x, y; } texCoord[2];                 /* +56  */
-    unsigned char unpinned1[20];                      /* +72 (weights /
-                                                      *        weightIndices) */
+    _IVector4 clipPosition;                           /* +72 (offset guess:
+                                                       * 20-byte gap; grTransfor-
+                                                       * mVertex writes it) */
     int normal[3];                                    /* +92 (nc.normal) */
     int pointSize;                                    /* +104 */
-    unsigned char unpinned2[18];                      /* +108 (clipPosition /
-                                                      *        clipMask) */
-    unsigned short stateMask;                         /* offset unpinned;
-                                                       * bits 14..15 = position
-                                                       * state (grGetVertex-
-                                                       * PositionState) */
+    unsigned int clipMask;                            /* +108 (offset guess) */
+    unsigned short stateMask;                         /* bits 14..15 = position
+                                                       * state; offset guess */
+    unsigned char unpinned2[14];                      /* pad to 128 */
 } _grVertex;
 
 /* function-pointer types for the vertex pipeline stage selectors */
@@ -586,7 +602,12 @@ void grApplyFogEXP(Gerbera_s *state, unsigned char *vertexList);
 void grApplyFogEXP2(Gerbera_s *state, unsigned char *vertexList);
 int  grGetFogZ(Gerbera_s *state, _grVertex *vertex);
 int  grGetVertexPositionState(_grVertex *v);
+void grSetVertexPositionState(_grVertex *v, int state);
 void grUpdateVertexPipeline(Gerbera_s *state);
+unsigned int grFetchWeightAndIndex(Gerbera_s *state, int *weights, int vertexIndex);
+void grTransformVertex(Gerbera_s *state, _grVertex *vertex);
+unsigned int grComputeVertexClipCodes(Gerbera_s *state, _grVertex *vertex);
+int  grIsOutsideUserClipPlane(_IFVector4 *plane, _IVector4 *clipPos);
 
 /* --- grUtil.h: primitive helper --------------------------------------------- */
 int  grGetPrimitiveVertices(int primitiveType);

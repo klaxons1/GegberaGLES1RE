@@ -1254,3 +1254,240 @@ void grUpdateVertexPipeline(Gerbera_s *state)
         state->applyFog = NULL;
     }
 }
+
+/* --- position state / clip codes (decompile 27797-27862) -------------------- */
+
+void grSetVertexPositionState(_grVertex *v, int state)
+{
+    v->stateMask = (unsigned short)((v->stateMask & 0x3FFF) | (state << 14));
+}
+
+int grIsOutsideUserClipPlane(_IFVector4 *plane, _IVector4 *clipPos)
+{
+    _IFVector4 normalized;
+    int sign;
+    int dot;
+
+    sign = IFVector4_getFirstNonZeroSign(plane);
+    if (sign >= 0)
+        IFVector4_copy(&normalized, plane);
+    else
+        IFVector4_negate(&normalized, plane);
+    dot = IScalar_mul(IFVector4_getf(&normalized, 0), IVector4_getf(clipPos, 0));
+    dot = IScalar_add(dot, IScalar_mul(IFVector4_getf(&normalized, 1), IVector4_getf(clipPos, 1)));
+    dot = IScalar_add(dot, IScalar_mul(IFVector4_getf(&normalized, 2), IVector4_getf(clipPos, 2)));
+    dot = IScalar_add(dot, IScalar_mul(IFVector4_getf(&normalized, 3), IVector4_getf(clipPos, 3)));
+    if (sign < 0)
+        dot = IScalar_negate(dot);
+    return IScalar_testlt(dot);
+}
+
+unsigned int grComputeVertexClipCodes(Gerbera_s *state, _grVertex *vertex)
+{
+    unsigned int clipMask;
+    unsigned int i;
+
+    clipMask = IVector4_clip(&vertex->clipPosition, 2);
+    if (state->enabledUserClipPlaneIndices != 0)
+    {
+        /* enabledUserClipPlaneIndices packs (plane+1) per enabled plane as
+         * base-16 digits (grSetupCulling, planes walked 5..0); the consumer
+         * reads plane digit-1 (EPOC: base+4728+20*digit-20) and ORs the
+         * outside test into bit digit+9. The WINSCW decompile reaches the
+         * plane equations through the normalsToEyePal alias - see grState.h. */
+        for (i = (unsigned int)state->enabledUserClipPlaneIndices; i != 0; i >>= 4)
+            clipMask |= (unsigned int)grIsOutsideUserClipPlane(
+                            &state->userClipPlanes[(i & 0xF) - 1],
+                            &vertex->clipPosition)
+                        << ((i & 0xF) + 9);
+    }
+    vertex->clipMask = clipMask;
+    return clipMask;
+}
+
+/* --- grFetchWeightAndIndex (decompile 27862-27923; asserts grVertexPipeline
+ * .inl 155/164/168/181/198/206) ----------------------------------------------
+ * Reads the matrix-palette weight array (vertexArray[3]) and the packed
+ * matrix indices (vertexArray[4]); indices are clamped to 8 (9 palette
+ * matrices) and packed one byte per weight slot. */
+
+unsigned int grFetchWeightAndIndex(Gerbera_s *state, int *weights, int vertexIndex)
+{
+    _grVertexArray *weightArray = &state->vertexArray[3];
+    _grVertexArray *palIndexArray = &state->vertexArray[4];
+    unsigned char *wsrc;
+    unsigned char *isrc;
+    unsigned int indices = 0;
+    int i;
+
+    if (!(state != NULL) && grAssert("state", "grVertexPipeline.inl", 155) != 0)
+        grDie(0);
+    if (!(weightArray->data != NULL) && grAssert("weightArray->data", "grVertexPipeline.inl", 164) != 0)
+        grDie(0);
+    wsrc = (unsigned char *)weightArray->data + weightArray->stride * vertexIndex;
+    if (!(hgInRange32(weightArray->size, 1, 4) != 0) && grAssert("hgInRange32(weightArray->size, 1, 4)", "grVertexPipeline.inl", 168) != 0)
+        grDie(0);
+    if (weightArray->type == GR_DATATYPE_FLOAT)
+    {
+        for (i = weightArray->size - 1; i >= 0; --i)
+            weights[i] = IScalar_iftos(((int *)wsrc)[i]);
+    }
+    else
+    {
+        if (!(weightArray->type == GR_DATATYPE_FIXED) && grAssert("weightArray->type == GR_DATATYPE_FIXED", "grVertexPipeline.inl", 181) != 0)
+            grDie(0);
+        for (i = weightArray->size - 1; i >= 0; --i)
+            weights[i] = IScalar_fixedToScalar(((int *)wsrc)[i], 16);
+    }
+    if (!(palIndexArray->data != NULL) && grAssert("palIndexArray->data", "grVertexPipeline.inl", 198) != 0)
+        grDie(0);
+    isrc = (unsigned char *)palIndexArray->data + palIndexArray->stride * vertexIndex;
+    if (!(palIndexArray->type == GR_DATATYPE_UINT8) && grAssert("palIndexArray->type == GR_DATATYPE_UINT8", "grVertexPipeline.inl", 206) != 0)
+        grDie(0);
+    for (i = palIndexArray->size - 1; i >= 0; --i)
+        indices = (indices << 8) | hgMinu32(isrc[i], 8u);
+    return indices;
+}
+
+/* --- grTransformVertex (decompile 27926-28117; asserts grVertexPipeline.inl
+ * 230/231/232/246/250/259/270/279/280/348/358) --------------------------------
+ * Fetches the vertex position (float or fixed), applies the matrix-palette
+ * skinning when active, produces the clip position and the clip codes. */
+
+void grTransformVertex(Gerbera_s *state, _grVertex *vertex)
+{
+    _grVertexArray *array = &state->vertexArray[0];
+    unsigned char *src;
+    int ok = 1;
+
+    if (!(state != NULL && vertex != NULL) && grAssert("state && vertex", "grVertexPipeline.inl", 230) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (!(array->data != NULL) && grAssert("array->data", "grVertexPipeline.inl", 231) != 0)
+        grDie(0);
+    if (!((vertex->stateMask & GR_VERTEXMASK_TRANSFORMED) == 0) &&
+        grAssert("!(vertex->stateMask & GR_VERTEXMASK_TRANSFORMED)", "grVertexPipeline.inl", 232) != 0)
+        grDie(0);
+    vertex->stateMask |= GR_VERTEXMASK_TRANSFORMED;
+    src = (unsigned char *)array->data + array->stride * vertex->index;
+    if (!(hgInRange32(array->size, 2, 4) != 0) && grAssert("hgInRange32(array->size, 2, 4)", "grVertexPipeline.inl", 246) != 0)
+        grDie(0);
+    if (array->type == GR_DATATYPE_FLOAT)
+    {
+        if (grIsAligned(src, 4) == 0 && grAssert("grIsAligned(src, 4)", "grVertexPipeline.inl", 250) != 0)
+            grDie(0);
+        IFVector4_setfv(vertex->position.objectSpaceFloat, (int *)src, array->size);
+        grSetVertexPositionState(vertex, GR_POSITION_OBJECT_SPACE_FLOAT);
+    }
+    else
+    {
+        int x, y = 0x10000, z = 0, w = 0x10000;
+        int size = array->size;
+
+        if (!(hgInRange32(size, 2, 4) != 0) && grAssert("hgInRange32(size, 2, 4)", "grVertexPipeline.inl", 259) != 0)
+            grDie(0);
+        if (array->type == GR_DATATYPE_INT16)
+        {
+            if (grIsAligned(src, 2) == 0 && grAssert("grIsAligned(src, 2)", "grVertexPipeline.inl", 270) != 0)
+                grDie(0);
+            x = (int)*(short *)(src + 0) << 16;
+            y = (int)*(short *)(src + 2) << 16;
+            if (size >= 3)
+                z = (int)*(short *)(src + 4) << 16;
+            if (size > 3)
+                w = (int)*(short *)(src + 6) << 16;
+        }
+        else if (array->type != GR_DATATYPE_INT8)
+        {
+            if (!(array->type == GR_DATATYPE_FIXED) && grAssert("array->type == GR_DATATYPE_FIXED", "grVertexPipeline.inl", 279) != 0)
+                grDie(0);
+            if (grIsAligned(src, 4) == 0 && grAssert("grIsAligned(src, 4)", "grVertexPipeline.inl", 280) != 0)
+                grDie(0);
+            x = *(int *)(src + 0);
+            y = *(int *)(src + 4);
+            if (size >= 3)
+                z = *(int *)(src + 8);
+            if (size > 3)
+                w = *(int *)(src + 12);
+        }
+        else
+        {
+            x = (int)(signed char)src[0] << 16;
+            y = (int)(signed char)src[1] << 16;
+            if (size >= 3)
+                z = (int)(signed char)src[2] << 16;
+            if (size > 3)
+                w = (int)(signed char)src[3] << 16;
+        }
+        /* the fixed-point position is consumed as the int view {x,y,z,w}
+         * (16.16): the float view's e slot holds x */
+        vertex->position.objectSpaceFloat[0].e = (unsigned int)x;
+        vertex->position.objectSpaceFloat[0].m[0] = y;
+        vertex->position.objectSpaceFloat[0].m[1] = z;
+        vertex->position.objectSpaceFloat[0].m[2] = w;
+        grSetVertexPositionState(vertex, GR_POSITION_OBJECT_SPACE_FIXED);
+    }
+    if (grTestCapability(state, GR_CAPABILITY_MATRIX_PALETTE) != 0 &&
+        grTestCapability(state, GR_CAPABILITY_MATRIX_INDEX_ARRAY) != 0 &&
+        grTestCapability(state, GR_CAPABILITY_WEIGHT_ARRAY) != 0 &&
+        state->vertexArray[3].data != NULL &&
+        state->vertexArray[4].data != NULL)
+    {
+        int weights[4];
+        unsigned int weightIndices;
+        int count;
+        int j;
+        _IFVector4 tmp[4];
+
+        weightIndices = grFetchWeightAndIndex(state, weights, vertex->index);
+        count = hgMin32(state->vertexArray[3].size, state->vertexArray[4].size);
+        count = hgMin32(count, 4);
+        if (grGetVertexPositionState(vertex) != GR_POSITION_OBJECT_SPACE_FLOAT)
+        {
+            for (j = 0; j < count; ++j)
+            {
+                if (IScalar_testne(weights[j]) != 0)
+                    IVertexTransform_mulxv4s(&tmp[j],
+                                             &state->matrixPalTransform[weightIndices & 0xFF],
+                                             (int *)&vertex->position);
+                weightIndices >>= 8;
+            }
+        }
+        else
+        {
+            for (j = 0; j < count; ++j)
+            {
+                if (IScalar_testne(weights[j]) != 0)
+                    IVertexTransform_mulfv4s(&tmp[j],
+                                             &state->matrixPalTransform[weightIndices & 0xFF],
+                                             vertex->position.objectSpaceFloat);
+                weightIndices >>= 8;
+            }
+        }
+        IFVector4_accfv(vertex->position.objectSpaceFloat, tmp, weights, count);
+        grSetVertexPositionState(vertex, GR_POSITION_EYE_SPACE);
+        IVertexTransform_mulfv4(&vertex->clipPosition,
+                                &state->projectionTransform,
+                                vertex->position.objectSpaceFloat);
+        if (IVector4_isValid(&vertex->clipPosition) == 0 &&
+            grAssert("IVector4_isValid(vertex->clipPosition)", "grVertexPipeline.inl", 348) != 0)
+            grDie(0);
+    }
+    else if (grGetVertexPositionState(vertex) != GR_POSITION_OBJECT_SPACE_FLOAT)
+    {
+        if (!(grGetVertexPositionState(vertex) == GR_POSITION_OBJECT_SPACE_FIXED) &&
+            grAssert("grGetVertexPositionState(vertex) == GR_POSITION_OBJECT_SPACE_FIXED", "grVertexPipeline.inl", 358) != 0)
+            grDie(0);
+        IVertexTransform_mulxv4(&vertex->clipPosition,
+                                &state->objectToClipTransform,
+                                (int *)&vertex->position);
+    }
+    else
+    {
+        IVertexTransform_mulfv4(&vertex->clipPosition,
+                                &state->objectToClipTransform,
+                                vertex->position.objectSpaceFloat);
+    }
+    grComputeVertexClipCodes(state, vertex);
+}

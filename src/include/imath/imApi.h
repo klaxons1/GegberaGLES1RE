@@ -285,6 +285,9 @@ int  IMatrix4x4_inversetranspose(_XNormalTransform *pD, _IMatrix4x4 *matrix, int
 /* --- _IVertexTransform use (IMatrix4.c) --------------------------------- */
 void IVertexTransform_copy(_IVertexTransform *pD, _IMatrix4x4 *pM);
 void IVertexTransform_mulxv4(_IVector4 *pD, _IVertexTransform *pT, int *pB);
+void IVertexTransform_mulfv4(_IVector4 *pD, _IVertexTransform *pT, _IFVector4 *pS);
+void IVertexTransform_mulxv4s(_IFVector4 *pD, _IVertexTransform *pT, int *pB);
+void IVertexTransform_mulfv4s(_IFVector4 *pD, _IVertexTransform *pT, _IFVector4 *pB);
 int  IVertexTransform_zmulfv4(_IVertexTransform *pT, _IFVector4 *pS);
 int  IVertexTransform_zmulxv4(_IVertexTransform *pT, int *pS);
 int  IMatrix4x4_getScalar(_IMatrix4x4 *pS, int c, int r);
