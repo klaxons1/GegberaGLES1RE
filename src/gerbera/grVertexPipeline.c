@@ -1933,6 +1933,18 @@ void grApplyLighting(Gerbera_s *state, unsigned char *vertexList)
     }
 }
 
+/* --- grViewportTransformVertex (decompile 28120-28131) ---------------------- */
+
+void grViewportTransformVertex(Gerbera_s *state, _grVertex *vertex)
+{
+    vertex->stateMask |= GR_VERTEXMASK_VIEWPORT_TRANSFORMED;
+    IVector4_viewportTransform(&vertex->screenPosition[0],
+                               &vertex->clipPosition,
+                               state->viewportScale.normal,
+                               state->viewportOffset.normal,
+                               8);
+}
+
 /* --- grSetupCulling (decompile 31562-31699; asserts grApiFast.inl
  * 108/113/157) ----------------------------------------------------------------
  * Validates the primitive type, stores it, fast-rejects draws that cannot

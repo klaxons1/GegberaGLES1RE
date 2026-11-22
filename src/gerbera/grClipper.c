@@ -464,3 +464,142 @@ int grClipper(Gerbera_s *state, unsigned char *outputFan, unsigned int indices)
     }
     return numVertices;
 }
+
+/* --- grClipPrimitive (grClipper.inl 559; DLL 31235-31488) -------------------
+ * Draws one queued primitive after clipping: runs grClipper on the packed
+ * cache indices, rechecks the scissor over the produced fan, then hands the
+ * fan triangles (or the degenerate line record) to the rasterizer. */
+
+void grClipPrimitive(Gerbera_s *state, unsigned int origIndices, int numVertices)
+{
+    unsigned char fan[GR_MAX_CLIPPER_VERTICES];
+    _grVertex *vertexBuffer = GR_CLIP_VERTEX_BUFFER(state);
+    _grRect *scissor = &state->renderScissor;
+    _grClipTriangle tri;
+    int n, i, j, k, combinedMask, triSide, numTriangles;
+
+    n = grClipper(state, fan, origIndices);
+    if (n == 0)
+        return;
+    if (numVertices == 2)
+        n = 2;
+    combinedMask = (int)GR_SCISSORMASK_FULL;
+    for (i = 0; i < n; ++i)
+    {
+        _grVertex *v = &vertexBuffer[fan[i]];
+        int sx, sy, mask;
+
+        if ((v->stateMask & GR_VERTEXMASK_VIEWPORT_TRANSFORMED) == 0)
+            grViewportTransformVertex(state, v);
+        sx = grSubpixelTrunc(v->screenPosition[0]);
+        sy = grSubpixelTrunc(v->screenPosition[1]);
+        mask = hgSignBit32(sx - scissor->x0) |
+               2 * hgSignBit32(scissor->x1 - sx) |
+               4 * hgSignBit32(sy - scissor->y0) |
+               8 * hgSignBit32(scissor->y1 - sy);
+        combinedMask &= mask;
+        if ((mask & ~GR_SCISSORMASK_FULL) != 0 &&
+            grAssert("!(vertexMask & ~GR_SCISSORMASK_FULL)", "grClipper.inl", 730) != 0)
+            grDie(0);
+        if (sx >= scissor->x0)
+        {
+            if ((mask & GR_SCISSORMASK_LEFT) != 0 &&
+                grAssert("!(vertexMask & GR_SCISSORMASK_LEFT)", "grClipper.inl", 732) != 0)
+                grDie(0);
+        }
+        else
+        {
+            if ((mask & GR_SCISSORMASK_LEFT) == 0 &&
+                grAssert("vertexMask & GR_SCISSORMASK_LEFT", "grClipper.inl", 731) != 0)
+                grDie(0);
+        }
+        if (sx <= scissor->x1)
+        {
+            if ((mask & GR_SCISSORMASK_RIGHT) != 0 &&
+                grAssert("!(vertexMask & GR_SCISSORMASK_RIGHT)", "grClipper.inl", 734) != 0)
+                grDie(0);
+        }
+        else
+        {
+            if ((mask & GR_SCISSORMASK_RIGHT) == 0 &&
+                grAssert("vertexMask & GR_SCISSORMASK_RIGHT", "grClipper.inl", 733) != 0)
+                grDie(0);
+        }
+        if (sy >= scissor->y0)
+        {
+            if ((mask & GR_SCISSORMASK_TOP) != 0 &&
+                grAssert("!(vertexMask & GR_SCISSORMASK_TOP)", "grClipper.inl", 736) != 0)
+                grDie(0);
+        }
+        else
+        {
+            if ((mask & GR_SCISSORMASK_TOP) == 0 &&
+                grAssert("vertexMask & GR_SCISSORMASK_TOP", "grClipper.inl", 735) != 0)
+                grDie(0);
+        }
+        if (sy <= scissor->y1)
+        {
+            if ((mask & GR_SCISSORMASK_BOTTOM) != 0 &&
+                grAssert("!(vertexMask & GR_SCISSORMASK_BOTTOM)", "grClipper.inl", 738) != 0)
+                grDie(0);
+        }
+        else
+        {
+            if ((mask & GR_SCISSORMASK_BOTTOM) == 0 &&
+                grAssert("vertexMask & GR_SCISSORMASK_BOTTOM", "grClipper.inl", 737) != 0)
+                grDie(0);
+        }
+    }
+    if (combinedMask != 0)
+        return;
+    numTriangles = n - 2;
+    if (numVertices == 3)
+    {
+        HGint64 area64 = hgZero64();
+        HGint64 area;
+
+        triSide = 0;
+        for (j = 0; j < numTriangles; ++j)
+            area64 = hgAdd64(area64,
+                             grComputeTriangleArea(vertexBuffer,
+                                                   grSetIndices(fan[0], fan[j + 1], fan[j + 2])));
+        triSide = grGetFrontFace(state) ^ ((unsigned int)hgGet64h(area64) >> 31);
+        for (j = 0; j < numTriangles; ++j)
+        {
+            unsigned int indices = grSetIndices(fan[0], fan[j + 1], fan[j + 2]);
+            int sign, ok;
+
+            area = grComputeTriangleArea(vertexBuffer, indices);
+            sign = (((unsigned int)hgGet64h(area) >> 31) ^ state->cullNegative) &
+                   grTestCapability(state, GR_CAPABILITY_CULL_FACE);
+            if (sign != 1 && hgIsZero64(area) == 0)
+            {
+                for (k = triSide; k < j + 3; ++k)
+                {
+                    _grVertex *v = &vertexBuffer[fan[k]];
+
+                    if ((v->stateMask & GR_VERTEXMASK_INTERPOLATE_GRADIENTS) != 0)
+                        grInterpolateVertexGradients(state, v, origIndices, triSide);
+                }
+                ok = 1;
+                if (triSide != GR_SIDE_FRONT && triSide != GR_SIDE_BACK &&
+                    grAssert("triSide==GR_SIDE_FRONT || triSide==GR_SIDE_BACK",
+                             "grClipper.inl", 813) != 0)
+                    ok = 0;
+                if (ok == 0)
+                    grDie(0);
+                tri.indices = indices;
+                tri.area = grRoundTriangleArea(area);
+                tri.side = triSide;
+                grrDrawClippedTriangle(state, &tri, origIndices);
+            }
+        }
+    }
+    else
+    {
+        tri.indices = grSetIndices(fan[0], fan[1], fan[1]);
+        tri.area = 0;
+        tri.side = 0;
+        grrDrawClippedLine(state, &tri, origIndices);
+    }
+}

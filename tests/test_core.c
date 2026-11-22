@@ -129,6 +129,7 @@ static void test_setup_culling(void);
 static void test_clear(void);
 static void test_clipper(void);
 static void test_vertextcache(void);
+static void test_queueprimitive(void);
 
 int main(void)
 {
@@ -156,6 +157,7 @@ int main(void)
     test_clear();
     test_clipper();
     test_vertextcache();
+    test_queueprimitive();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -1792,4 +1794,182 @@ static void test_vertextcache(void)
     CHECK(grVertexCacheGet(&st, 0) == 0);
     CHECK(vb[0].index == 0);
     CHECK(cache->totalFreeSlots == 59);
+}
+
+/* --- grApiFast.inl: grQueuePrimitive + wrappers ----------------------------- */
+
+static void test_queueprimitive(void)
+{
+    Gerbera_s st;
+    _IMatrix4x4 id;
+    _grVertexCache *cache;
+    _grVertex *vb;
+    unsigned int *q;
+    static float pos[66][3];
+    static unsigned char stack[GR_RENDER_STACK_SIZE];
+    int i, qidx;
+
+    for (i = 0; i < 66; ++i)
+    {
+        pos[i][0] = (float)(i % 10);
+        pos[i][1] = (float)(i % 7);
+        pos[i][2] = 0.5f * (float)(i % 3);
+    }
+    pos[5][0] = 0.5f;  pos[5][1] = 0.5f;  pos[5][2] = 0.5f;
+    pos[7][0] = 0.25f; pos[7][1] = 0.0f;  pos[7][2] = 0.0f;
+    pos[9][0] = 0.0f;  pos[9][1] = 0.25f; pos[9][2] = 0.0f;
+    pos[20][0] = -5.0f; pos[20][1] = 0.0f; pos[20][2] = 0.0f;
+    pos[21][0] = 1.0f;  pos[21][1] = 0.0f; pos[21][2] = 0.0f;
+    pos[22][0] = 1.0f;  pos[22][1] = 1.0f; pos[22][2] = 0.0f;
+    pos[23][0] = -5.0f; pos[23][1] = 0.0f; pos[23][2] = 0.0f;
+    pos[24][0] = -5.0f; pos[24][1] = 0.0f; pos[24][2] = 0.0f;
+    pos[30][0] = 0.0f;  pos[30][1] = 0.0f; pos[30][2] = 0.0f;
+    pos[31][0] = 0.5f;  pos[31][1] = 0.0f; pos[31][2] = 0.0f;
+    pos[32][0] = 0.0f;  pos[32][1] = 0.5f; pos[32][2] = 0.0f;
+    pos[40][0] = 0.0f;  pos[40][1] = 0.0f; pos[40][2] = 0.0f;
+    pos[41][0] = 0.5f;  pos[41][1] = 0.0f; pos[41][2] = 0.0f;
+    pos[42][0] = 0.0f;  pos[42][1] = 0.5f; pos[42][2] = 0.0f;
+    pos[43][0] = 0.0f;  pos[43][1] = 0.0f; pos[43][2] = 0.0f;
+    pos[50][0] = 0.0f;  pos[50][1] = 0.0f; pos[50][2] = 0.0f;
+    pos[51][0] = 0.25f; pos[51][1] = 0.0f; pos[51][2] = 0.0f;
+    pos[52][0] = 0.0f;  pos[52][1] = 0.25f; pos[52][2] = 0.0f;
+    pos[53][0] = 0.0f;  pos[53][1] = 0.0f; pos[53][2] = 0.0f;
+    pos[54][0] = 0.5f;  pos[54][1] = 0.0f; pos[54][2] = 0.0f;
+    pos[55][0] = 0.0f;  pos[55][1] = 0.5f; pos[55][2] = 0.0f;
+    IMatrix4x4_identity(&id);
+    memset(&st, 0, sizeof(st));
+    memset(stack, 0, sizeof(stack));
+    st.renderStack = stack;
+    st.renderStackAllocated = 1;
+    st.vertexCache = stack;
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    grSetMatrix(&st, GR_MATRIXMODE_MODELVIEW, &id);
+    grSetMatrix(&st, GR_MATRIXMODE_PROJECTION, &id);
+    st.vertexArray[0].size = 3;
+    st.vertexArray[0].type = GR_DATATYPE_FLOAT;
+    st.vertexArray[0].data = pos;
+    st.vertexArray[0].stride = 12;
+    grSetCapability(&st, GR_CAPABILITY_VERTEX_ARRAY, 1);
+    grSetRectangle(&st.renderScissor, 0, 100, 0, 100);
+    grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    grVertexCacheInvalidate(&st);
+    st.viewportScale.normal[0] = 0x640;
+    st.viewportScale.normal[1] = 0x640;
+    cache = (_grVertexCache *)stack;
+    vb = (_grVertex *)(stack + 1332);
+    q = (unsigned int *)(stack + 168);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+
+    /* point: single cache slot in all three packed bytes; viewport transform
+     * ran (bit 8) and the screen position comes from the 0x01000000 scale */
+    grQueuePrimitive1(&st, 5);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 2);
+    CHECK(q[0] == 0x00050505 && q[1] == 0);
+    CHECK(cache->prevVertexIndices[0] == 5 && cache->prevVertexIndices[1] == -1);
+    CHECK(cache->prevCacheIndices[0] == 5 && cache->prevCacheIndices[1] == 5 &&
+          cache->prevCacheIndices[2] == 5);
+    CHECK(cache->totalFreeSlots == 63);
+    CHECK(vb[5].stateMask == 0x000c);
+    CHECK(vb[5].screenPosition[0] == 0x6300);
+    CHECK(vb[5].screenPosition[1] == 0x6300);
+
+    /* line: ci1 == ci2 in the packed command; fresh slot for vertex 7 */
+    grQueuePrimitive2(&st, 5, 7);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 4);
+    CHECK(q[2] == 0x00070705 && q[3] == 0);
+    CHECK(cache->totalFreeSlots == 62);
+    CHECK(cache->prevCacheIndices[1] == 7);
+
+    /* line reuse: vertex 7 keeps its slot via the previous-primitive cache */
+    grQueuePrimitive2(&st, 7, 9);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 6);
+    CHECK(q[4] == 0x00080807 && q[5] == 0);
+    CHECK(cache->totalFreeSlots == 61);
+
+    /* degenerate primitives: wrappers reject without queueing */
+    grQueuePrimitive2(&st, 5, 5);
+    grQueuePrimitive3(&st, 5, 5, 6);
+    grQueuePrimitive3(&st, 5, 7, 5);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 6);
+
+    /* a point whose vertex carries a clip bit is AND-rejected (all three
+     * packed bytes are the same record) */
+    grQueuePrimitive1(&st, 20);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 6);
+
+    /* triangle straddling the guardband plane: OR of clip masks nonzero ->
+     * command {packed | 0x10000000, 0} (grClipper runs at flush time) */
+    grQueuePrimitive3(&st, 20, 21, 22);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 8);
+    CHECK(q[6] == 0x10141716 && q[7] == 0);
+
+    /* all three vertices share plane bit 0x44 -> AND-reject (0xFFC3) */
+    grQueuePrimitive3(&st, 20, 23, 24);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 8);
+
+    /* plain triangle: {packed, rounded screen area}; no side bit (cull off) */
+    grQueuePrimitive3(&st, 30, 31, 32);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 10);
+    CHECK(q[8] == 0x00251c1d);
+    CHECK(q[9] == 0x0000004d);
+
+    /* scissor reject: whole primitive left of x0 / right of x1 */
+    st.viewportScale.normal[0] = 0x640;
+    st.viewportScale.normal[1] = 0x640;
+    st.viewportOffset.normal[0] = -1600000;
+    grQueuePrimitive3(&st, 50, 51, 52);
+    st.viewportOffset.normal[0] = 1600000;
+    grQueuePrimitive3(&st, 50, 51, 52);
+    st.viewportOffset.normal[0] = 0;
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 10);
+
+    /* face cull: y-flipped viewport -> screen winding sign 1; cullNegative 1
+     * keeps the triangle (side bit 24 set, side = sign ^ frontFace) */
+    st.viewportScale.normal[0] = 0x640;
+    st.viewportScale.normal[1] = (int)0xFFFFF9C0;   /* -0x640: GL-style y flip */
+    grSetCapability(&st, GR_CAPABILITY_CULL_FACE, 1);
+    st.cullNegative = 1;
+    grQueuePrimitive3(&st, 40, 41, 42);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 12);
+    CHECK(q[10] == 0x012e2d2c);
+    CHECK(q[11] == (int)0xffffffb2);   /* mul64h floors: screen y = -0x6400 */
+
+    /* same shape with cullNegative 0: the clip-space stp sign matches ->
+     * culled at grApiFast.inl 1046, nothing queued */
+    st.cullNegative = 0;
+    grQueuePrimitive3(&st, 43, 41, 42);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 12);
+
+    /* flush trigger boundary: the queue holds 128 commands (256 dwords);
+     * the 129th primitive would cross the 254-dword trigger and flush */
+    grDisableCapability(&st, GR_CAPABILITY_CULL_FACE);
+    st.viewportScale.normal[0] = 0x640;
+    st.viewportScale.normal[1] = 0x640;
+    while (*(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX) < 256)
+        grQueuePrimitive3(&st, 53, 54, 55);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 256);
+    CHECK(cache->totalFreeSlots == 64 - 21);
+    i = 0;
+    {
+        HGuint64 m = (HGuint64)cache->batchLockMask;
+
+        while (m != 0)
+        {
+            i += (int)(m & 1);
+            m >>= 1;
+        }
+    }
+    CHECK(i == 21);
 }

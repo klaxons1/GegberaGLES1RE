@@ -31,6 +31,16 @@ HG_EXTERN_C_BEGIN
 #define GR_CLEAR_BUFFER_SIZE 4
 #define GR_COLORMASK_FULL 0xFu
 #define GR_SIDEMASK_BOTH 3u
+/* triangle side (grClipPrimitive/grQueuePrimitive: screen-area sign ^ front-
+ * Face); GR_SIDEMASK picks the bits to cull (grSetCullMode) */
+#define GR_SIDE_FRONT 0
+#define GR_SIDE_BACK 1
+/* scissor outside-bits built by grClipPrimitive's per-vertex recheck */
+#define GR_SCISSORMASK_FULL 0xFu
+#define GR_SCISSORMASK_LEFT 0x1u
+#define GR_SCISSORMASK_RIGHT 0x2u
+#define GR_SCISSORMASK_TOP 0x4u
+#define GR_SCISSORMASK_BOTTOM 0x8u
 
 /* matrix modes (grSetMatrix / grSetMatrixDirty). MODELVIEW=0 and
  * PROJECTION=1 are pinned from the EPOC grSetupCulling (objectToClip =
@@ -131,6 +141,16 @@ typedef struct _grVertexCache
     int prevCacheIndices[3];       /* +28: their cache indices */
     unsigned int cacheIndices[32]; /* +40: hash table, 4 packed bytes each */
 } _grVertexCache;                  /* 168 bytes */
+
+/* the queued-primitive record handed to the rasterizer draws
+ * (cv_anon_17A7): packed cache indices (+ flags: bit 24 = triangle side,
+ * bit 28 = needs clipping), the rounded screen area, the side */
+typedef struct _grClipTriangle
+{
+    unsigned int indices;
+    int area;
+    int side;
+} _grClipTriangle;
 
 /* render stack (cv_anon_1717) byte offsets used by the grFast queue:
  * +0 the vertex cache, +168 command queue (8-byte commands, u32 index
@@ -267,6 +287,9 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_CLIP_PLANE3 = 33,
     GR_CAPABILITY_CLIP_PLANE4 = 34,
     GR_CAPABILITY_CLIP_PLANE5 = 35,
+    GR_CAPABILITY_SMOOTH_SHADING = 9,     /* internal cap (EPOC glShadeModel
+                                           * sub_22018(caps, 9, ...); GL_FLAT
+                                           * clears it, GL_SMOOTH sets it) */
     GR_CAPABILITY_POLYGON_OFFSET_FILL = 14,
     GR_CAPABILITY_SCISSOR_TEST = 15,
     GR_CAPABILITY_CULL_FACE = 16,
@@ -717,6 +740,23 @@ int  grClipper(Gerbera_s *state, unsigned char *outputFan, unsigned int indices)
 /* --- grFast vertex cache (grApiFast.inl, implemented in grApiFast.c) ------- */
 void grVertexCacheInvalidate(Gerbera_s *state);
 int  grVertexCacheGet(Gerbera_s *state, int vtxIndex);
+void grViewportTransformVertex(Gerbera_s *state, _grVertex *vertex);
+HGint64 grComputeTriangleArea(_grVertex *vertexCache, unsigned int indices);
+int  grRoundTriangleArea(HGint64 area);
+void grQueuePrimitive(Gerbera_s *state, int i0, int i1, int i2, int numVertices);
+void grQueuePrimitive1(Gerbera_s *state, int i0);
+void grQueuePrimitive2(Gerbera_s *state, int i0, int i1);
+void grQueuePrimitive3(Gerbera_s *state, int i0, int i1, int i2);
+void grFlushPrimitiveBatch(Gerbera_s *state);
+void grClipPrimitive(Gerbera_s *state, unsigned int origIndices, int numVertices);
+/* rasterizer / vertex-gradient entry points reached by grFlushPrimitiveBatch
+ * and grClipPrimitive (die-stubs until their sessions) */
+void grUpdateVertexPipeline(Gerbera_s *state);
+void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
+                                  unsigned int origIndices, int side);
+void grrDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices);
+void grrDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices);
+void grrDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices);
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);
 void grApplyLighting(Gerbera_s *state, unsigned char *vertexList);

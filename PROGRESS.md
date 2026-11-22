@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3n)
+Last updated: 2026-11-22 (session 3o)
 
 ## Legend
 
@@ -109,6 +109,97 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3o (grQueuePrimitive + grFlushPrimitiveBatch + grClipPrimitive + area helpers)
+
+- **grApiFast.c additions**: grComputeTriangleArea (dll 25943: 64-bit signed
+  madd over screenPosition x/y of the three unpacked cache records:
+  (x1-x0)*(y2-y0) + (y1-y0)*(x0-x2)), grRoundTriangleArea (00424970: negative
+  area -> (a<<9)>>32, positive -> -((-a<<9)>>32)), grQueuePrimitive (dll
+  32218-32588) + the grQueuePrimitive1/2/3 degenerate-rejection wrappers
+  (32591-32618), grFlushPrimitiveBatch (dll 31970-32124). grClipPrimitive
+  (grClipper.inl 559) in grClipper.c. grViewportTransformVertex (dll 28120)
+  in grVertexPipeline.c: stateMask |= 8 + IVector4_viewportTransform into
+  screenPosition (xyShift 8).
+- **grQueuePrimitive flow** (all pinned): previous-primitive cache reuse
+  (prevVertexIndices/prevCacheIndices checked BEFORE the hash table; the
+  saved prev values are read at entry and the arrays written per vertex),
+  aliasing for numVertices<3 (ci1=ci0, ci2=ci1), grSetIndices(ci0,ci1,ci2)
+  packed CACHE indices, distinctness asserts 999/1000/1001, flush trigger
+  hgSignBit32((254 - queueIndex) | (totalFreeSlots - numVertices)) ->
+  grFlushPrimitiveBatch (the queue region is exactly 128 commands:
+  renderStack+168..1191, the u32 counter at +1192 counts DWORDS, commands
+  written at queue+4*index), AND-reject (clipMask AND of the three records
+  & 0xFFC3 - NOTE: a POINT whose vertex has any clip bit is silently
+  dropped because all three packed bytes are the same record), OR-clip path
+  (& 0xFC3F -> command {packed | 0x10000000, 0}), clip-space stp cull
+  (IVector4_stp over the three clipPositions; culled when the sign equals
+  cullNegative; runs only for numVertices==3 && CULL_FACE), viewport
+  transforms (stateMask bit 8 gate), scissor grouping test (x0/x1/y0/y1
+  AND-groups over the used vertices, ORed; sign -> reject), screen-area
+  cull ((areaSign ^ cullNegative) & CULL_FACE; queued when ==0 and the area
+  is nonzero) -> command {packed | triSide<<24, grRoundTriangleArea} for
+  triangles, {packed, 0} for lines/points.
+- **CRITICAL ORDERING** (caught by the tests): the viewport transforms run
+  BEFORE the subpixel scissor reads (fresh vertices must be transformed or
+  the scissor test sees stale positions). My first port read the screen
+  positions first - the scissor rejects never fired for fresh vertices.
+- **grFlushPrimitiveBatch flow**: grUpdateVertexPipeline (already ported -
+  grVertexPipeline.c 1005), backward walk building two fetch lists:
+  smooth/provoking list at renderStack+1264 (stateMask bit 0x20; only byte 0
+  of each command when SMOOTH_SHADING cap 9 is off, all bytes when on) and
+  the per-vertex list at +1196 (bit 0x10, every vertex); both 0xFF-
+  terminated; the +1264 list feeds fetchVertexColor/fetchVertexNormal+
+  grApplyLighting, the +1196 list feeds fetchTexCoord[0..1]/fetchPointSize/
+  applyFog (all NULL-gated); forward dispatch per command: 0x10000000 flag
+  -> grClipPrimitive(state, cmd0, grGetPrimitiveVertices(primitiveType)),
+  else grrDrawClippedPoint/Line/Triangle by primitiveType (assert 687 for
+  non-triangle); final cache re-arm: batchLockMask = setBit of the three
+  prevCacheIndices, totalFreeSlots = 64 - grGetPrimitiveVertices, allocIndex
+  = 64, queueIndex = 0.
+- **grClipPrimitive flow**: grClipper fan -> numVertices==2 forces n=2 ->
+  per-fan-vertex scissor recheck (outside-bit mask per vertex via
+  hgSignBit32 of the four edge diffs; GR_SCISSORMASK asserts 730-738;
+  combinedMask AND; nonzero -> drop) -> triangle path: total fan area ->
+  triSide = frontFace ^ totalSign; per fan triangle: (sign ^ cullNegative) &
+  CULL_FACE, drawn when != 1 and area nonzero; gradient interpolation loop
+  k in [triSide, j+2] over fan vertices with stateMask bit 0x40 ->
+  grInterpolateVertexGradients(state, v, origIndices, triSide); assert 813
+  triSide in {0,1}; record {grSetIndices(fan0, fan[j+1], fan[j+2]), round-
+  Area, triSide} -> grrDrawClippedTriangle; line path: record
+  {grSetIndices(fan[0], fan[1], fan[1]), 0, 0} -> grrDrawClippedLine
+  (a clipped POINT also lands here - degenerate line == the point).
+- **grrStubs.c** (scaffolding, die-stubs until their sessions):
+  grInterpolateVertexGradients, grrDrawClippedPoint/Line/Triangle.
+  grUpdateVertexPipeline turned out to be already ported - NOT stubbed.
+- **GR_CAPABILITY_SMOOTH_SHADING = 9** pinned from the EPOC glShadeModel
+  (sub_22018(caps, 9, value); GL_FLAT 7424 clears, GL_SMOOTH 7425 sets).
+  GR_SIDE_FRONT 0 / GR_SIDE_BACK 1 + GR_SCISSORMASK_* defined in grState.h.
+  _grClipTriangle = {indices, area, side} (cv_anon_17A7).
+- **hgMul64h floors toward -inf**: screen y under the y-flip scale -1600 is
+  -0x6400, not -0x6300 (floor(-99.99) = -100) - the cull test pins round(-
+  648806400) = -78 (0xffffffb2), NOT -77.
+- **tests/test_core.c**: test_queueprimitive (+31): point/line/reuse-line
+  commands + prev-cache arrays + free slots, degenerate wrapper rejection,
+  clipped-point AND-reject, clip-command {packed|0x10000000, 0}, AND-reject
+  with shared plane bits 0x44, plain triangle {0x00251c1d, 0x4d}, scissor
+  rejects (offset +/-1600000), y-flip cull keep {0x012e2d2c, 0xffffffb2}
+  + stp cull drop, flush-trigger boundary (128 commands = 256 dwords, queue
+  never crosses; the 129th primitive would flush - untestable until the
+  rasterizer lands because the dispatch hits the grr die-stubs).
+- **Deferred to the rasterizer session**: grFetchPrimitives (FULLY DECODED:
+  21 fetch types = 3*primitiveType + source {0=u8,1=u16,2=sequential};
+  POINTS 1/consumed, LINES 2/consumed, LINELOOP strip-pattern (1 index per
+  segment, closing segment (first, last)), LINESTRIP strip-pattern, TRIANGLES
+  3/consumed, TRISTRIP stripSwap-wound 1/consumed, TRIFAN (v0, k, k+1) from
+  absolute srcIndices offsets / baseIndex for ARRAY; vertexPipelineDirty=1;
+  asserts 1298/1299 (fetchType 0..GR_FETCHTYPE_MAX-1=20)/1300; ends with
+  grFlushPrimitiveBatch), grRenderElements/grRenderArrays (asserts 1606-1619
+  /1647-1656; numVertices 1/2/3 by primitive class; TEXTURE_RECT rejected in
+  elements (assert 1615) and dies in arrays at assert 1299 (fetchType 23) -
+  texture-rect draws go through grRenderTextureRect), grUpdateVertexPipeline
+  already done, grrDrawClipped* + grInterpolateVertexGradients + scan
+  conversion.
 
 ## DONE session 3n (grFast vertex cache: grVertexCacheInvalidate + grVertexCacheGet)
 
