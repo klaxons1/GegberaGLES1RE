@@ -14,7 +14,7 @@ Last updated: 2026-11-22 (session 3)
 |---|---|---|---|
 | hg | renderer/libs/hg | 105 | **DONE** (session 1) |
 | imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar + vector/matrix layers done (sessions 2-3) |
-| gerbera/core | .../gerbera/core/implementation | 318 | SCAFFOLDED |
+| gerbera/core | .../gerbera/core/implementation | 318 | **IN PROGRESS** - grDefs.h foundational layer done (session 3) |
 | gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | SCAFFOLDED |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
 | gerbera/hc | .../gerbera/hc | 296 | SCAFFOLDED |
@@ -24,6 +24,38 @@ Last updated: 2026-11-22 (session 3)
 
 Total unique functions in the binary: 1402 (1776 definitions, of which 374 are
 per-translation-unit inline clones that were deduped).
+
+## DONE session 3b (core: grDefs.h foundation)
+
+1. **src/include/gerbera/grDefs.h + src/gerbera/grDefs.c**: surface descriptor
+   (_grSurfaceDescriptor, from decompile cv_anon_14F9: rgbaOffsets[4],
+   rgbaSizes[4], colorMask, color/depth/stencilBytes, padding[2], pixelFormat,
+   paletteFormat), _grRect, _grStackAllocator, GR_IMAGEFORMAT enum (numeric
+   values pinned by the 0x11A319 component-count bit table: comps
+   {1,3,4,1,2,3,4}; index 6 unnamed so far), GR_DATATYPE + verbatim
+   dataTypeSizes[12] table, grClearDescriptor / grSetDescriptorSizes /
+   grSetDescriptorOffsets / grDescriptorsEqual (compares first rgba ints +
+   colorMask + pixelFormat, faithful) / grGetDescriptorSize / grGetDescriptorOffset /
+   grSetRectangle / grIsRectangleEmpty / grGetDataTypeSize /
+   grGetImageFormatNumComponents / grIsStackValid / grStackGetFreeSpace /
+   grStackInit / grStackGetPtr / grStackAllocate (4-byte round-up) / grStackFree.
+2. **src/gerbera/grSmall.c**: grIsAligned (verbatim; pointer casts via
+   uintptr_t for 64-bit hosts).
+3. **tests/test_core.c**: 47 checks. Totals: 288 + 311 + 47 = 646 green.
+4. Core conventions: grAssert/grDie pattern
+   `if (!cond && grAssert(expr,file,line) != 0) grDie(0)`; descriptor clears
+   zero ONLY rgbaOffsets[0]/rgbaSizes[0] + the byte fields + pixelFormat
+   (faithful, not paletteFormat); grGetDataTypeSize_dataTypeSizes is `// weak`
+   in the binary (define-once rule).
+
+### Core next steps
+- Pin GR_IMAGEFORMAT_6 / GR_PIXELFORMAT_MAX / GR_PALETTEFORMAT_MAX /
+  GR_DATATYPE member names from oglSmall mapping functions + callers.
+- Reconstruct Gerbera_s (the driver context) - grGetDrawBufferDescriptor and
+  grUtilSmall.inl (grIsValidDescriptor/grPackColor/grUnpackColor/
+  grMaskedDescriptorsEqual/grGetPackedColorWriteMask) are the next small
+  chunks; texture struct (cv_anon_1477), cache (cv_anon_172A) follow.
+- Then grApiSmall/grApiFast/grVertexPipeline -> rasterizer pipeline.
 
 ## DONE session 3 (imath vector/matrix layer)
 

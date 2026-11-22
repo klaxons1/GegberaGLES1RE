@@ -16,6 +16,8 @@ LIB_SRC := \
     src/hg/hgFloat.c \
     src/hg/hgFill.c \
     src/gerbera/grUtil.c \
+             src/gerbera/grDefs.c \
+             src/gerbera/grSmall.c \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
     src/imath/IUnitScalar.c \
@@ -29,7 +31,7 @@ LIB_SRC := \
 
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 
-TEST_SRC := tests/test_hg.c tests/test_imath.c
+TEST_SRC := tests/test_hg.c tests/test_imath.c tests/test_core.c
 
 .PHONY: all test clean
 all: $(BUILD)/libgerbera.a
@@ -49,9 +51,14 @@ $(BUILD)/test_imath: $(LIB_OBJ) tests/test_imath.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LIB_SRC) tests/test_imath.c -lm -o $@
 
-test: $(BUILD)/test_hg $(BUILD)/test_imath
+$(BUILD)/test_core: $(LIB_OBJ) tests/test_core.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LIB_SRC) tests/test_core.c -lm -o $@
+
+test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_core
 	$(BUILD)/test_hg
 	$(BUILD)/test_imath
+	$(BUILD)/test_core
 
 clean:
 	rm -rf $(BUILD)
