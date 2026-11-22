@@ -1,0 +1,12 @@
+# Regenerable tool output
+generated/
+
+# Build outputs
+build/
+*.o
+*.a
+*.so
+
+# Editor junk
+*.swp
+.DS_Store

@@ -1,0 +1,77 @@
+/* hgFill.c - fast fill routines.
+ *
+ * Clean port of the decompiled hgFill.c from the Gerbera GLES1 driver.
+ * hgFill32_inner is a Duff-style 8x unrolled word fill; hgFill8/16/16/32
+ * align the pointer first and replicate the value into a 32 bit pattern.
+ */
+#include "hg/hgFill.h"
+#include "hg/hgDefs.h"
+
+void hgFill32_inner(HGuint32 *d, HGuint32 v, int N)
+{
+    /* original assert: hgFill.c:114 "d != 0 && N >= 0 && (N == 0 || !((HGuintptr)(d) & 3))" */
+    HG_ASSERT_AT("hgFill.c", 114, d != 0 && N >= 0 && (N == 0 || !((HGuintptr)d & 3)));
+
+    switch (N & 7)
+    {
+    case 0: break;
+    case 7: d[6] = v; /* fall through */
+    case 6: d[5] = v; /* fall through */
+    case 5: d[4] = v; /* fall through */
+    case 4: d[3] = v; /* fall through */
+    case 3: d[2] = v; /* fall through */
+    case 2: d[1] = v; /* fall through */
+    case 1: d[0] = v; /* fall through */
+    default: break;
+    }
+    {
+        HGuint32 *da = &d[N & 7];
+        int Na = N >> 3;
+        while (Na-- != 0)
+        {
+            da[0] = v;
+            da[1] = v;
+            da[2] = v;
+            da[3] = v;
+            da[4] = v;
+            da[5] = v;
+            da[6] = v;
+            da[7] = v;
+            da += 8;
+        }
+    }
+}
+
+void hgFill8(HGuint8 *d, HGuint8 v, int N)
+{
+    HG_ASSERT_AT("hgFill.c", 153, d != 0 && N >= 0);
+    while (N != 0 && ((HGuintptr)d & 3) != 0)
+    {
+        *d++ = v;
+        --N;
+    }
+    while ((N & 3) != 0)
+        d[--N] = v;
+    hgFill32_inner((HGuint32 *)d, (HGuint32)v * 0x01010101u, N >> 2);
+}
+
+void hgFill16(HGuint16 *d, HGuint16 v, int N)
+{
+    HG_ASSERT_AT("hgFill.c", 189, !((HGuintptr)d & 1) && d != 0 && N >= 0);
+    if (N > 0)
+    {
+        d[N - 1] = v;   /* pre-fill the tail word so the unrolled loop is exact */
+        if (((HGuintptr)d & 3) != 0)
+        {
+            *d++ = v;
+            --N;
+        }
+        hgFill32_inner((HGuint32 *)d, (HGuint32)v * 0x00010001u, N >> 1);
+    }
+}
+
+void hgFill32(HGuint32 *d, HGuint32 v, int N)
+{
+    HG_ASSERT_AT("hgFill.c", 222, !((HGuintptr)d & 3) && d != 0 && N >= 0);
+    hgFill32_inner(d, v, N);
+}
