@@ -141,6 +141,7 @@ static void test_setuprendering(void);
 static void test_texturerect(void);
 static void test_renderrect(void);
 static void test_hcopcode(void);
+static void test_interpreter(void);
 static void test_gradients(void);
 
 int main(void)
@@ -182,6 +183,7 @@ int main(void)
     test_texturerect();
     test_renderrect();
     test_hcopcode();
+    test_interpreter();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -3686,4 +3688,35 @@ static void test_hcopcode(void)
     CHECK(HC_getOpcodeDst(&instr) == 10);
     CHECK(HC_getOpcodeSrc0(&instr) == 7);
     CHECK(HC_getOpcodeSrc1(&instr) == 9);
+}
+
+/* --- test_interpreter: grExecuteProgram ------------------------------------ */
+static void test_interpreter(void)
+{
+    _grSignature sig;
+    HCInstr_s prog[4096];
+    int count;
+    int i;
+
+    memset(&sig, 0, sizeof(sig));
+    /* minimal signature: no texture, no blend, no depth/stencil */
+    sig.isValid = 1;
+    sig.descriptor.colorMask = 0x0F;
+    sig.descriptor.colorBytes = 4;
+    sig.descriptor.pixelFormat = 5;  /* RGBA */
+    sig.writeColor = 1;
+    sig.perPixelPack = 1;
+
+    count = grExecuteProgram(prog, &sig, 4096);
+    CHECK(count > 0);
+    CHECK(count < 4096);
+    /* deterministic output for this signature (pinned regression guard) */
+    CHECK(count == 200);
+    /* last instruction must be EOP */
+    CHECK(HC_getOpcodeOper(&prog[count - 1]) == HCOP_EOP);
+    /* first instruction should not be EOP */
+    CHECK(HC_getOpcodeOper(&prog[0]) != HCOP_EOP);
+    /* all instructions have valid opcodes */
+    for (i = 0; i < count; ++i)
+        CHECK(HC_getOpcodeOper(&prog[i]) < HCOP_MAX);
 }

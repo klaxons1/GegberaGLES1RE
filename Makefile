@@ -28,6 +28,8 @@ LIB_SRC := \
              src/gerbera/grTessellator.c \
              src/gerbera/grPipelineCache.c \
              src/gerbera/hc/hcOpcode.c \
+             src/gerbera/hc/grInterpreter.c \
+             src/gerbera/hc/g_pixelPipeBytecode.c \
 src/gerbera/grrTexture.c \
  src/gerbera/grTransform.c \
  src/gerbera/grFill.c \

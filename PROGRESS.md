@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3z)
+Last updated: 2026-11-22 (session 4b)
 
 ## Legend
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-22 (session 3z)
 | gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z) - all functions ported, 1088 checks green |
 | gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z) - clears, blit, texture rect |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
-| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - starting (x86 backend; EPOC ARM build is unnamed) |
+| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - opcode layer + grExecuteProgram interpreter done (4a/4b); HC_compile, x86/ARM backends next |
 | egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
 | egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
 | crt/platform | Symbian + MSL runtime | 44 | n/a (reference) |
@@ -1450,3 +1450,54 @@ Committed: HC instruction encoding with decompile-matching assert sites.
 - Tests: test_hcopcode (+32 checks, 1088 -> 1120): genOp3/3Imm/2/0 round-trips,
   type/store/load/branch range checks, setOpcodeDst. 295 hg / 311 imath /
   1120 core, 0 failures.
+
+## Session 4b - grExecuteProgram bytecode interpreter (grInterpreter.inl)
+
+Committed: the pixel-pipeline bytecode VM, `g_pixelPipeBytecode[3122]`, and
+test_interpreter (1120 -> 1325 checks, all green: 295 hg / 311 imath / 1325 core).
+
+- **src/gerbera/hc/grInterpreter.c** - `grExecuteProgram(result, signature,
+  resultLength)` interprets `g_pixelPipeBytecode` into HCInstr sequences
+  (returns instruction count incl. trailing EOP). Decomp: docs/libGLES_CM.dll.c
+  35719-36295.
+- **src/gerbera/hc/g_pixelPipeBytecode.c** - the 3122-byte program extracted
+  verbatim from docs/libGLES_CM.dll.c:2413.
+- **VM layout** (byteImm[190] in the DLL, all one int array): execute stack
+  grows UP from index 62 (190 total), repeat stack from 52, return stack from
+  36; array memset 0xCC first (decomp `memset(byteImm, 0xCC, 0x2F0)`), then
+  dstIndex/curColor/curGradient/curTexture zeroed. stackTop/stackSecond are
+  cached from stackPtr[-1]/[-2] BEFORE the control-op pop.
+- **Two nested loops**: inner loop reads opcode bytes and emits HC
+  instructions (opcode & 0x80 == 0) WITHOUT popping, looping back to the read;
+  control instructions (bit 7 set) break out, pop `(opcode>>5)&3` operands,
+  check low5==9 (ends program), then switch on low 5 bits (0x00-0x1F).
+  Opcode 0x12 = `goto LABEL_10` (continue without consuming a byte).
+- **HC decode**: low 6 bits = opcode index (55 -> stackTop as op, 54 -> LABEL
+  with 1-byte operand), bit 6 = hasImm; 3-byte dst/src0/src1 with a 3-round
+  rotation, register remap per round (254->stackTop, 253->stackSecond,
+  128-141 += 14*curTexture, 160/171/182/193 += curGradient+1,
+  70/75/80/90/95/100/105/110/115/120 += curColor+1); hasImm reads 1 byte, or
+  4 bytes big-endian when src1==0; src1==255 -> imm = stackTop;
+  branch ops with dst 11-13 += 3*curTexture.
+- **16-bit immediates are BIG-endian** (`p[1] | (p[0]<<8)`): all case 0/1/6/
+  0xA/0xB/0xD sites.32-bit immediates also big-endian. (First port used LE and
+  ran off the 3122-byte program.)
+- **Repeat frame** (case 0xC): pushes [limit=stackTop, counter=0]; case 0xD
+  ++counter (repeatPtr[-1]) == limit (repeatPtr[-2]) -> pop else jump;
+  cases 0xE/0xF/0x10 read curGradient/curTexture/curColor from the COUNTER
+  (repeatPtr[-1]), not the limit.
+- **Asserts** in the decomp divide byte differences by 4; with C pointer
+  arithmetic the /4 must be dropped (elements vs bytes).
+- Case 6 = push program[stackTop + BE16]; case 1 = push-return + conditional
+  jump if top == byte; case 0x11 pushes 8 descriptor bytes (order
+  3,7,2,6,1,5,0,4); VM ALU cases 0x13-0x1F use the PRE-pop cached operands
+  (case 0x14 = top - second).
+- **test_interpreter**: minimal signature -> count == 200 (pinned), last op
+  EOP, first not EOP, every opcode < HCOP_MAX (per-instruction checks).
+  Deterministic at -O0 and -O2 after the 0xCC fill + unsigned-shift fixes
+  (uninitialized-stack UB made -O0 diverge into the range assert).
+- Next in hc: HC_compile (DLL 51761), HCX86Backend (fragments in
+  generated/fragments/hc/), grGetBackend/grScratchGrowMemory/HC_extraStackSpace
+  (stubs currently inert in grrStubs.c). ARM backend: not named in either
+  decomp (main = x86 HCX86Backend; EPOC decomp is all sub_XXXX) - investigate
+  EPOC decomp + hcBackend.h interface next.

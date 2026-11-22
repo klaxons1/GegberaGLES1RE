@@ -17,6 +17,7 @@
 #include "hg/hgDefs.h"
 #include "gerbera/grDefs.h"
 #include "gerbera/grTexture.h"
+#include "gerbera/hc/hcOpcode.h"
 #include "hg/hgInt32.h"
 #include "hg/hgFloat.h"
 #include "imath/imApi.h"
@@ -1101,6 +1102,8 @@ void grSetupRendering(Gerbera_s *state);
 void grCleanupRendering(Gerbera_s *state);
 void grSetupTextureRectGradients(Gerbera_s *state, _grTRGradSetupInfo *info);
 void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z);
+/* hc module (grInterpreter.inl) */
+int grExecuteProgram(HCInstr_s *result, _grSignature *signature, int resultLength);
 void grrBeginRendering(Gerbera_s *state);
 void grrEndRendering(Gerbera_s *state);
 void grrUpdateState(Gerbera_s *state);
