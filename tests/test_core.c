@@ -107,12 +107,97 @@ static void test_stack(void)
     CHECK(grStackGetPtr(&st, 128) == buf + 128);
 }
 
+static void test_rgba(void);
+static void test_pack_color(void);
+
 int main(void)
 {
     test_descriptors();
     test_rectangles();
     test_formats();
     test_stack();
+    test_rgba();
+    test_pack_color();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
+}
+
+/* --- grRGBA.h + grUtilSmall.inl ------------------------------------------ */
+#include "gerbera/grRGBA.h"
+
+static void test_rgba(void)
+{
+    unsigned int c = grSetRGBA(0x12, 0x34, 0x56, 0x78);
+    CHECK(c == 0x78563412u);
+    CHECK(grUnpackRGBA(c, GR_COLOR_R) == 0x12);
+    CHECK(grUnpackRGBA(c, GR_COLOR_G) == 0x34);
+    CHECK(grUnpackRGBA(c, GR_COLOR_B) == 0x56);
+    CHECK(grUnpackRGBA(c, GR_COLOR_A) == 0x78);
+    CHECK(grPackRGBA(0xAB, GR_COLOR_B) == 0x00AB0000u);
+    CHECK(grPackRGBA(0xFF, GR_COLOR_A) == 0xFF000000u);
+}
+
+static void test_pack_color(void)
+{
+    _grSurfaceDescriptor desc;
+    /* RGBA8888: standard byte layout */
+    memset(&desc, 0, sizeof(desc));
+    grSetDescriptorSizes(&desc, 8, 8, 8, 8);
+    grSetDescriptorOffsets(&desc, 0, 8, 16, 24);
+    CHECK(grIsValidDescriptor(&desc) == 1);
+    CHECK(grPackColor(grSetRGBA(0x11, 0x22, 0x33, 0x44), &desc) == 0x44332211u);
+    CHECK(grUnpackColor(0x44332211u, &desc) == grSetRGBA(0x11, 0x22, 0x33, 0x44));
+
+    /* RGB565: r 5 @11, g 6 @5, b 5 @0, alpha none */
+    grSetDescriptorSizes(&desc, 5, 6, 5, 0);
+    grSetDescriptorOffsets(&desc, 11, 5, 0, 0);
+    {
+        unsigned int packed = grPackColor(grSetRGBA(0xFF, 0xFF, 0xFF, 0xFF), &desc);
+        CHECK(packed == 0xFFFFu);
+        {
+            unsigned int up = grUnpackColor(packed, &desc);
+            CHECK(grUnpackRGBA(up, GR_COLOR_R) == 0xFF);
+            CHECK(grUnpackRGBA(up, GR_COLOR_G) == 0xFF);
+            CHECK(grUnpackRGBA(up, GR_COLOR_B) == 0xFF);
+            CHECK(grUnpackRGBA(up, GR_COLOR_A) == 0xFF);   /* size 0 alpha -> 255 */
+        }
+    }
+    /* small channel expansions */
+    grSetDescriptorSizes(&desc, 1, 2, 3, 8);
+    grSetDescriptorOffsets(&desc, 0, 1, 3, 11);
+    {
+        unsigned int up = grUnpackColor(0x1u, &desc);   /* r bit set */
+        CHECK(grUnpackRGBA(up, GR_COLOR_R) == 0xFF);
+    }
+    {
+        unsigned int up = grUnpackColor(0x2u, &desc);   /* g = 01 */
+        CHECK(grUnpackRGBA(up, GR_COLOR_G) == 0x55);   /* 01 -> 01010101 */
+    }
+    {
+        unsigned int up = grUnpackColor(0x8u, &desc);   /* b = 001 */
+        CHECK(grUnpackRGBA(up, GR_COLOR_B) == 36);     /* decompile: (c>>1)|32c|4c, c=1 -> 36 */
+    }
+
+    /* color write mask: only R and B enabled */
+    grSetDescriptorSizes(&desc, 8, 8, 8, 8);
+    grSetDescriptorOffsets(&desc, 0, 8, 16, 24);
+    CHECK(grGetPackedColorWriteMask(&desc, 0x5u) == 0x00FF00FFu);
+    CHECK(grGetPackedColorWriteMask(&desc, 0x2u) == 0x0000FF00u);
+    CHECK(grGetPackedColorWriteMask(&desc, 0x0u) == 0u);
+
+    /* masked descriptor equality */
+    {
+        _grSurfaceDescriptor a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        grSetDescriptorSizes(&a, 5, 6, 5, 8);
+        grSetDescriptorOffsets(&a, 11, 5, 0, 24);
+        grSetDescriptorSizes(&b, 5, 6, 5, 8);
+        grSetDescriptorOffsets(&b, 11, 5, 0, 24);
+        CHECK(grMaskedDescriptorsEqual(0xFu, &a, &b) == 1);
+        b.rgbaOffsets[1] = 6;
+        CHECK(grMaskedDescriptorsEqual(0xFu, &a, &b) == 0);
+        CHECK(grMaskedDescriptorsEqual(0xDu, &a, &b) == 1);  /* G bit not in mask */
+        CHECK(grMaskedDescriptorsEqual(0x2u, &a, &b) == 0);
+    }
 }

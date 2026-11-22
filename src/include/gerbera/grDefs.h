@@ -115,6 +115,14 @@ void *grStackGetPtr(_grStackAllocator *allocator, int offset);
 void *grStackAllocate(_grStackAllocator *allocator, int size);
 void  grStackFree(_grStackAllocator *allocator, void *ptr);
 
+/* --- descriptor <-> color utilities (grUtilSmall.inl) --------------------
+ * grIsValidTexture / grUpdateTexture land with the texture subsystem. */
+int          grIsValidDescriptor(_grSurfaceDescriptor *desc);
+unsigned int grPackColor(unsigned int color, _grSurfaceDescriptor *desc);
+int          grMaskedDescriptorsEqual(unsigned int mask, _grSurfaceDescriptor *a, _grSurfaceDescriptor *b);
+unsigned int grGetPackedColorWriteMask(_grSurfaceDescriptor *desc, unsigned int colorMask);
+unsigned int grUnpackColor(unsigned int color, _grSurfaceDescriptor *desc);
+
 /* --- alignment (grSmall.c) ---------------------------------------------- */
 int grIsAligned(void *ptr, int alignment);
 
