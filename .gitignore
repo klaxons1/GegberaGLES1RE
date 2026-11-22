@@ -10,3 +10,7 @@ build/
 # Editor junk
 *.swp
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
