@@ -52,10 +52,10 @@ per-translation-unit inline clones that were deduped).
 - Pin GR_IMAGEFORMAT_6 / GR_PIXELFORMAT_MAX / GR_PALETTEFORMAT_MAX /
   GR_DATATYPE / GR_CAPABILITY member values from ogl mapping tables
   (oglMapCapability binary-searches keys/values tables in .data).
-- Lights (state->lights[4*ndx] 64-byte records: lightMask int @+20, colors
-  _XColor3 @+24, orgPosition/orgDirection slots) and user clip planes
-  (normalsToEyePal[17][0].originalVertex area + texCoordTransform[8] stride-80)
-  need grVertexPipeline/grPrecalcLightColor to pin - deferred.
+- User clip planes (normalsToEyePal[17][0].originalVertex area +
+  texCoordTransform[8] stride-80) need the normalsToEyePal/texCoordTransform
+  record layouts - deferred to the transform stack port.
+- grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.
 - grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.
 - grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.
 - Then grApiFast/grVertexPipeline -> pixel pipeline -> rasterizer.
@@ -104,6 +104,25 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3e (core: lights)
+
+1. **_grLight record** (cv_anon_1748) reconstructed with named fields; the
+   decompile's txMin/txMax/fx1 byte-offset aliases each map 1:1 onto them
+   (mapping documented in grState.h). lightMask bits 1/2/3 = ambient/diffuse/
+   specular nonzero (from grUpdateBaseColor |= (t&2)|(t&4)|(t&8)).
+2. **12 light setters** ported: grSetLightPosition (positional =
+   IFVector4_tov3 return = w!=0; directional lights get nVP normalized),
+   grGetLightOrgPosition, grSetLightSpotDirection (stored negated +
+   org float copy), grGetLightOrgDirection, grSet/GetLightColor (components
+   0..2, SPECULAR=2 per the assert string), grSet/GetLightAttenuation
+   (constant/linear/quadratic), grSet/GetLightExponent (XScalar roundtrip),
+   grSet/GetLightSpotCutoff (raw degrees + max(cos,0) as XScalar).
+3. **grVertexPipeline.c started**: grTestLightColor + grPrecalcLightColor.
+4. **Faithful quirk verified**: XScalar_mul_sat(a,b) = (a*b)>>21, so small
+   26-bit colors multiply to 0 (320x320 -> 0; the premultiply of dim lights
+   vanishes by design). Tests use 2^21 colors for the nonzero path.
+5. **tests/test_core.c**: +24 checks. Totals: 288 + 311 + 219 = 818 green.
 
 ## DONE session 3c (core: color + texture utilities)
 

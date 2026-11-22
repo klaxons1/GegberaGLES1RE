@@ -378,6 +378,115 @@ int grGetMaterialShininess(Gerbera_s *state)
     return XScalar_toIScalar(state->material.shininess);
 }
 
+/* --- lights --------------------------------------------------------------------------- */
+
+void grSetLightPosition(Gerbera_s *state, int ndx, _IFVector4 *position)
+{
+    _grLight *light;
+
+    GR_API_CHECK(state != NULL, 788);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 789);
+    light = &state->lights[ndx];
+    light->positional = IFVector4_tov3(light->positionXYZ, position);
+    if (light->positional == 0)
+        XNormal3_normalize(light->nVP, light->positionXYZ[0].m);
+    IFVector4_copy(&light->orgPosition, position);
+    state->lightTypeDirtyMask |= 1u << ndx;
+}
+
+_IFVector4 *grGetLightOrgPosition(Gerbera_s *state, int ndx)
+{
+    GR_API_CHECK(state != NULL, 815);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 816);
+    return &state->lights[ndx].orgPosition;
+}
+
+void grSetLightSpotDirection(Gerbera_s *state, int ndx, int *direction, _IFVector3 *orgDirection)
+{
+    GR_API_CHECK(state != NULL, 826);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 827);
+    XNormal3_negate(state->lights[ndx].spotDirectionNegated, direction);
+    IFVector3_copy(&state->lights[ndx].orgSpotDirection, orgDirection);
+    state->lightTypeDirtyMask |= 1u << ndx;
+}
+
+_IFVector3 *grGetLightOrgDirection(Gerbera_s *state, int ndx)
+{
+    GR_API_CHECK(state != NULL, 845);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 846);
+    return &state->lights[ndx].orgSpotDirection;
+}
+
+void grSetLightColor(Gerbera_s *state, int ndx, int component, _XColor3 *color)
+{
+    GR_API_CHECK(state != NULL, 856);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 857);
+    GR_API_CHECK(hgInRange32(component, 0, 2), 858);
+    state->lights[ndx].colors[component] = *color;
+    state->lightColorDirtyMask |= 1u << ndx;
+}
+
+void grGetLightColor(Gerbera_s *state, int ndx, int component, _XColor3 *color)
+{
+    GR_API_CHECK(state != NULL, 870);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 871);
+    GR_API_CHECK(hgInRange32(component, 0, 2), 872);
+    *color = state->lights[ndx].colors[component];
+}
+
+void grSetLightAttenuation(Gerbera_s *state, int ndx, int component, int value)
+{
+    GR_API_CHECK(state != NULL, 882);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 883);
+    GR_API_CHECK(hgInRange32(component, 0, 2), 884);
+    GR_API_CHECK(IScalar_testge(value) != 0, 885);
+    IFVector3_setf(&state->lights[ndx].attenuation, component, value);
+    state->lightTypeDirtyMask |= 1u << ndx;
+}
+
+int grGetLightAttenuation(Gerbera_s *state, int ndx, int component)
+{
+    GR_API_CHECK(state != NULL, 897);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 898);
+    GR_API_CHECK(hgInRange32(component, 0, 2), 899);
+    return IFVector3_getf(&state->lights[ndx].attenuation, component);
+}
+
+void grSetLightExponent(Gerbera_s *state, int ndx, int exponent)
+{
+    GR_API_CHECK(state != NULL, 914);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 915);
+    state->lights[ndx].exponent = IScalar_toXScalar(exponent);
+    state->lightTypeDirtyMask |= 1u << ndx;
+}
+
+int grGetLightExponent(Gerbera_s *state, int ndx)
+{
+    GR_API_CHECK(state != NULL, 927);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 928);
+    return XScalar_toIScalar(state->lights[ndx].exponent);
+}
+
+void grSetLightSpotCutoff(Gerbera_s *state, int ndx, int cutoff)
+{
+    int cos, zero;
+
+    GR_API_CHECK(state != NULL, 938);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 939);
+    state->lights[ndx].spotCutoff = cutoff;
+    zero = IScalar_zero();
+    cos = IScalar_cos(IScalar_degreesToRadians(cutoff));
+    state->lights[ndx].cosSpotCutoff = IScalar_toXScalar(IScalar_max(cos, zero));
+    state->lightTypeDirtyMask |= 1u << ndx;
+}
+
+int grGetLightSpotCutoff(Gerbera_s *state, int ndx)
+{
+    GR_API_CHECK(state != NULL, 952);
+    GR_API_CHECK(hgInRange32(ndx, 0, GR_MAX_LIGHTS - 1), 953);
+    return state->lights[ndx].spotCutoff;
+}
+
 /* --- alpha / stencil / depth / blend / masks ---------------------------------------- */
 
 void grSetAlphaFunc(Gerbera_s *state, int func, int ref)

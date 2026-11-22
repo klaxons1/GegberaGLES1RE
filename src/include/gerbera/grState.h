@@ -113,6 +113,33 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_MAX_VALUE = 54
 };
 
+/* light record (decompile cv_anon_1748). The decompile reaches the fields
+ * through a mix of named accesses and byte-offset aliases (txMin/txMax/fx1
+ * are Hex-Rays union guesses); each alias maps 1:1 onto the clean fields
+ * below: colors[i]=txMax[3i], spotDirectionNegated=&txMin[1] of elem +1,
+ * orgSpotDirection=fx1, orgPosition=&txMax[1] of elem 0, exponent=txMin[0]
+ * of elem +2, attenuation=&txMin[1] of elem +2, cosSpotCutoff=txMax[1] of
+ * elem +2, spotCutoff=tyMin[1] of elem 0. The +20 lightMask byte offset is
+ * from grVertexPipeline (assert "pLight->lightMask == lightMask").
+ * lightMask bits: 1=ambient nonzero, 2=diffuse nonzero, 3=specular nonzero
+ * (from grUpdateBaseColor's |= (test & 2)/(test & 4)/(test & 8)). */
+typedef struct _grLight
+{
+    int positional;               /* IFVector4_tov3 return: w != 0 */
+    _IVector3 positionXYZ[1];     /* shared-exp position, w divided out */
+    int nVP[3];                   /* normalized position (10.21), directional lights */
+    _IFVector4 orgPosition;       /* original float position */
+    int lightMask;
+    _XColor3 colors[3];           /* ambient, diffuse, specular */
+    _XColor3 premul_colors[3];    /* colors * material (vertex pipeline) */
+    int spotDirectionNegated[3];  /* negated spot direction (10.21) */
+    _IFVector3 orgSpotDirection;  /* original float spot direction */
+    int exponent;                 /* XScalar */
+    _IFVector3 attenuation;       /* constant, linear, quadratic (floats) */
+    int cosSpotCutoff;            /* XScalar: max(cos(radians(cutoff)), 0) */
+    int spotCutoff;               /* original cutoff (IScalar, degrees) */
+} _grLight;
+
 /* material color slots (grSetMaterialColor; 0..3 valid, GR_MATERIALCOLOR_MAX=4).
  * AMBIENT and EMISSION are named in the decompile; numeric order unpinned. */
 enum GR_MATERIALCOLOR_e
@@ -207,8 +234,10 @@ typedef struct Gerbera_s
     int lightActiveDirtyMask;
     unsigned int lightActiveMask;
     unsigned int lightColorDirtyMask;
+    unsigned int lightTypeDirtyMask;
     unsigned char normalsToEyePalDirty[9];
     int normalsToEyeDirty;
+    _grLight lights[GR_MAX_LIGHTS];
 
     /* --- culling -------------------------------------------------------------- */
     int frontFace;
@@ -259,6 +288,20 @@ void grSetMaterialColor(Gerbera_s *state, int component, _XColor3 *color);
 void grSetMaterialAlpha(Gerbera_s *state, unsigned short alpha);
 void grSetMaterialShininess(Gerbera_s *state, int shininess);
 int  grGetMaterialShininess(Gerbera_s *state);
+void grSetLightPosition(Gerbera_s *state, int ndx, _IFVector4 *position);
+_IFVector4 *grGetLightOrgPosition(Gerbera_s *state, int ndx);
+void grSetLightSpotDirection(Gerbera_s *state, int ndx, int *direction, _IFVector3 *orgDirection);
+_IFVector3 *grGetLightOrgDirection(Gerbera_s *state, int ndx);
+void grSetLightColor(Gerbera_s *state, int ndx, int component, _XColor3 *color);
+void grGetLightColor(Gerbera_s *state, int ndx, int component, _XColor3 *color);
+void grSetLightAttenuation(Gerbera_s *state, int ndx, int component, int value);
+int  grGetLightAttenuation(Gerbera_s *state, int ndx, int component);
+void grSetLightExponent(Gerbera_s *state, int ndx, int exponent);
+int  grGetLightExponent(Gerbera_s *state, int ndx);
+void grSetLightSpotCutoff(Gerbera_s *state, int ndx, int cutoff);
+int  grGetLightSpotCutoff(Gerbera_s *state, int ndx);
+unsigned int grTestLightColor(_grLight *light, int component);
+unsigned int grPrecalcLightColor(_grLight *light, int component, _XColor3 *materialColor);
 void grSetGlobalAmbient(Gerbera_s *state, _XColor3 *ambient);
 void grSetAlphaFunc(Gerbera_s *state, int func, int ref);
 void grSetStencilFunc(Gerbera_s *state, int func, unsigned int ref, unsigned int mask);

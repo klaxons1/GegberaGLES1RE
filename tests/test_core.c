@@ -1,6 +1,8 @@
 /* test_core.c - checks for the gerbera core foundational layer (grDefs.h). */
 #include "gerbera/grDefs.h"
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int checks = 0, failures = 0;
@@ -115,6 +117,7 @@ static void test_state_cull(void);
 static void test_state_viewport(void);
 static void test_state_pixel(void);
 static void test_state_material(void);
+static void test_state_lights(void);
 
 int main(void)
 {
@@ -130,6 +133,7 @@ int main(void)
     test_state_viewport();
     test_state_pixel();
     test_state_material();
+    test_state_lights();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -538,4 +542,90 @@ static void test_state_material(void)
     CHECK(st.material.alpha == 0xBEEFu);
     grSetMaterialShininess(&st, FIN(0.25f));
     CHECK((HGuint32)grGetMaterialShininess(&st) == (HGuint32)FIN(0.25f));
+}
+
+static void test_state_lights(void)
+{
+    Gerbera_s st;
+    _IFVector4 pos;
+    _IFVector3 orgDir;
+    _XColor3 c;
+    int dir[3];
+    int i;
+
+    memset(&st, 0, sizeof(st));
+    IFVector3_setf(&orgDir, 0, FIN(0.0f));
+    IFVector3_setf(&orgDir, 1, FIN(-1.0f));
+    IFVector3_setf(&orgDir, 2, FIN(0.0f));
+
+    /* positional light at (1,2,3,1) */
+    IFVector4_set(&pos, FIN(1.0f), FIN(2.0f), FIN(3.0f), FIN(1.0f));
+    grSetLightPosition(&st, 0, &pos);
+    CHECK(st.lights[0].positional == 1);
+    CHECK(fabs(IScalar_stof(IFVector4_getf(&st.lights[0].orgPosition, 1)) - 2.0f) < 1e-6f);
+    CHECK((st.lightTypeDirtyMask & 1u) != 0);
+
+    /* directional light at (2,0,0,0): w==0 -> positional==0, nVP normalized */
+    IFVector4_set(&pos, FIN(2.0f), FIN(0.0f), FIN(0.0f), FIN(0.0f));
+    grSetLightPosition(&st, 1, &pos);
+    CHECK(st.lights[1].positional == 0);
+    CHECK(abs(st.lights[1].nVP[0] - 2097152) <= 4);   /* (1,0,0) in 10.21 */
+    CHECK(st.lights[1].nVP[1] == 0);
+
+    /* spot direction: stored negated */
+    dir[0] = 0; dir[1] = 2097152; dir[2] = 0;
+    grSetLightSpotDirection(&st, 2, dir, &orgDir);
+    CHECK(st.lights[2].spotDirectionNegated[1] == -2097152);
+    CHECK(fabs(IScalar_stof(IFVector3_getf(&st.lights[2].orgSpotDirection, 1)) + 1.0f) < 1e-6f);
+
+    /* colors: ambient(0)/diffuse(1)/specular(2).
+     * NOTE setx scales x32; XScalar_mul_sat(a,b) = (a*b)>>21, so small
+     * colors multiply to 0 - use large colors for the premul check. */
+    XColor3_setx(&c, 10, 20, 30);
+    for (i = 0; i < 3; ++i)
+        grSetLightColor(&st, 0, i, &c);
+    CHECK((st.lightColorDirtyMask & 1u) != 0);
+    for (i = 0; i < 3; ++i)
+    {
+        _XColor3 out;
+        grGetLightColor(&st, 0, i, &out);
+        CHECK(out.r == c.r && out.g == c.g && out.b == c.b);
+    }
+    /* nonzero colors -> grTestLightColor; premul needs big colors */
+    CHECK(grTestLightColor(&st.lights[0], 0) != 0);
+    CHECK(grTestLightColor(&st.lights[3], 0) == 0);   /* untouched light: zero */
+    {
+        _XColor3 big;
+        XColor3_setx(&big, 65536, 65536, 65536);      /* 2^21 = 1.0 (10.21) */
+        grSetLightColor(&st, 0, 2, &big);
+        CHECK(grPrecalcLightColor(&st.lights[0], 2, &big) != 0);
+        CHECK(st.lights[0].premul_colors[2].r == 2097152);
+        grSetLightColor(&st, 0, 2, &c);
+        CHECK(grPrecalcLightColor(&st.lights[0], 2, &c) == 0);    /* c*c >> 21 = 0 */
+    }
+
+    /* attenuation (constant/linear/quadratic) */
+    grSetLightAttenuation(&st, 0, 0, FIN(1.0f));
+    grSetLightAttenuation(&st, 0, 1, FIN(0.5f));
+    grSetLightAttenuation(&st, 0, 2, FIN(0.25f));
+    CHECK(fabs(IScalar_stof(grGetLightAttenuation(&st, 0, 1)) - 0.5f) < 1e-6f);
+    CHECK(fabs(IScalar_stof(grGetLightAttenuation(&st, 0, 2)) - 0.25f) < 1e-6f);
+
+    /* exponent (XScalar roundtrip) */
+    grSetLightExponent(&st, 0, FIN(2.0f));
+    CHECK((HGuint32)grGetLightExponent(&st, 0) == (HGuint32)FIN(2.0f));
+
+    /* spot cutoff: stored raw (IScalar degrees) + cosine clamped to [0,1]
+     * as XScalar */
+    grSetLightSpotCutoff(&st, 0, FIN(60.0f));
+    CHECK((HGuint32)grGetLightSpotCutoff(&st, 0) == (HGuint32)FIN(60.0f));
+    {
+        int cos60 = IScalar_cos(IScalar_degreesToRadians(FIN(60.0f)));
+        CHECK(st.lights[0].cosSpotCutoff == IScalar_toXScalar(IScalar_max(cos60, IScalar_zero())));
+        /* cos(60) = 0.5: XScalar roundtrip */
+        CHECK(fabs((float)st.lights[0].cosSpotCutoff / 2097152.0f - 0.5f) < 1e-3f);
+    }
+    /* cutoff 180 -> cos = -1 clamped to 0 */
+    grSetLightSpotCutoff(&st, 0, FIN(180.0f));
+    CHECK(st.lights[0].cosSpotCutoff == 0);
 }
