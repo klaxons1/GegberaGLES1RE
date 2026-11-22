@@ -8,3 +8,11 @@ int grIsAligned(void *ptr, int alignment)
 {
     return ((uintptr_t)(alignment - 1) & (uintptr_t)ptr) == 0;
 }
+
+/* grIsValidBool - verbatim (docs/libGLES_CM.dll.c:9187-9195, 2 TU copies) */
+int grIsValidBool(int v)
+{
+    if (v == 1)
+        return 1;
+    return v == 0;
+}

@@ -50,15 +50,62 @@ per-translation-unit inline clones that were deduped).
 
 ### Core next steps
 - Pin GR_IMAGEFORMAT_6 / GR_PIXELFORMAT_MAX / GR_PALETTEFORMAT_MAX /
-  GR_DATATYPE member names from oglSmall mapping functions + callers.
-- Reconstruct Gerbera_s (the driver context) - grSetActiveTexture needs
-  state->textureUnit[2*ndx] (Hex-Rays types it as .xStart[0]); context fields
-  seen so far: textureUnit[], pixelPipelineDirty, activeTexture,
-  clientActiveTexture, getValues (rgbaOffsets inside), textureManager.
-- grUtil.h misc: DONE (grVector3iGet/_grVector3i, grUnpackIndex, grSetIndices,
-  grMaskedColorsEqual - ref channel = highest set mask bit, only masked
-  channels compare).
-- Then grApiSmall state setters -> grApiFast/grVertexPipeline -> rasterizer.
+  GR_DATATYPE / GR_CAPABILITY member values from ogl mapping tables
+  (oglMapCapability binary-searches keys/values tables in .data).
+- Lights (state->lights[4*ndx] 64-byte records: lightMask int @+20, colors
+  _XColor3 @+24, orgPosition/orgDirection slots) and user clip planes
+  (normalsToEyePal[17][0].originalVertex area + texCoordTransform[8] stride-80)
+  need grVertexPipeline/grPrecalcLightColor to pin - deferred.
+- grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.
+- grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.
+- Then grApiFast/grVertexPipeline -> pixel pipeline -> rasterizer.
+
+## DONE session 3d (core: Gerbera_s + grApiSmall chunk 1)
+
+1. **Descriptor refactor (packed bytes)**: rgbaOffsets/rgbaSizes are
+   unsigned char[4] - grClearDescriptor/grDescriptorsEqual/grGetDrawBufferDescriptor
+   move them as whole ints (decompile writes *(int*)a->rgbaOffsets = 0 and
+   copies 4-byte chunks drawSurface <-> desc). pixelFormat sits at int 3;
+   paletteFormat + padding[2] trail it. _grDrawSurface added (decompile
+   cv_anon_1686): descriptor prefix (4 ints) + width (int 4) + height (int 5)
+   + _grSurfaceBuffer buffers[3] ({data, stride}, strides at ints 7/9/11).
+   Assert strings literally name drawSurface.width/.height and
+   .buffers[GR_BUFFERTYPE_*].stride.
+2. **grState.h (Gerbera_s)**: capabilities[54] (GR_CAPABILITY_MAX=54 from the
+   range asserts; lights = caps 41..48 from grSetCapability `cap - 41`;
+   per-cap numeric values still unpinned), scissor/viewport/surface/render
+   rects, viewportScale/Offset as {int normal[3]}, zNear/zFar, useDithering,
+   clear color/depth/stencil + clearInfoIndex, per-pixel fixed-function fields
+   (alphaFunc/alphaReference, stencil 5-tuple, depthFunc, logicOp,
+   blend factors, depth offset, color/depth/stencil masks), fog sextuple +
+   fogAtZero, screenRectGradients, lighting dirty masks + normalsToEyePalDirty[9],
+   cull quadruple, ambientColor (_XColor3). Enums: GR_WINDING (CW=0/CCW=1),
+   GR_FUNC 0..8, GR_STENCILOP (ZERO=0, INVERT=5, MAX=6 - pinned by oglMapStencilOp:
+   7680..7683 -> 0..3, 5386 -> INVERT=5, 0 -> ZERO=0), GR_LOGICOP (5376..5391 ->
+   0..15, GL order), GR_BLENDFACTOR (0/1 + 768..776 -> 2..10, MAX=15),
+   GR_FOGMODE 0..2.
+3. **grApiSmall.c chunk 1 (31 functions)**: grUpdateCullMode, grSetDepthRange,
+   grUpdateScissor, grSetScissor, grSetViewport, grCapChangesRejectAllState/
+   PixelPipeline (bit tables verbatim from binary 5700/5706), grSetCapability,
+   grGetCapability, grSetClearColor/Depth/Stencil, grSetCullMode, grSetFogMode/
+   Density/Range/Color, grSetRectGradients, grSetGlobalAmbient, grSetAlphaFunc,
+   grSetStencilFunc, grGetDrawBufferDescriptor, grSetDepthOffset, grSetStencilOp,
+   grSetDepthFunc, grSetLogicOp, grSetBlendFunc, grSetColorMask, grSetDepthMask,
+   grSetStencilMask; grTestCapability/grEnableCapability/grDisableCapability/
+   grIsDepthOffsetEnabled (grUtil.h).
+4. **grSmall.c**: grIsValidBool. **grDefs.c**: grIsRectangleInRange.
+5. **Key faithful behaviors verified by tests**: scissor rect IGNORED while
+   SCISSOR_TEST capability is off (surfaceScissor = full surface); render
+   scissor = surface ∩ viewport, zeroed when empty; grSetClearDepth stores
+   hgMulu64h(2*depth, 0xFFFFFFFF) (0.5 -> 0x7FFFFFFF); grUpdateDither needs a
+   masked-in channel with size 1..7; XColor3_setx scales components x32.
+6. **Material setters**: _grMaterial reconstructed from byte offsets
+   (colors[4] _XColor3, XScalar shininess @int 12, alpha @byte 52);
+   grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
+   GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
+7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3c (core: color + texture utilities)
 
 ## DONE session 3c (core: color + texture utilities)
 
