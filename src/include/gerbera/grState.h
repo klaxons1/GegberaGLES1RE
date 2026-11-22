@@ -53,6 +53,32 @@ enum GR_MATRIXMODE_e
  * tokens map to capabilities 30..35 - a different space. */
 #define GR_CLIP_USER0 10
 
+/* primitive types (grGetPrimitiveVertices asserts TRIANGLE/LINE/POINT/
+ * TEXTURE_RECT membership, grUtil.h 160). POINT = 1 is pinned twice: the
+ * point-size-array selection runs when grGetPrimitiveVertices(pt) == 1 and
+ * the EPOC grUpdateVertexPipeline gates it on primitiveType byte == 1;
+ * the point-distance-attention update runs when primitiveType == 0, so 0
+ * is a different type. The EPOC render path checks
+ * capabilities[primitiveType + 11] (VERTEX_ARRAY for type 0), which fits
+ * TRIANGLE = 0; LINE/TEXTURE_RECT order unpinned. */
+enum GR_PRIMITIVETYPE_e
+{
+    GR_PRIMITIVETYPE_TRIANGLE = 0,
+    GR_PRIMITIVETYPE_POINT = 1,
+    GR_PRIMITIVETYPE_LINE = 2,        /* order unpinned */
+    GR_PRIMITIVETYPE_TEXTURE_RECT = 3 /* order unpinned */
+};
+
+/* grVertex stateMask bits (grTransformVertex / grRasterizer asserts). The
+ * top 2 bits (14..15) hold the position state (grGetVertexPositionState:
+ * stateMask >> 14): 0 = object space float, 1 = object space fixed(?),
+ * 2 = eye space float, 3 = eye space cartesian. */
+#define GR_VERTEXMASK_SURVIVED_2D_REJECTION 0x1u
+#define GR_VERTEXMASK_SURVIVED_3D_REJECTION 0x2u
+#define GR_VERTEXMASK_TRANSFORMED 0x4u
+#define GR_VERTEXMASK_VIEWPORT_TRANSFORMED 0x8u
+#define GR_VERTEXMASK_INTERPOLATE_GRADIENTS 0x40u
+
 /* winding (grSetCullMode) */
 enum GR_WINDING_e
 {
@@ -113,11 +139,14 @@ enum GR_BLENDFACTOR_e
     GR_BLENDFACTOR_MAX = 15        /* 0..14 valid (grSetBlendFunc assert) */
 };
 
+/* fog modes (grUpdateVertexPipeline: mode 0 selects the FAST/LINEAR fog by
+ * fogOORange, 1 = grApplyFogEXP, 2 = grApplyFogEXP2; grSetFogMode accepts
+ * 0..GR_FOGMODE_MAX-1). GL fog modes EXP/EXP2/LINEAR map to 1/2/0. */
 enum GR_FOGMODE_e
 {
-    GR_FOGMODE_NONE = 0,
-    GR_FOGMODE_LINEAR = 1,
-    GR_FOGMODE_EXP = 2,
+    GR_FOGMODE_LINEAR = 0,
+    GR_FOGMODE_EXP = 1,
+    GR_FOGMODE_EXP2 = 2,
     GR_FOGMODE_MAX = 3
 };
 
@@ -137,9 +166,21 @@ enum GR_FOGMODE_e
  *   0x809D GL_MULTISAMPLE->49, 0x809E GL_SAMPLE_ALPHA_TO_COVERAGE->50,
  *   0x809F GL_SAMPLE_ALPHA_TO_ONE->51, 0x80A0 GL_SAMPLE_COVERAGE->52,
  *   0x8840 GL_MATRIX_PALETTE_OES->53; key 23 missing (-> cap 20).
+ *   The previously "unresolved" key 0x0B60 -> 7 is GL_FOG (0x0B60): the EPOC
+ *   grUpdateVertexPipeline gates the fog fetch selection on capabilities[7]
+ *   (state byte 60).
+ * Client-array caps (EPOC grUpdateVertexPipeline byte guards; capabilities[]
+ * at EPOC state+53):
+ *   21 = VERTEX_ARRAY (byte 74 guards vertexArray[0].data@316),
+ *   23 = COLOR_ARRAY (byte 76 guards color data@356),
+ *   25/26 = TEXTURE_COORD_ARRAY_0/1 (bytes 80/81),
+ *   29 = POINT_SIZE_ARRAY (byte 82),
+ *   7 = FOG (byte 60, also GL_FOG 0x0B60).
+ *   22 = NORMAL_ARRAY is a flagged guess (the gap between 21 and 23; the
+ *   normal fetcher checks only LIGHTING, never a NORMAL_ARRAY cap).
  * Clip planes 0x3000..0x3005 map to caps 30..35 (ogl layer; the grSmall
  * clip-plane enum used by grSetUserClipPlane is 10..15, a different space).
- * Caps 0,8,9,11..13,17,20,21..29,39 are internal (not GL tokens); among
+ * Caps 0,8,9,11..13,17,20,24,27,28,39 are internal (not GL tokens); among
  * them LIGHT_MODEL_TWO_SIDE, whose number is NOT pinned - placeholder 39. */
 enum GR_CAPABILITY_e
 {
@@ -149,8 +190,14 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_BLEND = 4,
     GR_CAPABILITY_COLOR_LOGIC_OP = 5,
     GR_CAPABILITY_DITHER = 6,
-    GR_CAPABILITY_UNKNOWN_0x0B60 = 7,
+    GR_CAPABILITY_FOG = 7,
     GR_CAPABILITY_TEXTURE_2D = 10,
+    GR_CAPABILITY_VERTEX_ARRAY = 21,
+    GR_CAPABILITY_NORMAL_ARRAY = 22,      /* flagged guess - see above */
+    GR_CAPABILITY_COLOR_ARRAY = 23,
+    GR_CAPABILITY_TEXTURE_COORD_ARRAY_0 = 25,
+    GR_CAPABILITY_TEXTURE_COORD_ARRAY_1 = 26,
+    GR_CAPABILITY_POINT_SIZE_ARRAY = 29,
     GR_CAPABILITY_POLYGON_OFFSET_FILL = 14,
     GR_CAPABILITY_SCISSOR_TEST = 15,
     GR_CAPABILITY_CULL_FACE = 16,
@@ -208,6 +255,83 @@ typedef struct _grLight
     int cosSpotCutoff;            /* XScalar: max(cos(radians(cutoff)), 0) */
     int spotCutoff;               /* original cutoff (IScalar, degrees) */
 } _grLight;
+
+/* client vertex array record (grGetVertexArrayPointer/Binding/Reset +
+ * the fetchers). EPOC vertexArray base = +308, stride 20; WINSCW reaches
+ * the same records through a byte array. WINSCW puts `type` at record+5,
+ * the EPOC build at record+6 - a compiler padding difference; the clean
+ * layout here follows WINSCW (size@4, type@5).
+ *   stride@0 (int), size@4 (u8: 2 or 4 components), type@5 (u8 GR_DATATYPE),
+ *   data@8, binding@12 (ogl buffer object), origPointer@16. */
+typedef struct Gerbera_s Gerbera_s;
+
+typedef struct _grVertexArray
+{
+    int stride;
+    unsigned char size;
+    unsigned char type;
+    unsigned char pad[2];
+    void *data;
+    unsigned int binding;
+    void *origPointer;
+} _grVertexArray;
+
+/* the fetch-stage vertex record (cv_anon_1712, 128 bytes; lives in the
+ * renderStack vertex buffer at renderStack[166].whichPool = base+1332,
+ * 4 vertices/512B stride... one record per vertex index, << 7 addressing).
+ * Pinned offsets (EPOC + WINSCW agree): index@0, color@40 (union, 16B),
+ * texCoord[2]@56/64 (int x,y per unit), nc.normal@92 (3 ints = XNormal3),
+ * pointSize@104 (16.16). The position/clipPosition/stateMask/clipMask/
+ * weights/weightIndices fields are written by grTransformVertex - their
+ * offsets live in 4..39 / 72..91 / 108..127, pinned when that function is
+ * ported (only the field SET is needed by-name in C). */
+typedef union _grVertexColor
+{                                     /* cv_anon_1703 (fetch view, 16 bytes) */
+    unsigned short final[2][4];       /* u16 RGBA rows: [0] lit color,
+                                       * [1] secondary/fog row */
+    struct
+    {                                 /* lighting-path view: XColor3 int color
+                                       * + shared alpha slot (final[1][2]);
+                                       * rgb[2] only exists in the vertex-cache
+                                       * record (per-side colors) */
+        _XColor3 rgb[1];
+        unsigned short alpha;
+        unsigned short pad;
+    } input;
+} _grVertexColor;
+
+typedef union _grVertexPosition
+{                                     /* decompile vertex->position */
+    _IFVector4 objectSpaceFloat[1];   /* float view (20 bytes) */
+    int fixedView[9];                 /* int view used by the fixed-point
+                                       * path; layout pins with
+                                       * grTransformVertex */
+} _grVertexPosition;
+
+typedef struct _grVertex
+{
+    int index;                                        /* +0   */
+    _grVertexPosition position;                       /* +4   */
+    _grVertexColor color;                             /* +40  */
+    struct { int x, y; } texCoord[2];                 /* +56  */
+    unsigned char unpinned1[20];                      /* +72 (weights /
+                                                      *        weightIndices) */
+    int normal[3];                                    /* +92 (nc.normal) */
+    int pointSize;                                    /* +104 */
+    unsigned char unpinned2[18];                      /* +108 (clipPosition /
+                                                      *        clipMask) */
+    unsigned short stateMask;                         /* offset unpinned;
+                                                       * bits 14..15 = position
+                                                       * state (grGetVertex-
+                                                       * PositionState) */
+} _grVertex;
+
+/* function-pointer types for the vertex pipeline stage selectors */
+typedef void (*grFetchColorFn)(Gerbera_s *state, unsigned char *vertexList);
+typedef void (*grFetchNormalFn)(Gerbera_s *state, unsigned char *vertexList);
+typedef void (*grFetchTexCoordFn)(Gerbera_s *state, unsigned char *vertexList, int texUnit);
+typedef void (*grFetchPointSizeFn)(Gerbera_s *state, unsigned char *vertexList);
+typedef void (*grApplyFogFn)(Gerbera_s *state, unsigned char *vertexList);
 
 /* material color slots (grSetMaterialColor; 0..3 valid, GR_MATERIALCOLOR_MAX=4).
  * AMBIENT and EMISSION are named in the decompile; numeric order unpinned. */
@@ -300,6 +424,42 @@ typedef struct Gerbera_s
     _grDrawSurface drawSurface;
     int useDithering;
 
+    /* --- vertex pipeline (EPOC: vertexArray +308, 8 records; renderStack
+     * pool pointer +116, vertex fetch buffer at pool+1332, 128-byte vertex
+     * records; pointDistAttn +576, computePointDistAttn +592, transformVE
+     * +47, stage pointers +7624..7652) -------------------------------------- */
+    void *renderStack;                                /* +116 */
+    unsigned char renderStackAllocated;
+    unsigned char textureUnitEnabled[2];              /* +48/49: per-unit texcoord
+                                                       * stage active (set by the
+                                                       * ogl texture-enable path) */
+    _grVertexArray vertexArray[8];                    /* +308 */
+    _IFVector3 pointDistAttn;                         /* +576 */
+    unsigned char computePointDistAttn;               /* +592 */
+    unsigned char transformVE;                        /* +47  */
+    unsigned char primitiveType;                      /* +22  */
+    int defaultNormal[3];                             /* XNormal3 ints */
+    _XColor3 defaultColor;                            /* int current color */
+    unsigned short defaultColorRGBA[4];               /* u16 current color */
+    union
+    {                                                 /* rows 0,1 = current
+                                                       * s,t,r,q floats (grSet
+                                                       * TexCoord defaults);
+                                                       * row 2 = transformed
+                                                       * outputs {x0,y0,x1,y1}
+                                                       * stored as 16.16 ints
+                                                       * (the decompile reaches
+                                                       * both views through one
+                                                       * array) */
+        HGfloat f[3][4];
+        int x[3][4];
+    } defaultTexCoord;
+    grFetchColorFn fetchVertexColor;                  /* +7628 */
+    grFetchNormalFn fetchVertexNormal;                /* +7632 */
+    grFetchTexCoordFn fetchTexCoord[2];               /* +7636 */
+    grFetchPointSizeFn fetchPointSize;                /* +7624 */
+    grApplyFogFn applyFog;                            /* +7644 */
+
     /* --- clears ----------------------------------------------------------- */
     unsigned int clearColor;
     int clearDepth;
@@ -384,11 +544,57 @@ _IFVector4 *grGetUserClipPlane(Gerbera_s *state, int plane);
 
 /* --- _helpers_core.c fragment: texture-coordinate transforms ---------------- */
 void ITCTransform_copy(_ITCTransform *pD, _IMatrix4x4 *pM);
+void grTexCoordDivByQ(int *output, int *coords);
+void ITCTransform_mulxv2(int *pO, _ITCTransform *pT, int *st);
+void ITCTransform_mulxv4(int *pO, _ITCTransform *pT, int *strq);
+void ITCTransform_mulxv(int *pD, _ITCTransform *pT, int *strq, int n);
+void ITCTransform_mulfv2(int *pO, _ITCTransform *pT, int *st);
+void ITCTransform_mulfv4(int *pO, _ITCTransform *pT, int *strq);
+void ITCTransform_mulfv(int *pO, _ITCTransform *pT, int *strq, int n);
 
 /* --- grVertexPipeline.inl: light update ------------------------------------- */
 unsigned int grUpdateLight(Gerbera_s *state, int ndx);
 int  grUpdateLights(Gerbera_s *state);
 void grUpdateAmbientLightSum(Gerbera_s *state);
+
+/* --- grVertexPipeline.inl: fetch / transform / fog stages -------------------- */
+void grFetchVertexColorUINT8(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexColorFLOAT(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexColorFIXED(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexColorDEFAULT(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexColorFastUINT8(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexColorFastFLOAT(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexColorFastFIXED(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexColorFastDEFAULT(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexNormalINT8(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexNormalINT16(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexNormalFIXED(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexNormalFLOAT(Gerbera_s *state, unsigned char *vertexList);
+void grFetchVertexNormalDEFAULT(Gerbera_s *state, unsigned char *vertexList);
+void grTransformTexCoordINT8x2(Gerbera_s *state, unsigned char *vertexList, int texUnit);
+void grTransformTexCoordINT8x4(Gerbera_s *state, unsigned char *vertexList, int texUnit);
+void grTransformTexCoordINT16x2(Gerbera_s *state, unsigned char *vertexList, int texUnit);
+void grTransformTexCoordINT16x4(Gerbera_s *state, unsigned char *vertexList, int texUnit);
+void grTransformTexCoordFIXEDx4(Gerbera_s *state, unsigned char *vertexList, int texUnit);
+void grTransformTexCoordDEFAULT(Gerbera_s *state, unsigned char *vertexList, int texUnit);
+void grTransformTexCoordFLOATx4(Gerbera_s *state, unsigned char *vertexList, int texUnit);
+void grFetchPointSizeFLOAT(Gerbera_s *state, unsigned char *vertexList);
+void grFetchPointSizeFIXED(Gerbera_s *state, unsigned char *vertexList);
+void grApplyFogFAST(Gerbera_s *state, unsigned char *vertexList);
+void grApplyFogLINEAR(Gerbera_s *state, unsigned char *vertexList);
+void grApplyFogEXP(Gerbera_s *state, unsigned char *vertexList);
+void grApplyFogEXP2(Gerbera_s *state, unsigned char *vertexList);
+int  grGetFogZ(Gerbera_s *state, _grVertex *vertex);
+int  grGetVertexPositionState(_grVertex *v);
+void grUpdateVertexPipeline(Gerbera_s *state);
+
+/* --- grUtil.h: primitive helper --------------------------------------------- */
+int  grGetPrimitiveVertices(int primitiveType);
+
+/* --- grApiSmall.inl: vertex array record access ------------------------------ */
+void *grGetVertexArrayPointer(Gerbera_s *state, int arrayType);
+unsigned int grGetVertexArrayBinding(Gerbera_s *state, int arrayType);
+void grResetVertexArray(Gerbera_s *state, int arrayType);
 
 /* --- capabilities (grUtil.h) --------------------------------------------- */
 int  grTestCapability(Gerbera_s *state, int cap);

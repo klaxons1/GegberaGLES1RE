@@ -655,3 +655,26 @@ _IFVector4 *grGetUserClipPlane(Gerbera_s *state, int plane)
     GR_API_CHECK(hgInRange32(plane, GR_CLIP_USER0, GR_CLIP_USER0 + GR_MAX_USER_CLIP_PLANES - 1) != 0, 522);
     return &state->origUserClipPlanes[plane - GR_CLIP_USER0];
 }
+
+/* --- vertex array record access (decompile 41632-41687) --------------------- */
+
+void *grGetVertexArrayPointer(Gerbera_s *state, int arrayType)
+{
+    GR_API_CHECK(state != NULL, 1709);
+    GR_API_CHECK(hgInRange32(arrayType, 0, 8 - 1) != 0, 1710);
+    return state->vertexArray[arrayType].origPointer;
+}
+
+unsigned int grGetVertexArrayBinding(Gerbera_s *state, int arrayType)
+{
+    GR_API_CHECK(state != NULL, 1719);
+    GR_API_CHECK(hgInRange32(arrayType, 0, 8 - 1) != 0, 1720);
+    return state->vertexArray[arrayType].binding;
+}
+
+void grResetVertexArray(Gerbera_s *state, int arrayType)
+{
+    GR_API_CHECK(state != NULL, 1729);
+    GR_API_CHECK(hgInRange32(arrayType, 0, 8 - 1) != 0, 1730);
+    state->vertexArray[arrayType].data = NULL;
+}

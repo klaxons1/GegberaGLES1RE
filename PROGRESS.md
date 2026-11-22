@@ -110,6 +110,38 @@ per-translation-unit inline clones that were deduped).
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
 
+## DONE session 3h (ITC transform use + vertex fetch stages + grUpdateVertexPipeline)
+
+- **GR_CAPABILITY_FOG = 7** - the "unresolved" 0x0B60 key was GL_FOG all
+  along (EPOC grUpdateVertexPipeline gates fog selection on capabilities[7],
+  byte 60). Also pinned from the EPOC byte guards: VERTEX_ARRAY=21 (74),
+  COLOR_ARRAY=23 (76), TEXTURE_COORD_ARRAY_0/1=25/26 (80/81),
+  POINT_SIZE_ARRAY=29 (82); NORMAL_ARRAY=22 flagged guess. GR_FOGMODE
+  remapped: 0=LINEAR (FAST/LINEAR by fogOORange), 1=EXP, 2=EXP2 - the old
+  NONE/LINEAR/EXP mapping was WRONG.
+- **_grVertexArray record** (stride 20, EPOC base +308): stride@0, size@4
+  (u8), type@5 (u8; EPOC has it at 6 - build padding difference), data@8,
+  binding@12, origPointer@16. Records: 0=vertex 1=normal 2=color 5=point
+  size 6/7=texcoord units.
+- **_grVertex (cv_anon_1712, 128 bytes)**: index@0, position@4 (union),
+  color@40 (union: u16 final[2][4] rows vs XColor3-int view, alpha shared at
+  final[1][2]), texCoord[2]@56/64, normal@92, pointSize@104; stateMask top 2
+  bits = position state (grGetVertexPositionState = stateMask >> 14).
+  Vertex buffer = (char*)renderStack + 1332 (renderStack[166].whichPool).
+- **_ITCTransform use**: all outputs are 10.21 (the <<5/32x slow paths and
+  the lsh/rsh fast paths agree); grTexCoordDivByQ divides 10.21 x,y by the
+  10.21 q (passthrough at q==2^21 or 0; imRcpu rcp, faithful 1-LSB loss).
+  Ported mulxv2/mulxv4/mulxv/mulfv2/mulfv4/mulfv (mulfv z-output never
+  produced). IVertexTransform_zmulfv4/zmulxv4 added to imath.
+- Ported all fetch stages (8 color, 5 normal, 7 texcoord, 2 point-size),
+  fog (FAST/LINEAR/EXP/EXP2 via grGetFogZ/grGetVertexPositionState),
+  grGetPrimitiveVertices (returns primitiveType; POINT=1 pinned twice),
+  grGetVertexArrayPointer/Binding/Reset, grUpdateVertexPipeline (the stage
+  dispatcher; textureUnitEnabled[2] = EPOC bytes 48/49 gate per-unit
+  texcoord stages + the default-texcoord transform; defaultTexCoord is a
+  union: rows 0,1 = float s,t,r,q, row 2 = 16.16-int outputs {x0,y0,x1,y1}).
+- +51 checks (331 core, 930 total).
+
 ## DONE session 3g (transform stack + user clip planes + light update)
 
 The EPOC decompile pinned the whole transform arena (Gerbera_s byte offsets,

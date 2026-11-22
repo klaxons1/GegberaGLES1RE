@@ -281,6 +281,12 @@ void IMatrix4x4_rotate(_IMatrix4x4 *pD, _IMatrix4x4 *pM, int angle, _IFVector3 *
 HGint32 IMatrix4x4_det2h(_IMatrix4x4 *pA, int ca, int ra, int cb, int rb);
 void IMatrix4x4_inverse(_IMatrix4x4 *pD, _IMatrix4x4 *pS, int bScale);
 int  IMatrix4x4_inversetranspose(_XNormalTransform *pD, _IMatrix4x4 *matrix, int bRescale);
+
+/* --- _IVertexTransform use (IMatrix4.c) --------------------------------- */
+void IVertexTransform_copy(_IVertexTransform *pD, _IMatrix4x4 *pM);
+void IVertexTransform_mulxv4(_IVector4 *pD, _IVertexTransform *pT, int *pB);
+int  IVertexTransform_zmulfv4(_IVertexTransform *pT, _IFVector4 *pS);
+int  IVertexTransform_zmulxv4(_IVertexTransform *pT, int *pS);
 int  IMatrix4x4_getScalar(_IMatrix4x4 *pS, int c, int r);
 HGint32 I64_tof(HGint64 x);                     /* 64-bit fixed -> IScalar */
 

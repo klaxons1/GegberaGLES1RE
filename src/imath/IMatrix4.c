@@ -1244,3 +1244,63 @@ void IVertexTransform_mulxv4s(_IFVector4 *pD, _IVertexTransform *pT, int *pB)
                             : "IScalar_isValid(IFVector4_getf(pD,i))",
                      "IMatrix4.c", 2878 + r);
 }
+
+/* --- IVertexTransform z-only multiply (decompile 55696-55791; fragment
+ * _helpers_core) - returns only the Z component of the transform ---------- */
+
+int IVertexTransform_zmulfv4(_IVertexTransform *pT, _IFVector4 *pS)
+{
+    int z;
+    HGint64 t;
+
+    if ((pT->cl & 0xFF0000) == 0x200000)
+    {
+        z = IFVector4_getf(pS, 2);
+    }
+    else
+    {
+        t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[2], pS);
+        z = IScalar_setAndNormalize(hgGet64l(t) - 125, hgGet64h(t));
+    }
+    if (IScalar_isValid(z) == 0)
+        imAssert("IScalar_isValid(z)", "IMatrix4.c", 1789);
+    return z;
+}
+
+int IVertexTransform_zmulxv4(_IVertexTransform *pT, int *pS)
+{
+    HGint64 acc, a;
+    int sh, e, m;
+
+    if ((pT->cl & 0xFF0000) == 0x200000)
+        return IScalar_fixedToScalar(pS[2], 16);
+    sh = pT->sh[2];
+    acc = imAsr64_1_31(hgMul64(pT->unnormalized[2][0], pS[0]), (unsigned int)sh >> 24);
+    acc = hgAdd64(acc, imAsr64_1_31(hgMul64(pT->unnormalized[2][1], pS[1]), (unsigned int)sh >> 8 & 0xFF));
+    acc = hgAdd64(acc, imAsr64_1_31(hgMul64(pT->unnormalized[2][2], pS[2]), (unsigned int)sh >> 16 & 0xFFFF));
+    if (pS[3] == 0x10000)
+        acc = hgAdd64(acc, pT->w[2]);
+    else
+        acc = hgAdd64(acc, imAsr64_1_31(hgMul64(pT->unnormalized[2][3], pS[3]), (unsigned int)sh >> 24 & 0xFF));
+    a = hgAbs64(acc);
+    if (hgIsZero64(a) != 0)
+        return IScalar_zero();
+    {
+        int clz = hgClz64(a) - 1;
+        e = pT->exp - clz + 1;
+        m = (int)(hgLsl64(acc, clz) >> 1);
+        if (m == -1073741824)
+        {
+            m = -536870912;
+            ++e;
+        }
+        if (e <= 0)
+            return IScalar_zero();
+        if (e > 0xFE)
+        {
+            e = 254;
+            m = (m >= 0) ? 0x3FFFFFFF : -1073741823;
+        }
+        return IScalar_set(e, m);
+    }
+}

@@ -36,21 +36,26 @@ enum GR_IMAGEFORMAT_e
 /* --- data types ----------------------------------------------------------
  * grGetDataTypeSize_dataTypeSizes[12] verbatim from the binary (line 5690).
  * GR_DATATYPE_MAX assumed = 12 (table length); the range assert pins it as
- * `(unsigned)dataType < GR_DATATYPE_MAX`. TODO: exact member names/order. */
+ * `(unsigned)dataType < GR_DATATYPE_MAX`.
+ * Names pinned from the vertex-array fetchers (grUpdateVertexPipeline
+ * switches): 0 = INT8 (normal arrays; default assert "type ==
+ * GR_DATATYPE_INT8"), 1 = UINT8 (color arrays), 2 = INT16, 6 = FLOAT
+ * ("color_array->type == GR_DATATYPE_FLOAT"), 7 = FIXED
+ * ("sizeArray->type == GR_DATATYPE_FIXED"). 3..5, 8..11 unpinned. */
 enum GR_DATATYPE_e
 {
-    GR_DATATYPE_0 = 0,   /* size 1 */
-    GR_DATATYPE_1 = 1,   /* size 1 */
-    GR_DATATYPE_2 = 2,   /* size 2 */
-    GR_DATATYPE_3 = 3,   /* size 2 */
-    GR_DATATYPE_4 = 4,   /* size 4 */
-    GR_DATATYPE_5 = 5,   /* size 4 */
-    GR_DATATYPE_6 = 6,   /* size 4 */
-    GR_DATATYPE_7 = 7,   /* size 4 */
-    GR_DATATYPE_8 = 8,   /* size 1 */
-    GR_DATATYPE_9 = 9,   /* size 0 */
-    GR_DATATYPE_10 = 10, /* size 0 */
-    GR_DATATYPE_11 = 11, /* size 0 */
+    GR_DATATYPE_INT8 = 0,     /* size 1 */
+    GR_DATATYPE_UINT8 = 1,    /* size 1 */
+    GR_DATATYPE_INT16 = 2,    /* size 2 */
+    GR_DATATYPE_3 = 3,        /* size 2 */
+    GR_DATATYPE_4 = 4,        /* size 4 */
+    GR_DATATYPE_5 = 5,        /* size 4 */
+    GR_DATATYPE_FLOAT = 6,    /* size 4 */
+    GR_DATATYPE_FIXED = 7,    /* size 4 */
+    GR_DATATYPE_8 = 8,        /* size 1 */
+    GR_DATATYPE_9 = 9,        /* size 0 */
+    GR_DATATYPE_10 = 10,      /* size 0 */
+    GR_DATATYPE_11 = 11,      /* size 0 */
     GR_DATATYPE_MAX = 12
 };
 

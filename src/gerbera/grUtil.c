@@ -100,3 +100,24 @@ int grMaskedColorsEqual(unsigned int color, unsigned int mask)
     diffb = ((ref ^ grUnpackRGBA(color, GR_COLOR_B)) & hgBitMask32((int)mask, 2)) | diffa;
     return (((ref ^ grUnpackRGBA(color, GR_COLOR_A)) & hgBitMask32((int)mask, 3)) | diffb) == 0;
 }
+
+/* --- grGetPrimitiveVertices (decompile 24611-24633; grUtil.h assert 160) ----
+ * Validates the primitive type and returns it unchanged; callers compare
+ * against GR_PRIMITIVETYPE_* (the point-size selection uses == POINT). */
+
+int grGetPrimitiveVertices(int primitiveType)
+{
+    int die__ = 0;
+
+    if (primitiveType != GR_PRIMITIVETYPE_TRIANGLE &&
+        primitiveType != GR_PRIMITIVETYPE_LINE &&
+        primitiveType != GR_PRIMITIVETYPE_POINT)
+    {
+        if (grAssert("primitiveType==GR_PRIMITIVETYPE_TRIANGLE || primitiveType==GR_PRIMITIVETYPE_LINE || primitiveType==GR_PRIMITIVETYPE_POINT",
+                     "grUtil.h", 160) != 0)
+            die__ = 1;
+    }
+    if (die__ != 0)
+        grDie(0);
+    return primitiveType;
+}

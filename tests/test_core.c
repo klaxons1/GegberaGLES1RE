@@ -120,6 +120,9 @@ static void test_state_material(void);
 static void test_state_lights(void);
 static void test_transform(void);
 static void test_update_lights(void);
+static void test_itc_transform(void);
+static void test_fetch_stages(void);
+static void test_update_pipeline(void);
 
 int main(void)
 {
@@ -138,6 +141,9 @@ int main(void)
     test_state_lights();
     test_transform();
     test_update_lights();
+    test_itc_transform();
+    test_fetch_stages();
+    test_update_pipeline();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -686,6 +692,207 @@ static void test_update_lights(void)
     CHECK(ret == 0);
     CHECK(st.l_positional[0] == NULL);
     CHECK(st.l_directional[0] == &st.lights[0]);
+}
+
+/* --- ITCTransform use (mul family + DivByQ) --------------------------------- */
+
+static void test_itc_transform(void)
+{
+    _IMatrix4x4 id;
+    _ITCTransform itc;
+    int out[2];
+    int st2[4];
+    int fl[4];
+
+    IMatrix4x4_identity(&id);
+    ITCTransform_copy(&itc, &id);
+
+    /* mulxv2: 16.16 in -> 10.21 out (identity) */
+    st2[0] = 65536; st2[1] = 32768;
+    ITCTransform_mulxv2(out, &itc, st2);
+    CHECK(out[0] == 2097152 && out[1] == 1048576);
+    /* mulxv4 */
+    st2[0] = 65536; st2[1] = 65536; st2[2] = 0; st2[3] = 65536;
+    ITCTransform_mulxv4(out, &itc, st2);
+    CHECK(out[0] == 2097152 && out[1] == 2097152);
+    /* mulxv n=3 pads q=1 (16.16) */
+    st2[0] = 65536; st2[1] = 32768; st2[2] = 12345;
+    ITCTransform_mulxv(out, &itc, st2, 3);
+    CHECK(out[0] == 2097152 && out[1] == 1048576);
+    /* mulfv2 with IScalar ones */
+    st2[0] = IScalar_one(); st2[1] = IScalar_one();
+    ITCTransform_mulfv2(out, &itc, st2);
+    CHECK(out[0] == 2097152 && out[1] == 2097152);
+    /* mulfv with float components {1, 0.5, 0, 1} */
+    fl[0] = FIN(1.0f); fl[1] = FIN(0.5f); fl[2] = FIN(0.0f); fl[3] = FIN(1.0f);
+    ITCTransform_mulfv(out, &itc, fl, 4);
+    CHECK(out[0] == 2097152 && out[1] == 1048576);
+
+    /* grTexCoordDivByQ: q = 1.0 (2^21) / 0 pass through */
+    grTexCoordDivByQ(out, (int[]){100, 200, 0, 0x200000});
+    CHECK(out[0] == 100 && out[1] == 200);
+    grTexCoordDivByQ(out, (int[]){100, 200, 0, 0});
+    CHECK(out[0] == 100 && out[1] == 200);
+    /* q = 0.5: x/0.5 = 2x. The rcp approximation loses one LSB - probed
+     * value from the faithful implementation. */
+    grTexCoordDivByQ(out, (int[]){100, 200, 0, 1048576});
+    CHECK(out[0] == 199 && out[1] == 399);
+}
+
+/* --- fetch / transform / fog stages (needs a fake render stack) -------------- */
+
+static void test_fetch_stages(void)
+{
+    Gerbera_s st;
+    _IMatrix4x4 id;
+    unsigned char *pool = (unsigned char *)malloc(1332 + 2048);
+    unsigned char colors[8] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80};
+    unsigned char tc[4] = {10, 20, 30, 40};
+    unsigned char list[3] = {0, 1, 0xFF};
+    _grVertex *vb;
+
+    memset(&st, 0, sizeof(st));
+    IMatrix4x4_identity(&id);
+    st.renderStack = pool;
+    vb = (_grVertex *)(pool + 1332);
+    vb[0].index = 0;
+    vb[1].index = 1;
+
+    /* color fast path: u8 -> u16 rows (lit + secondary), alpha only row 0 */
+    st.vertexArray[2].data = colors;
+    st.vertexArray[2].stride = 4;
+    st.vertexArray[2].type = GR_DATATYPE_UINT8;
+    grFetchVertexColorFastUINT8(&st, list);
+    CHECK(vb[0].color.final[0][0] == 0x1000);
+    CHECK(vb[0].color.final[0][1] == 0x2000);
+    CHECK(vb[0].color.final[0][2] == 0x3000);
+    CHECK(vb[0].color.final[0][3] == 0x4000);
+    CHECK(vb[0].color.final[1][0] == 0x1000);
+    CHECK(vb[0].color.final[1][1] == 0x2000);
+    CHECK(vb[0].color.final[1][2] == 0x3000);
+    CHECK(vb[1].color.final[0][0] == 0x5000);
+
+    /* color lighting path: XColor3 ints + doubled alpha */
+    memset(pool + 1332, 0, 1024);
+    vb[0].index = 0; vb[1].index = 1;
+    grFetchVertexColorUINT8(&st, list);
+    CHECK(vb[0].color.input.rgb[0].r == 131584);   /* (b<<13) | 32*b */
+    CHECK(vb[0].color.input.rgb[0].g == 263168);
+    CHECK(vb[0].color.input.rgb[0].b == 394752);
+    CHECK(vb[0].color.final[1][2] == 0x4040);
+
+    /* texcoords INT8x2 through the identity transform: 10.21 out */
+    st.vertexArray[6].data = tc;
+    st.vertexArray[6].stride = 2;
+    st.vertexArray[6].type = GR_DATATYPE_INT8;
+    st.vertexArray[6].size = 2;
+    ITCTransform_copy(&st.texCoordTransform[0], &id);
+    grTransformTexCoordINT8x2(&st, list, 0);
+    CHECK(vb[0].texCoord[0].x == 10 * 2097152);
+    CHECK(vb[0].texCoord[0].y == 20 * 2097152);
+    CHECK(vb[1].texCoord[0].x == 30 * 2097152);
+    CHECK(vb[1].texCoord[0].y == 40 * 2097152);
+
+    /* point size FIXED: clamp [1.0, 64.0] in 16.16 */
+    {
+        unsigned int sizes[2] = {0x20000, 0x800000};
+        st.vertexArray[5].data = sizes;
+        st.vertexArray[5].stride = 4;
+        grFetchPointSizeFIXED(&st, list);
+        CHECK(vb[0].pointSize == 0x20000);
+        CHECK(vb[1].pointSize == 0x400000);
+    }
+
+    /* fog FAST: full fog row */
+    memset(pool + 1332, 0, 1024);
+    vb[0].index = 0; vb[1].index = 1;
+    grApplyFogFAST(&st, list);
+    CHECK(vb[0].color.final[1][3] == 0xFFFF);
+    CHECK(vb[1].color.final[1][3] == 0xFFFF);
+
+    free(pool);
+}
+
+/* --- grUpdateVertexPipeline (stage selection) -------------------------------- */
+
+static void test_update_pipeline(void)
+{
+    Gerbera_s st;
+    _IMatrix4x4 id;
+
+    memset(&st, 0, sizeof(st));
+    IMatrix4x4_identity(&id);
+    /* grInitState defaults: attenuation (1,0,0) */
+    st.pointDistAttn.e = 127;
+    st.pointDistAttn.m[0] = 0x20000000;
+
+    /* lighting off: fast-default color, no normals */
+    grUpdateVertexPipeline(&st);
+    CHECK(st.fetchVertexColor == grFetchVertexColorFastDEFAULT);
+    CHECK(st.fetchVertexNormal == NULL);
+    CHECK(st.fetchPointSize == NULL);
+    CHECK(st.applyFog == NULL);                    /* FOG cap off */
+    CHECK(st.transformVE == 0);
+    CHECK(st.vertexPipelineDirty == 0);
+    /* changing pointDistAttn flags the pipeline dirty */
+    st.pointDistAttn.m[0] = 0x10000000;
+    grUpdateVertexPipeline(&st);
+    CHECK(st.computePointDistAttn == 1);
+    CHECK(st.transformVE == 1);
+    CHECK(st.vertexPipelineDirty == 1);
+    st.pointDistAttn.m[0] = 0x20000000;
+    grUpdateVertexPipeline(&st);
+    CHECK(st.vertexPipelineDirty == 1);
+    grUpdateVertexPipeline(&st);
+    CHECK(st.vertexPipelineDirty == 0);
+
+    /* fog on, LINEAR mode (0) + fogOORange != 0 -> LINEAR; == 0 -> FAST */
+    grSetCapability(&st, GR_CAPABILITY_FOG, 1);
+    st.colorMask = 0xF;
+    st.fogOORange = 0x12345;
+    grUpdateVertexPipeline(&st);
+    CHECK(st.applyFog == grApplyFogLINEAR);
+    st.fogOORange = 0;
+    grUpdateVertexPipeline(&st);
+    CHECK(st.applyFog == grApplyFogFAST);
+    /* fog mode EXP */
+    grSetFogMode(&st, GR_FOGMODE_EXP);
+    grUpdateVertexPipeline(&st);
+    CHECK(st.applyFog == grApplyFogEXP);
+    /* fog mode EXP2 */
+    grSetFogMode(&st, GR_FOGMODE_EXP2);
+    grUpdateVertexPipeline(&st);
+    CHECK(st.applyFog == grApplyFogEXP2);
+
+    /* point size array: POINT primitive + cap + data -> FLOAT/FIXED */
+    {
+        unsigned int sizes[2] = {0x20000, 0x20000};
+        st.primitiveType = GR_PRIMITIVETYPE_POINT;
+        st.vertexArray[5].data = sizes;
+        st.vertexArray[5].stride = 4;
+        st.vertexArray[5].type = GR_DATATYPE_FLOAT;
+        grSetCapability(&st, GR_CAPABILITY_POINT_SIZE_ARRAY, 1);
+        grUpdateVertexPipeline(&st);
+        CHECK(st.fetchPointSize == grFetchPointSizeFLOAT);
+        st.vertexArray[5].type = GR_DATATYPE_FIXED;
+        grUpdateVertexPipeline(&st);
+        CHECK(st.fetchPointSize == grFetchPointSizeFIXED);
+    }
+
+    /* texture matrix dirty -> texCoordTransform refreshed; unit enabled with
+     * no array -> default texcoords transformed (1,0) -> (2^21, 0) */
+    grSetMatrix(&st, GR_MATRIXMODE_TEXTURE0, &id);
+    st.textureUnitEnabled[0] = 1;
+    st.defaultTexCoord.f[0][0] = 1.0f;
+    st.defaultTexCoord.f[0][3] = 1.0f;
+    grUpdateVertexPipeline(&st);
+    CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_TEXTURE0) == 0);
+    CHECK(st.texCoordTransform[0].cl == (int)0x80200802u);
+    CHECK(st.fetchTexCoord[0] == grTransformTexCoordDEFAULT);
+    CHECK(st.defaultTexCoord.x[2][0] == 2097152);
+    CHECK(st.defaultTexCoord.x[2][1] == 0);
+    /* disabled unit -> NULL */
+    CHECK(st.fetchTexCoord[1] == NULL);
 }
 
 static void test_state_lights(void)
