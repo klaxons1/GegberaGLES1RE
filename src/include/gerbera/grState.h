@@ -233,15 +233,16 @@ typedef struct _grPixelPipeTextureUnit
  * Pinned so far: the two 64-byte texture units at +0/+64 (grSetupTextureUnit)
  * and the gradient arrays at +192/+232/+272 (grSetupTriangleGradients'
  * flat-shade path reaches them raw as pixelPipe+192/232/272). The
- * grCheckPixelPipeStack field block sits at +128..+191 as an assert-order
- * placeholder - grSetupRendering pins its real offsets. */
+ * grSetupRendering head block (grApiFast.inl 288-432) pins +128..+167:
+ * the dither kernel pointer, then the grCheckPixelPipeStack assert-order
+ * block (strides, fog, alpha/stencil refs) at +132..+167. */
 typedef struct _grPixelPipe
 {
     _grPixelPipeTextureUnit textureUnit[2];   /* +0, +64 */
-    struct                                    /* +128: grCheckPixelPipeStack
-                                               * assert-order block (3p) -
-                                               * offsets unpinned until
-                                               * grSetupRendering */
+    void *ditherKernel;                       /* +128 g_orderedDitherKernel
+                                               * (grSetupRendering) */
+    struct                                    /* +132: grCheckPixelPipeStack
+                                               * assert-order block */
     {
         int colorBufferStride;
         int depthBufferStride;
@@ -252,8 +253,7 @@ typedef struct _grPixelPipe
         unsigned char stencilReferenceMasked;
         unsigned int stencilTestMask;
         unsigned int stencilWriteMask;
-    } checked;                                /* 36 bytes, +128..163 */
-    unsigned char padToRows[4];               /* +164..167 */
+    } checked;                                /* 36 bytes, +132..167 */
     void *colorRow;                           /* +168 drawSurface buffers[0]
                                                * .data + stride*yStart */
     void *depthRow;                           /* +172 buffers[1] */
@@ -868,6 +868,11 @@ typedef struct Gerbera_s
     grPixelPipelineCode_fn pixelPipelineCode;         /* compiled program
                                                        * (hc compiler) */
     _grPipelineCache *pipelineCache;                  /* offset UNPINNED */
+    _grStackAllocator scratchAllocator;               /* render-stack
+                                                       * allocator (grSetup-
+                                                       * Rendering allocates
+                                                       * the 23860-byte render
+                                                       * stack from it) */
     void *scratchMemory;                              /* offset UNPINNED */
     int scratchMemorySize;                            /* offset UNPINNED */
     void *setjmpConfig;                               /* offset UNPINNED (HC
@@ -1074,6 +1079,11 @@ int  grClipConvexPolygon(_grClipVertex *clipped, int numVertices, _grClipVertex 
 int  grClipper(Gerbera_s *state, unsigned char *outputFan, unsigned int indices);
 
 /* --- grFast vertex cache (grApiFast.inl, implemented in grApiFast.c) ------- */
+void grSetupRendering(Gerbera_s *state);
+void grCleanupRendering(Gerbera_s *state);
+void grrBeginRendering(Gerbera_s *state);
+void grrEndRendering(Gerbera_s *state);
+void grrUpdateState(Gerbera_s *state);
 void grVertexCacheInvalidate(Gerbera_s *state);
 int  grVertexCacheGet(Gerbera_s *state, int vtxIndex);
 void grViewportTransformVertex(Gerbera_s *state, _grVertex *vertex);
@@ -1275,6 +1285,10 @@ enum GR_SURFACEOP_e
 
 int  grLockSurface(int op);         /* returns 1 when the heap was locked */
 int  grReleaseSurface(int op);
+/* hc-module entry points (stubs until the hc session) */
+void *grGetBackend(void);
+int  HC_extraStackSpace(void *backend);
+int  grScratchGrowMemory(Gerbera_s *state);
 
 void grrClearColorBuffer(_grDrawSurface *surface, _grClearInfo *info);
 void grrClearDitheredColorBuffer(_grDrawSurface *surface, _grClearInfo *info, unsigned int fillMask);

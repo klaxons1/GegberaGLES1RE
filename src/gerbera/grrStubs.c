@@ -49,3 +49,27 @@ void grSetupTextureUnit(Gerbera_s *state, int texIndex, int (*pairs)[2],
     (void)v0sx;
     (void)v0sy;
 }
+
+/* --- hc/egl stubs (pending the hc and egl modules) -------------------------
+ * grGetBackend / HC_extraStackSpace / grScratchGrowMemory are hc-module
+ * entry points; grLockSurface / grReleaseSurface are egl-module entry
+ * points. Until those modules land they are inert: no backend, no extra
+ * stack space, no scratch growth, no surface locking. grSetupRendering
+ * still runs its full state bookkeeping against them. */
+void *grGetBackend(void)
+{
+    return NULL;
+}
+
+int HC_extraStackSpace(void *backend)
+{
+    (void)backend;
+    return 0;
+}
+
+int grScratchGrowMemory(Gerbera_s *state)
+{
+    (void)state;
+    return 0;
+}
+

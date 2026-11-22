@@ -1352,3 +1352,42 @@ assert sites (`grPixelPipeline.inl` file/line strings kept verbatim).
   compress word pins), ensure-valid miss (compilationFailed=1) and hit
   (mask 0x1234 -> indices {2,4,5,9}, bit 12 ignored) + consistency pass.
   295 hg / 311 imath / 1050 core, 0 failures.
+
+## Session 3x — grSetupRendering / grCleanupRendering (grApiFast.inl 288-463)
+
+Committed: per-frame rendering setup/teardown with decompile-matching assert
+sites (`grApiFast.inl` file/line strings kept verbatim).
+
+- **grSetupRendering** (288; DLL 31702-31859): flushes clears, locks the draw
+  surface (grrBeginRendering → grLockSurface), refreshes per-unit texture
+  flags (grUpdateTexture when flags183 bit0 set, pixelPipelineDirty=1;
+  useTexUnit[i] = flags183 bit2), validates the pixel pipe
+  (grCheckPixelPipeConsistency), rebuilds the render stack when the pipeline
+  changed (asserts 340/367/376/381), publishes the pixel-pipe head block
+  (dither kernel, buffer strides, fog/alpha/stencil refs at +128..+167),
+  validates the scissor chain (asserts 424-432), invalidates the vertex
+  cache. The render stack is 23860 bytes allocated from scratchAllocator;
+  pixelPipeline = renderStack + 14644 (the decompile's extraStack expression
+  is a decompiler artifact — grExecutePixelPipeline passes renderStack+14644
+  to the program).
+- **grCleanupRendering** (460; DLL 31863-31893): asserts renderStackAllocated
+  (460) and scratchMemory/scratchMemorySize (463), frees the render stack,
+  releases the draw surface (grrEndRendering → grReleaseSurface).
+- **grrBeginRendering / grrEndRendering / grrUpdateState** (via call sites;
+  DLL 27362-27378): tiny wrappers around grLockSurface/grReleaseSurface and
+  grEnsureValidPixelPipeline.
+- **_grPixelPipe head block pinned**: ditherKernel@+128, then the
+  grCheckPixelPipeStack assert-order block at +132..+167 (colorBufferStride,
+  depthBufferStride, stencilBufferStride, fogColor, alphaReference,
+  stencilReference, stencilReferenceMasked, stencilTestMask,
+  stencilWriteMask). The 3p placeholder was off by 4 (missing the dither
+  kernel slot); grCheckPixelPipeStack updated to match.
+- **Gerbera_s.scratchAllocator** added (_grStackAllocator, near
+  scratchMemory/scratchMemorySize).
+- **hc/egl stubs** (grrStubs.c): grGetBackend (NULL), HC_extraStackSpace (0),
+  grScratchGrowMemory (0) — pending the hc module; grLockSurface/
+  grReleaseSurface already in grrClear.c.
+- Tests: test_setuprendering (+18 checks, 1050 -> 1068): full setup with
+  pre-inserted cache program, head-block pins (dither kernel, strides,
+  fog/alpha/stencil refs), cleanup frees the stack. 295 hg / 311 imath /
+  1068 core, 0 failures.

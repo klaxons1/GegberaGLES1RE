@@ -12,6 +12,8 @@
  * Assert sites keep the original file/line strings.
  */
 #include "gerbera/grState.h"
+
+extern int g_orderedDitherKernel[4];
 #include "gerbera/grDefs.h"
 #include "imath/imApi.h"
 #include "hg/hgInt32.h"
@@ -870,4 +872,228 @@ void grRenderArrays(Gerbera_s *state, int primitiveType, int vertexCount, int ba
             grDie(0);
         grFetchPrimitives(state, fetchType, 3, vertexCount, NULL, baseIndex);
     }
+}
+
+/* --- grrBeginRendering / grrEndRendering / grrUpdateState (via call sites) --
+ * Tiny helpers reached by grSetupRendering/grCleanupRendering (DLL
+ * 27362-27378). grLockSurface/grReleaseSurface are egl-module entry points
+ * (stubs in grrStubs.c until the egl session). */
+
+void grrBeginRendering(Gerbera_s *state)
+{
+    grLockSurface(GR_SURFACE_DRAW);
+}
+
+void grrEndRendering(Gerbera_s *state)
+{
+    grReleaseSurface(GR_SURFACE_DRAW);
+}
+
+void grrUpdateState(Gerbera_s *state)
+{
+    if (state->pixelPipelineDirty != 0)
+        grEnsureValidPixelPipeline(state);
+}
+
+/* --- grSetupRendering (grApiFast.inl 288; DLL 31702-31859) ------------------
+ * Per-frame rendering setup: flushes pending clears, locks the draw surface,
+ * refreshes the per-unit texture-enable flags (grUpdateTexture when a
+ * texture's dirty bit is set), validates the pixel pipe, rebuilds the render
+ * stack when the pipeline changed, publishes the pixel-pipe head block
+ * (dither kernel, buffer strides, fog/alpha/stencil refs) and validates the
+ * scissor chain. */
+
+void grSetupRendering(Gerbera_s *state)
+{
+    int i;
+    int ok;
+    void *extraStack;
+    _grPixelPipe *pixelPipe;
+    _grDrawSurface *drawSurface;
+
+    if (state == NULL && grAssert("state", "grApiFast.inl", 288) != 0)
+        grDie(0);
+    grFlushBufferClears(state);
+    grrBeginRendering(state);
+    for (i = 0; i < 2; ++i)
+    {
+        _grTexture *tex = (_grTexture *)state->textureUnit[2 * i].texture;
+        int enabled = 0;
+
+        if (grTestCapability(state, GR_CAPABILITY_TEXTURE_2D + i) != 0 && tex != NULL)
+        {
+            /* the decompile tests bits 24/26 of the int at tex+180
+             * (tex[6][2].pad[4] with 64-byte cv_anon_171E), i.e. flags183
+             * bits 0 (dirty) and 2 (enabled) */
+            if ((tex->flags183 & 0x01) != 0)
+            {
+                grUpdateTexture(tex);
+                state->pixelPipelineDirty = 1;
+            }
+            enabled = (tex->flags183 & 0x04) != 0;
+        }
+        state->useTexUnit[i] = (unsigned char)enabled;
+    }
+    grCheckPixelPipeConsistency(state);
+    if (state->pixelPipelineDirty == 0 && state->scissorDirty == 0)
+        goto LABEL_24;
+    if (state->pixelPipelineDirty != 0)
+    {
+        ok = 1;
+        if (state->renderStackAllocated != 0)
+            ok = grAssert("!state->renderStackAllocated", "grApiFast.inl", 340) == 0;
+        if (!ok)
+            grDie(0);
+        if (state->renderStackAllocated != 0)
+        {
+            state->renderStackAllocated = 0;
+            grStackFree(&state->scratchAllocator, state->renderStack);
+            state->renderStack = (void *)0xBAADF00D;
+            state->pixelPipeline = (void *)0xBAADF00D;
+        }
+    }
+    grrUpdateState(state);
+    if (state->compilationFailed == 0)
+    {
+        state->pixelPipelineDirty = 0;
+        state->scissorDirty = 0;
+LABEL_24:
+        ok = 1;
+        if (state->renderStackAllocated != 0)
+            ok = grAssert("!state->renderStackAllocated", "grApiFast.inl", 367) == 0;
+        if (!ok)
+            grDie(0);
+        if (state->renderStackAllocated == 0)
+        {
+            void *backend = grGetBackend();
+
+            extraStack = (void *)(long)HC_extraStackSpace(backend);
+            (void)extraStack;
+            if (state->scratchMemory == NULL)
+            {
+                ok = 1;
+                if (state->scratchMemorySize != 0)
+                    ok = grAssert("!state->scratchMemorySize", "grApiFast.inl", 376) == 0;
+                if (!ok)
+                    grDie(0);
+                grScratchGrowMemory(state);
+            }
+            ok = 1;
+            if ((unsigned int)grStackGetFreeSpace(&state->scratchAllocator) < 23860)
+                ok = grAssert("grStackGetFreeSpace(allocator) >= sizeof(grRenderStack)",
+                              "grApiFast.inl", 381) == 0;
+            if (!ok)
+                grDie(0);
+            state->renderStackAllocated = 1;
+            state->renderStack = grStackAllocate(&state->scratchAllocator, 23860);
+            /* the decompile renders this as (char*)extraStack +
+             * &renderStack[1830].whichPool; the +14644 offset is the pixel
+             * pipe within the render stack allocation (grExecutePixelPipeline
+             * passes renderStack+14644 to the program) */
+            state->pixelPipeline = (char *)state->renderStack + 14644;
+            state->vertexCache = state->renderStack;
+        }
+        pixelPipe = (_grPixelPipe *)state->pixelPipeline;
+        drawSurface = &state->drawSurface;
+        pixelPipe->ditherKernel = (void *)g_orderedDitherKernel;
+        pixelPipe->checked.colorBufferStride = drawSurface->buffers[0].stride;
+        pixelPipe->checked.depthBufferStride = drawSurface->buffers[1].stride;
+        pixelPipe->checked.stencilBufferStride = drawSurface->buffers[2].stride;
+        pixelPipe->checked.fogColor = state->packedFogColor;
+        pixelPipe->checked.alphaReference = state->alphaReference;
+        pixelPipe->checked.stencilReference = state->stencilReference;
+        pixelPipe->checked.stencilReferenceMasked =
+            (unsigned char)(state->stencilReference & state->stencilTestMask);
+        pixelPipe->checked.stencilTestMask = state->stencilTestMask;
+        pixelPipe->checked.stencilWriteMask = state->stencilWriteMask;
+        for (i = 1; i >= 0; --i)
+        {
+            if (state->useTexUnit[i] != 0)
+                *(int *)pixelPipe->textureUnit[i].pad0 =
+                    state->textureUnit[2 * i].envColor;
+        }
+        ok = 1;
+        if (state->surfaceScissor.x0 < 0)
+            ok = grAssert("state->surfaceScissor.x0 >= 0", "grApiFast.inl", 424) == 0;
+        if (!ok)
+            grDie(0);
+        ok = 1;
+        if (state->surfaceScissor.y0 < 0)
+            ok = grAssert("state->surfaceScissor.y0 >= 0", "grApiFast.inl", 425) == 0;
+        if (!ok)
+            grDie(0);
+        ok = 1;
+        if (state->surfaceScissor.x1 > state->drawSurface.width)
+            ok = grAssert("state->surfaceScissor.x1 <= state->drawSurface.width",
+                          "grApiFast.inl", 426) == 0;
+        if (!ok)
+            grDie(0);
+        ok = 1;
+        if (state->surfaceScissor.y1 > state->drawSurface.height)
+            ok = grAssert("state->surfaceScissor.y1 <= state->drawSurface.height",
+                          "grApiFast.inl", 427) == 0;
+        if (!ok)
+            grDie(0);
+        ok = 1;
+        if (state->renderScissor.x0 < state->surfaceScissor.x0)
+            ok = grAssert("state->renderScissor.x0 >= state->surfaceScissor.x0",
+                          "grApiFast.inl", 429) == 0;
+        if (!ok)
+            grDie(0);
+        ok = 1;
+        if (state->renderScissor.y0 < state->surfaceScissor.y0)
+            ok = grAssert("state->renderScissor.y0 >= state->surfaceScissor.y0",
+                          "grApiFast.inl", 430) == 0;
+        if (!ok)
+            grDie(0);
+        ok = 1;
+        if (state->renderScissor.x1 > state->surfaceScissor.x1)
+            ok = grAssert("state->renderScissor.x1 <= state->surfaceScissor.x1",
+                          "grApiFast.inl", 431) == 0;
+        if (!ok)
+            grDie(0);
+        ok = 1;
+        if (state->renderScissor.y1 > state->surfaceScissor.y1)
+            ok = grAssert("state->renderScissor.y1 <= state->surfaceScissor.y1",
+                          "grApiFast.inl", 432) == 0;
+        if (!ok)
+            grDie(0);
+        grVertexCacheInvalidate(state);
+    }
+}
+
+/* --- grCleanupRendering (grApiFast.inl 460; DLL 31863-31893) ----------------
+ * Tears down the render stack (when the pipeline compiled) and releases the
+ * draw surface. */
+
+void grCleanupRendering(Gerbera_s *state)
+{
+    int ok;
+
+    if (state->compilationFailed == 0)
+    {
+        ok = 1;
+        if (state->renderStackAllocated == 0)
+            ok = grAssert("state->renderStackAllocated", "grApiFast.inl", 460) == 0;
+        if (!ok)
+            grDie(0);
+        if (state->renderStackAllocated != 0)
+        {
+            int scratchOk = 1;
+            int scratchValid = 0;
+
+            if (state->scratchMemory != NULL)
+                scratchValid = state->scratchMemorySize != 0;
+            if (!scratchValid && grAssert("state->scratchMemory && state->scratchMemorySize",
+                                          "grApiFast.inl", 463) != 0)
+                scratchOk = 0;
+            if (scratchOk == 0)
+                grDie(0);
+            grStackFree(&state->scratchAllocator, state->renderStack);
+            state->renderStackAllocated = 0;
+            state->renderStack = (void *)0xBAADF00D;
+            state->pixelPipeline = (void *)0xBAADF00D;
+        }
+    }
+    grrEndRendering(state);
 }

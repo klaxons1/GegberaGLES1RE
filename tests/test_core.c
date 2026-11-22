@@ -137,6 +137,7 @@ static void test_linepoint(void);
 static void test_tessellate(void);
 static void test_pipecache(void);
 static void test_signature(void);
+static void test_setuprendering(void);
 static void test_gradients(void);
 
 int main(void)
@@ -174,6 +175,7 @@ int main(void)
     test_tessellate();
     test_pipecache();
     test_signature();
+    test_setuprendering();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -364,6 +366,8 @@ static void test_util_helpers(void)
 
 /* --- grState.h / grApiSmall.c ---------------------------------------------- */
 #include "gerbera/grState.h"
+
+extern int g_orderedDitherKernel[4];
 
 static void test_state_cull(void)
 {
@@ -3380,4 +3384,107 @@ static void test_signature(void)
             CHECK(st.compilationFailed == 0);
         }
     }
+}
+
+/* --- test_setuprendering: grSetupRendering / grCleanupRendering ------------ */
+static void test_setuprendering(void)
+{
+    Gerbera_s st;
+    _grPipelineCache cache;
+    _grCacheEntry entries[8];
+    static unsigned char arena[16384];
+    static unsigned char prog[16384];
+    static unsigned char scratch[65536];
+    _grSignature sig;
+    _grCacheSignature cs;
+    _grPixelPipe *pipe;
+    void *ins;
+
+    memset(&st, 0, sizeof(st));
+
+    /* draw surface: RGBA8888 with valid buffers */
+    st.drawSurface.rgbaOffsets[0] = 0;
+    st.drawSurface.rgbaOffsets[1] = 1;
+    st.drawSurface.rgbaOffsets[2] = 2;
+    st.drawSurface.rgbaOffsets[3] = 3;
+    st.drawSurface.rgbaSizes[0] = 8;
+    st.drawSurface.rgbaSizes[1] = 8;
+    st.drawSurface.rgbaSizes[2] = 8;
+    st.drawSurface.rgbaSizes[3] = 8;
+    st.drawSurface.colorMask = 0x0F;
+    st.drawSurface.colorBytes = 4;
+    st.drawSurface.depthBytes = 2;
+    st.drawSurface.stencilBytes = 1;
+    st.drawSurface.pixelFormat = 5;  /* RGBA */
+    st.drawSurface.width = 64;
+    st.drawSurface.height = 64;
+    st.drawSurface.buffers[0].data = (void *)0x1000;
+    st.drawSurface.buffers[0].stride = 256;
+    st.drawSurface.buffers[1].data = (void *)0x2000;
+    st.drawSurface.buffers[1].stride = 128;
+    st.drawSurface.buffers[2].data = (void *)0x3000;
+    st.drawSurface.buffers[2].stride = 64;
+
+    /* scissors: surface covers full draw surface, render inside it */
+    st.surfaceScissor.x0 = 0;
+    st.surfaceScissor.y0 = 0;
+    st.surfaceScissor.x1 = 64;
+    st.surfaceScissor.y1 = 64;
+    st.renderScissor.x0 = 0;
+    st.renderScissor.y0 = 0;
+    st.renderScissor.x1 = 64;
+    st.renderScissor.y1 = 64;
+
+    /* rasterizer state */
+    st.packedFogColor = 0x11223344;
+    st.alphaReference = 0x55;
+    st.stencilReference = 0xAA;
+    st.stencilTestMask = 0xFF;
+    st.stencilWriteMask = 0xBB;
+
+    /* scratch allocator: 64KB buffer for the 23860-byte render stack */
+    st.scratchAllocator.data = scratch;
+    st.scratchAllocator.size = (int)sizeof(scratch);
+    st.scratchAllocator.allocated = 0;
+    st.scratchMemory = scratch;
+    st.scratchMemorySize = (int)sizeof(scratch);
+
+    /* evaluate + compress + insert so the cache hit path works */
+    grEvaluatePixelPipeline(&st, &sig);
+    grCompressSignature(&cs, &sig);
+    grCacheInit(&cache, arena, entries, (int)sizeof(arena), 8);
+    memset(prog, 0x77, sizeof(prog));
+    ins = grCacheInsert(&cache, &cs, 0, prog, (int)sizeof(_grPixelPipe));
+    CHECK(ins != NULL);
+    st.pipelineCache = &cache;
+    st.pixelPipelineCode = (grPixelPipelineCode_fn)ins;
+    st.pixelPipelineDirty = 0;
+    st.scissorDirty = 0;
+    st.compilationFailed = 0;
+
+    /* grSetupRendering: allocates the render stack and publishes the head */
+    grSetupRendering(&st);
+    CHECK(st.renderStackAllocated == 1);
+    CHECK(st.renderStack != NULL);
+    CHECK(st.vertexCache == st.renderStack);
+    CHECK(st.pixelPipeline != NULL);
+
+    /* pixel pipe head block: dither kernel + strides + refs */
+    pipe = (_grPixelPipe *)st.pixelPipeline;
+    CHECK(pipe->ditherKernel == (void *)g_orderedDitherKernel);
+    CHECK(pipe->checked.colorBufferStride == 256);
+    CHECK(pipe->checked.depthBufferStride == 128);
+    CHECK(pipe->checked.stencilBufferStride == 64);
+    CHECK(pipe->checked.fogColor == 0x11223344u);
+    CHECK(pipe->checked.alphaReference == 0x55);
+    CHECK(pipe->checked.stencilReference == 0xAAu);
+    CHECK(pipe->checked.stencilReferenceMasked == (unsigned char)(0xAA & 0xFF));
+    CHECK(pipe->checked.stencilTestMask == 0xFFu);
+    CHECK(pipe->checked.stencilWriteMask == 0xBBu);
+
+    /* grCleanupRendering: frees the render stack */
+    grCleanupRendering(&st);
+    CHECK(st.renderStackAllocated == 0);
+    CHECK(st.renderStack == (void *)0xBAADF00D);
+    CHECK(st.pixelPipeline == (void *)0xBAADF00D);
 }
