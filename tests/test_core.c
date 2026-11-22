@@ -125,6 +125,7 @@ static void test_fetch_stages(void);
 static void test_update_pipeline(void);
 static void test_transform_vertex(void);
 static void test_light_vertex(void);
+static void test_setup_culling(void);
 
 int main(void)
 {
@@ -148,6 +149,7 @@ int main(void)
     test_update_pipeline();
     test_transform_vertex();
     test_light_vertex();
+    test_setup_culling();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -343,6 +345,7 @@ static void test_state_cull(void)
 {
     Gerbera_s st;
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
 
     grSetCullMode(&st, GR_WINDING_CW, 1u);
     CHECK(st.frontFace == GR_WINDING_CW);
@@ -382,6 +385,7 @@ static void test_state_viewport(void)
 {
     Gerbera_s st;
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
 
     st.drawSurface.width = 320;
     st.drawSurface.height = 240;
@@ -434,6 +438,7 @@ static void test_state_pixel(void)
 {
     Gerbera_s st;
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
 
     grSetClearColor(&st, 0x8040C0FFu);
     CHECK(st.clearColor == 0x8040C0FFu);
@@ -537,6 +542,7 @@ static void test_state_material(void)
     Gerbera_s st;
     _XColor3 c1, c2;
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
 
     XColor3_setx(&c1, 100, 200, 300);
     grSetMaterialColor(&st, 0, &c1);
@@ -569,6 +575,7 @@ static void test_transform(void)
     int ci;
 
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IMatrix4x4_identity(&id);
 
     /* grSetMatrix: copy + dirty bit; MODELVIEW=0 / PROJECTION=1 (EPOC slots) */
@@ -595,7 +602,7 @@ static void test_transform(void)
     grSetUserClipPlane(&st, GR_CLIP_USER0 + 2, &eq, &id);
     CHECK(st.origUserClipPlanes[2].m[0] == eq.m[0] &&
           st.origUserClipPlanes[2].m[3] == eq.m[3]);
-    CHECK(st.origUserClipMatrices[2].v[0].e == id.v[0].e);
+    CHECK(st.userClipMatrix[2].v[0].e == id.v[0].e);
     CHECK(grGetUserClipPlane(&st, GR_CLIP_USER0 + 2) == &st.origUserClipPlanes[2]);
     grSetUserClipPlane(&st, GR_CLIP_USER0 + 5, &eq, &id);
     CHECK(grGetUserClipPlane(&st, GR_CLIP_USER0 + 5) == &st.origUserClipPlanes[5]);
@@ -624,6 +631,7 @@ static void test_update_lights(void)
     /* grUpdateLight: directional -> mask 0x40 + headlight halfway =
      * normalize(nVP + (0,0,2^21)); probed value pinned below */
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IFVector4_set(&pos, FIN(2.0f), FIN(0.0f), FIN(0.0f), FIN(0.0f));
     grSetLightPosition(&st, 0, &pos);
     grSetLightSpotCutoff(&st, 0, FIN(180.0f));
@@ -636,6 +644,7 @@ static void test_update_lights(void)
     /* positional spotlight: bit 16 (cutoff != 180) + bit 32 (attn != 1,1,1),
      * halfway untouched */
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IFVector4_set(&pos, FIN(1.0f), FIN(2.0f), FIN(3.0f), FIN(1.0f));
     grSetLightPosition(&st, 2, &pos);
     grSetLightSpotCutoff(&st, 2, FIN(60.0f));
@@ -644,6 +653,7 @@ static void test_update_lights(void)
 
     /* grUpdateLights: one directional + one positional, full refresh */
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     XColor3_setx(&ac, 65536, 65536, 65536);       /* 2^21 = 1.0 (10.21) */
     XColor3_setx(&lc, 32768, 16384, 8192);
     XColor3_setx(&ma, 65536, 65536, 65536);
@@ -756,6 +766,7 @@ static void test_fetch_stages(void)
     _grVertex *vb;
 
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IMatrix4x4_identity(&id);
     st.renderStack = pool;
     vb = (_grVertex *)(pool + 1332);
@@ -825,6 +836,7 @@ static void test_update_pipeline(void)
     _IMatrix4x4 id;
 
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IMatrix4x4_identity(&id);
     /* grInitState defaults: attenuation (1,0,0) */
     st.pointDistAttn.e = 127;
@@ -838,15 +850,16 @@ static void test_update_pipeline(void)
     CHECK(st.applyFog == NULL);                    /* FOG cap off */
     CHECK(st.transformVE == 0);
     CHECK(st.vertexPipelineDirty == 0);
-    /* changing pointDistAttn flags the pipeline dirty */
+    /* the decompile gates the point-distance-attention cache on a RAW
+     * primitiveType == 0 - a value grGetPrimitiveVertices (called further
+     * down grUpdateVertexPipeline) rejects, so the branch is dead-end code
+     * behind grSetupCulling's type validation: changing pointDistAttn does
+     * not touch the pipeline for any reachable primitive type */
     st.pointDistAttn.m[0] = 0x10000000;
     grUpdateVertexPipeline(&st);
-    CHECK(st.computePointDistAttn == 1);
-    CHECK(st.transformVE == 1);
-    CHECK(st.vertexPipelineDirty == 1);
-    st.pointDistAttn.m[0] = 0x20000000;
-    grUpdateVertexPipeline(&st);
-    CHECK(st.vertexPipelineDirty == 1);
+    CHECK(st.computePointDistAttn == 0);
+    CHECK(st.transformVE == 0);
+    CHECK(st.vertexPipelineDirty == 0);
     grUpdateVertexPipeline(&st);
     CHECK(st.vertexPipelineDirty == 0);
 
@@ -912,6 +925,7 @@ static void test_transform_vertex(void)
     unsigned char k;
 
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IMatrix4x4_identity(&id);
     IVertexTransform_copy(&st.objectToClipTransform, &id);
     st.renderStack = pool;
@@ -942,6 +956,7 @@ static void test_transform_vertex(void)
     /* fixed 16.16 (1, -2, 0.5, 1): int view {x,y,z,w} through the identity */
     memset(pool + 1332, 0, 512);
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IVertexTransform_copy(&st.objectToClipTransform, &id);
     st.renderStack = pool;
     vb = (_grVertex *)(pool + 1332);
@@ -964,6 +979,7 @@ static void test_transform_vertex(void)
      * x <= 0.5: outside -> clip bit = digit+9 = 15 */
     memset(pool + 1332, 0, 512);
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IVertexTransform_copy(&st.objectToClipTransform, &id);
     st.renderStack = pool;
     vb = (_grVertex *)(pool + 1332);
@@ -1013,6 +1029,7 @@ static void test_transform_vertex(void)
      * position (1,2,3,1) unchanged, state -> EYE_SPACE, clip via projection */
     memset(pool + 1332, 0, 512);
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IVertexTransform_copy(&st.objectToClipTransform, &id);
     IVertexTransform_copy(&st.projectionTransform, &id);
     for (k = 0; k < 9; ++k)
@@ -1068,6 +1085,7 @@ static void test_state_lights(void)
     int i;
 
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IFVector3_setf(&orgDir, 0, FIN(0.0f));
     IFVector3_setf(&orgDir, 1, FIN(-1.0f));
     IFVector3_setf(&orgDir, 2, FIN(0.0f));
@@ -1168,6 +1186,7 @@ static void test_light_vertex(void)
      * normal (0,0,1): fully lit, single-sided */
     memset(pool, 0, 4096);
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IVertexTransform_copy(&st.modelviewTransform, &id);
     st.renderStack = pool;
     vb = (_grVertex *)(pool + 1332);
@@ -1210,6 +1229,7 @@ static void test_light_vertex(void)
     /* same light from behind, two-sided: front unlit, back fully lit */
     memset(pool, 0, 4096);
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IVertexTransform_copy(&st.modelviewTransform, &id);
     st.renderStack = pool;
     vb = (_grVertex *)(pool + 1332);
@@ -1244,6 +1264,7 @@ static void test_light_vertex(void)
      * eye space (state 3) and lit; attenuation (1,0,0) keeps xAtten at 1.0 */
     memset(pool, 0, 4096);
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IVertexTransform_copy(&st.modelviewTransform, &id);
     st.renderStack = pool;
     vb = (_grVertex *)(pool + 1332);
@@ -1292,6 +1313,7 @@ static void test_light_vertex(void)
     /* color material: diffuse scales with the per-vertex color */
     memset(pool, 0, 4096);
     memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IVertexTransform_copy(&st.modelviewTransform, &id);
     st.renderStack = pool;
     vb = (_grVertex *)(pool + 1332);
@@ -1319,4 +1341,109 @@ static void test_light_vertex(void)
     CHECK(vb[0].color.final[0][3] == 0xFF00);       /* alpha = fetched &FF00 */
     colors[0] = 255; colors[1] = 255; colors[2] = 255;
     free(pool);
+}
+
+/* --- grSetupCulling ---------------------------------------------------------- */
+
+static void test_setup_culling(void)
+{
+    Gerbera_s st;
+    _IMatrix4x4 id;
+    _IFVector4 plane;
+    unsigned char data[16] = {0};
+    int r;
+
+    IMatrix4x4_identity(&id);
+
+    /* reject: vertex array enabled but no data */
+    memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    grSetCapability(&st, GR_CAPABILITY_VERTEX_ARRAY, 1);
+    CHECK(grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE) == GR_COMMAND_STOP);
+    CHECK(st.primitiveType == GR_PRIMITIVETYPE_TRIANGLE);
+    /* texture rect bypasses the vertex-data check (but the empty scissor
+     * reject catches it); the fresh verdict must be marked dirty or the
+     * cached-verdict assert (grApiFast.inl 157) fires on the stale 0 */
+    st.rejectAllStateDirty = 1;
+    CHECK(grSetupCulling(&st, GR_PRIMITIVETYPE_TEXTURE_RECT) == GR_COMMAND_STOP);
+    CHECK(st.rejectAllState == 1);
+    CHECK(st.rejectAllStateDirty == 0);
+
+    /* invalid primitive type dies; skip that path (grDie aborts) */
+
+    /* alpha test with GL_NEVER-ish func 0 rejects everything */
+    memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    grSetCapability(&st, GR_CAPABILITY_VERTEX_ARRAY, 1);
+    st.vertexArray[0].data = data;
+    grSetCapability(&st, GR_CAPABILITY_ALPHA_TEST, 1);
+    st.alphaFunc = 0;
+    st.rejectAllStateDirty = 1;
+    CHECK(grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE) == GR_COMMAND_STOP);
+    CHECK(st.rejectAllState == 1);
+    /* cached verdict asserted consistent on the next non-dirty call */
+    CHECK(grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE) == GR_COMMAND_STOP);
+
+    /* cull mask 3 on triangles rejects all faces */
+    memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    grSetCapability(&st, GR_CAPABILITY_VERTEX_ARRAY, 1);
+    st.vertexArray[0].data = data;
+    grSetRectangle(&st.renderScissor, 0, 100, 0, 100);
+    grSetCapability(&st, GR_CAPABILITY_CULL_FACE, 1);
+    st.cullMask = 3;
+    CHECK(grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE) == GR_COMMAND_STOP);
+    st.cullMask = 1;
+    r = grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    CHECK(r == GR_COMMAND_RENDER);
+
+    /* happy path with identity matrices: transforms refreshed, no planes */
+    memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    grSetCapability(&st, GR_CAPABILITY_VERTEX_ARRAY, 1);
+    st.vertexArray[0].data = data;
+    grSetRectangle(&st.renderScissor, 0, 100, 0, 100);
+    grSetMatrix(&st, GR_MATRIXMODE_MODELVIEW, &id);
+    grSetMatrix(&st, GR_MATRIXMODE_PROJECTION, &id);
+    r = grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    CHECK(r == GR_COMMAND_RENDER);
+    CHECK(st.enabledUserClipPlaneIndices == 0);
+    CHECK(st.modelviewTransform.v[0].e == id.v[0].e);
+    /* IVertexTransform_copy renormalizes the 3.29 identity mantissas to the
+     * shared-exponent record (probe: 0x40000000 mantissa, exp 0x8f) */
+    CHECK(st.objectToClipTransform.v[0].m[0] == 0x40000000);
+    CHECK(st.objectToClipTransform.v[3].m[3] == 0x40000000);
+    CHECK(st.objectToClipTransform.exp == 0x8f);
+    CHECK(st.projectionTransform.v[0].e == id.v[0].e);
+    CHECK(st.matrixDirtyMask == 0);
+    CHECK(st.rejectAllState == 0);
+
+    /* clip planes: enabling planes 0 and 2 packs (plane+1) base-16 while
+     * walking 5..0 -> plane2 lands first (3), plane0 in the low digit (0x31);
+     * identity projection * userClipMatrix leaves the equations unchanged */
+    grSetCapability(&st, GR_CAPABILITY_CLIP_PLANE0, 1);
+    grSetCapability(&st, GR_CAPABILITY_CLIP_PLANE2, 1);
+    IFVector4_set(&plane, FIN(0.0f), FIN(0.0f), FIN(1.0f), FIN(-1.0f));
+    grSetUserClipPlane(&st, GR_CLIP_USER0 + 0, &plane, &id);
+    grSetUserClipPlane(&st, GR_CLIP_USER0 + 2, &plane, &id);
+    grSetMatrix(&st, GR_MATRIXMODE_MODELVIEW, &id);
+    grSetMatrix(&st, GR_MATRIXMODE_PROJECTION, &id);
+    r = grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    CHECK(r == GR_COMMAND_RENDER);
+    CHECK(st.enabledUserClipPlaneIndices == 0x31);
+    /* IMatrix4x4_mulfv4 emits the matrix's 2.29 mantissa domain: the
+     * identity transform leaves (0, 0, 1, -1) as 0x20000000 / 0xE0000000 */
+    CHECK(st.userClipPlanes[0].m[0] == 0);
+    CHECK(st.userClipPlanes[0].m[2] == 0x20000000);
+    CHECK(st.userClipPlanes[0].m[3] == (int)0xE0000000);
+    CHECK(st.userClipPlanes[2].m[3] == (int)0xE0000000);
+
+    /* palette matrices refresh from matrix[4..12] when dirty */
+    grSetCapability(&st, GR_CAPABILITY_MATRIX_PALETTE, 1);
+    grSetMatrix(&st, GR_MATRIXMODE_MATRIXPALETTE0 + 3, &id);
+    r = grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    CHECK(r == GR_COMMAND_RENDER);
+    CHECK(st.matrixPalTransform[3].v[0].e == id.v[0].e);
+    CHECK(st.normalsToEyePalDirty[3] == 1);
+    CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_MATRIXPALETTE0 + 3) == 0);
 }

@@ -110,6 +110,60 @@ per-translation-unit inline clones that were deduped).
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
 
+## DONE session 3k (grSetupCulling + GR_COMMAND + primitive-type/transform re-pins)
+
+- **grSetupCulling** (31562-31699, asserts grApiFast.inl 108/113/157) ported:
+  primitiveType validation (the long assert string verbatim, incl. the
+  GR_PRI / MITIVETYPE line split), state->primitiveType store, vertex-data
+  reject (cap VERTEX_ARRAY on && vertexArray[0].data == NULL -> STOP,
+  TEXTURE_RECT bypasses - EPOC: data at state+316 = vertexArray[0]+8),
+  reject-all computation (alpha-test with func 0, empty renderScissor) with
+  the cached-verdict assert (state->rejectAllState == reject when not dirty),
+  cull-mask-3 triangle reject, objectToClip = projection*modelview +
+  modelview/projection _IVertexTransform refreshes on dirty, the user clip
+  plane loop (planes 5..0: packed = plane+1+16*packed, per enabled plane
+  inverse(projection * userClipMatrix[p]) applied to the original equation
+  with the getFirstNonZeroSign sign dance: copy-or-negate, transform,
+  re-negate), enabledUserClipPlaneIndices store, and the palette loop
+  (matrixPalTransform[8..0] <- matrix[pal+4] when dirty bits 4..12 set,
+  normalsToEyePalDirty[pal] = 1).
+- **GR_COMMAND pinned**: RENDER=0, STOP=1 (EPOC grSetupCulling returns 1 on
+  every STOP path, 0 at the end; the DrawTexOES caller checks result != 1).
+- **GR_PRIMITIVETYPE re-pinned** (the old TRIANGLE=0 was a soft inference):
+  POINT=1, LINE=2, TRIANGLE=3, TEXTURE_RECT=4. Evidence: the EPOC mode->type
+  table dword_350DC = 0x02020201 (GL_POINTS->1, all line modes->2), the cull
+  path tests primitiveType == 3 (triangle family), DrawTexOES passes literal
+  4 (= TEXTURE_RECT) skipping the table, hex-rays left grUpdateVertexPipeline's
+  comparison RAW (0) because 0 is NOT an enum member. grUpdateVertexPipeline's
+  point-distance-attention gate stays `primitiveType == 0` VERBATIM - it is
+  dead-end code: grGetPrimitiveVertices (called later in the same function)
+  rejects 0, and grSetupCulling only ever stores 1/2/3/4. The old 3h test
+  expectations (attn change flags the pipeline dirty) were pinned under the
+  wrong enum and are adjusted: for any reachable type the attn cache path
+  does not fire.
+- **3i residual doubt resolved**: grState.h tags are CORRECT - modelview-
+  Transform@+1664 (from matrix[0]), objectToClipTransform@+1864 (the mul
+  result), projectionTransform@+2064 (from matrix[1]@+704, 80B stride -
+  the WINSCW "matrix[6]" is a hex-rays overlay artifact). EPOC 21124-21131.
+- **userClipMatrix renamed** (was origUserClipMatrices): it is a standalone
+  6x80B array at EPOC +4968 written by grSetUserClipPlane (the modelview at
+  specify time, 4168+80*plane) - NO alias with the matrix[] stack.
+- **Caps**: GR_CAPABILITY_CLIP_PLANE0..5 = 30..35 added (were referenced
+  numerically); rejectAllState field added to Gerbera_s.
+- Probe findings: IVertexTransform_copy renormalizes identity 3.29 mantissas
+  to 0x40000000 with exp 0x8f; IMatrix4x4_mulfv4 emits the matrix's 2.29
+  mantissa domain (the transformed planes are 0x20000000/-0xE0000000, not
+  float bits) - the EPOC plane records are 20B (5 dwords, EPOC culling
+  copies dword0 raw and sign-processes dwords 1..4) vs my 16B _IFVector4
+  following the WINSCW view; flagged as an open EPOC/WINSCW discrepancy.
+  grSetUserClipPlane asserts plane range 10..15 and needs a non-empty
+  renderScissor + rejectAllStateDirty=1 in fresh states (the cached-verdict
+  assert compares the fresh reject against the stale cache).
+- +29 checks (427 core, 1026 total): grSetupCulling reject paths, cached
+  verdict, cull-mask reject, identity transform refresh, clip-plane packing
+  (planes {0,2} -> 0x31) + identity-transformed equations, palette matrix
+  refresh.
+
 ## DONE session 3j (light + grLightVertex + grApplyLighting)
 
 - **_grLight record layout fully decoded** (WINSCW overlay-type math, all

@@ -1009,7 +1009,7 @@ void grUpdateVertexPipeline(Gerbera_s *state)
     int u;
     int i;
 
-    if (state->primitiveType == GR_PRIMITIVETYPE_TRIANGLE)
+    if (state->primitiveType == 0)   /* raw comparison in the decompile */
     {
         computePointDistAttn = (IFVector3_is100(&state->pointDistAttn) == 0);
         state->vertexPipelineDirty = (computePointDistAttn != state->computePointDistAttn);
@@ -1931,4 +1931,137 @@ void grApplyLighting(Gerbera_s *state, unsigned char *vertexList)
             vertex = &vertexBuffer[*lista];
         } while (*lista++ != 0xFF);
     }
+}
+
+/* --- grSetupCulling (decompile 31562-31699; asserts grApiFast.inl
+ * 108/113/157) ----------------------------------------------------------------
+ * Validates the primitive type, stores it, fast-rejects draws that cannot
+ * produce fragments (no vertex data / always-false alpha test / empty
+ * scissor / fully culled faces) and refreshes every derived transform:
+ * objectToClip = projection*modelview, the modelview/projection
+ * _IVertexTransforms, the per-plane clip matrices (projection * userClip-
+ * Matrix[p], inverted) applied to the original plane equations, and the
+ * palette matrix transforms. Returns GR_COMMAND_STOP or GR_COMMAND_RENDER. */
+
+int grSetupCulling(Gerbera_s *state, int primitiveType)
+{
+    int reject;
+    int isTriangleLinePoint;
+    int isValidType;
+    int plane;
+    int packedIndices;
+    int sign;
+    int pal;
+    _IMatrix4x4 tmp;
+    _IMatrix4x4 tmpPlane;
+    _IMatrix4x4 tmpInv;
+
+    if ((state == NULL) && grAssert("state", "grApiFast.inl", 108) != 0)
+        grDie(0);
+    isTriangleLinePoint = (primitiveType == GR_PRIMITIVETYPE_TRIANGLE ||
+                           primitiveType == GR_PRIMITIVETYPE_LINE ||
+                           primitiveType == GR_PRIMITIVETYPE_POINT);
+    isValidType = isTriangleLinePoint || primitiveType == GR_PRIMITIVETYPE_TEXTURE_RECT;
+    if (!isValidType)
+    {
+        int die__ = 1;
+
+        if (grAssert("primitiveType == GR_PRIMITIVETYPE_TRIANGLE || primitiveType == GR_PRIMITIVETYPE_LINE || primitiveType == GR_PRI"
+                     "MITIVETYPE_POINT || primitiveType == GR_PRIMITIVETYPE_TEXTURE_RECT",
+                     "grApiFast.inl", 113) == 0)
+            die__ = 0;
+        if (die__ != 0)
+            grDie(0);
+    }
+    state->primitiveType = (unsigned char)primitiveType;
+    if (primitiveType != GR_PRIMITIVETYPE_TEXTURE_RECT)
+    {
+        int hasVertexData = 1;
+
+        if (grTestCapability(state, GR_CAPABILITY_VERTEX_ARRAY) != 0)
+            hasVertexData = (state->vertexArray[0].data == NULL);
+        if (hasVertexData)
+            return GR_COMMAND_STOP;
+    }
+    reject = 0;
+    if (grTestCapability(state, GR_CAPABILITY_ALPHA_TEST) != 0 && state->alphaFunc == 0)
+        reject = 1;
+    if (grIsRectangleEmpty(&state->renderScissor) != 0)
+        reject = 1;
+    if (state->rejectAllStateDirty == 0)
+    {
+        int ok = 1;
+
+        if (state->rejectAllState != reject &&
+            grAssert("state->rejectAllState == reject", "grApiFast.inl", 157) != 0)
+            ok = 0;
+        if (ok == 0)
+            grDie(0);
+    }
+    state->rejectAllState = reject;
+    state->rejectAllStateDirty = 0;
+    if (state->rejectAllState != 0)
+        return GR_COMMAND_STOP;
+    if (primitiveType == GR_PRIMITIVETYPE_TRIANGLE &&
+        grTestCapability(state, GR_CAPABILITY_CULL_FACE) != 0 &&
+        state->cullMask == 3)
+    {
+        return GR_COMMAND_STOP;
+    }
+    if (grIsMatrixDirty(state, GR_MATRIXMODE_MODELVIEW) != 0 ||
+        grIsMatrixDirty(state, GR_MATRIXMODE_PROJECTION) != 0)
+    {
+        IMatrix4x4_mul(&tmp, &state->matrix[GR_MATRIXMODE_PROJECTION],
+                       &state->matrix[GR_MATRIXMODE_MODELVIEW]);
+        IVertexTransform_copy(&state->objectToClipTransform, &tmp);
+        if (grIsMatrixDirty(state, GR_MATRIXMODE_MODELVIEW) != 0)
+        {
+            IVertexTransform_copy(&state->modelviewTransform,
+                                  &state->matrix[GR_MATRIXMODE_MODELVIEW]);
+            state->normalsToEyeDirty = 1;
+        }
+        if (grIsMatrixDirty(state, GR_MATRIXMODE_PROJECTION) != 0)
+            IVertexTransform_copy(&state->projectionTransform,
+                                  &state->matrix[GR_MATRIXMODE_PROJECTION]);
+        grSetMatrixDirty(state, GR_MATRIXMODE_MODELVIEW, 0);
+        grSetMatrixDirty(state, GR_MATRIXMODE_PROJECTION, 0);
+    }
+    packedIndices = 0;
+    for (plane = 5; plane >= 0; --plane)
+    {
+        if (grTestCapability(state, GR_CAPABILITY_CLIP_PLANE0 + plane) != 0)
+        {
+            packedIndices = plane + 1 + 16 * packedIndices;
+            IMatrix4x4_mul(&tmpPlane, &state->matrix[GR_MATRIXMODE_PROJECTION],
+                           &state->userClipMatrix[plane]);
+            IMatrix4x4_inverse(&tmpInv, &tmpPlane, 1);
+            sign = IFVector4_getFirstNonZeroSign(&state->origUserClipPlanes[plane]);
+            if (sign >= 0)
+                IFVector4_copy(&state->userClipPlanes[plane],
+                               &state->origUserClipPlanes[plane]);
+            else
+                IFVector4_negate(&state->userClipPlanes[plane],
+                                 &state->origUserClipPlanes[plane]);
+            IMatrix4x4_mulfv4(&state->userClipPlanes[plane], &tmpInv,
+                              &state->userClipPlanes[plane]);
+            if (sign < 0)
+                IFVector4_negate(&state->userClipPlanes[plane],
+                                 &state->userClipPlanes[plane]);
+        }
+    }
+    state->enabledUserClipPlaneIndices = packedIndices;
+    if (grTestCapability(state, GR_CAPABILITY_MATRIX_PALETTE) != 0)
+    {
+        for (pal = 8; pal >= 0; --pal)
+        {
+            if (grIsMatrixDirty(state, pal + 4) != 0)
+            {
+                IVertexTransform_copy(&state->matrixPalTransform[pal],
+                                      &state->matrix[pal + 4]);
+                state->normalsToEyePalDirty[pal] = 1;
+                grSetMatrixDirty(state, pal + 4, 0);
+            }
+        }
+    }
+    return GR_COMMAND_RENDER;
 }

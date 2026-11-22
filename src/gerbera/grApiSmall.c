@@ -638,7 +638,7 @@ void grSetMatrix(Gerbera_s *state, int mode, _IMatrix4x4 *matrix)
  *              == origUserClipPlanes[plane-GR_CLIP_USER0] (base +4848)
  *   matrix:    IMatrix4x4_copy(&state->texCoordTransform[8][0]
  *              .padding[80*plane - 1], modelview)  ==  EPOC
- *              state+4168+80*plane == origUserClipMatrices
+ *              state+4168+80*plane == userClipMatrix
  *              [plane-GR_CLIP_USER0] (base +4968).                        */
 
 void grSetUserClipPlane(Gerbera_s *state, int plane, _IFVector4 *equation, _IMatrix4x4 *modelview)
@@ -646,7 +646,7 @@ void grSetUserClipPlane(Gerbera_s *state, int plane, _IFVector4 *equation, _IMat
     GR_API_CHECK(state != NULL, 503);
     GR_API_CHECK(hgInRange32(plane, GR_CLIP_USER0, GR_CLIP_USER0 + GR_MAX_USER_CLIP_PLANES - 1) != 0, 504);
     IFVector4_copy(&state->origUserClipPlanes[plane - GR_CLIP_USER0], equation);
-    IMatrix4x4_copy(&state->origUserClipMatrices[plane - GR_CLIP_USER0], modelview);
+    IMatrix4x4_copy(&state->userClipMatrix[plane - GR_CLIP_USER0], modelview);
 }
 
 _IFVector4 *grGetUserClipPlane(Gerbera_s *state, int plane)

@@ -59,14 +59,23 @@ enum GR_MATRIXMODE_e
  * the EPOC grUpdateVertexPipeline gates it on primitiveType byte == 1;
  * the point-distance-attention update runs when primitiveType == 0, so 0
  * is a different type. The EPOC render path checks
- * capabilities[primitiveType + 11] (VERTEX_ARRAY for type 0), which fits
- * TRIANGLE = 0; LINE/TEXTURE_RECT order unpinned. */
+ * (EPOC mode->type table dword_350DC: POINTS->1, LINES->2; the cull path
+ * tests TRIANGLE == 3 and DrawTexOES passes TEXTURE_RECT == 4 literally).
+ * Value 0 never arrives through the table - grUpdateVertexPipeline gates the
+ * point-distance-attention update on a raw primitiveType == 0 comparison. */
 enum GR_PRIMITIVETYPE_e
 {
-    GR_PRIMITIVETYPE_TRIANGLE = 0,
     GR_PRIMITIVETYPE_POINT = 1,
-    GR_PRIMITIVETYPE_LINE = 2,        /* order unpinned */
-    GR_PRIMITIVETYPE_TEXTURE_RECT = 3 /* order unpinned */
+    GR_PRIMITIVETYPE_LINE = 2,
+    GR_PRIMITIVETYPE_TRIANGLE = 3,
+    GR_PRIMITIVETYPE_TEXTURE_RECT = 4
+};
+
+/* grSetupCulling result (EPOC returns 1 on every STOP path, 0 at the end). */
+enum GR_COMMAND_e
+{
+    GR_COMMAND_RENDER = 0,
+    GR_COMMAND_STOP = 1
 };
 
 /* position states stored in the top 2 bits of _grVertex.stateMask
@@ -214,6 +223,12 @@ enum GR_CAPABILITY_e
                                            * in the GL keys table (internal) */
     GR_CAPABILITY_MATRIX_INDEX_ARRAY = 28,/* flagged guess: unpinned gap */
     GR_CAPABILITY_POINT_SIZE_ARRAY = 29,
+    GR_CAPABILITY_CLIP_PLANE0 = 30,       /* GL_CLIP_PLANE0..5 -> caps 30..35 */
+    GR_CAPABILITY_CLIP_PLANE1 = 31,
+    GR_CAPABILITY_CLIP_PLANE2 = 32,
+    GR_CAPABILITY_CLIP_PLANE3 = 33,
+    GR_CAPABILITY_CLIP_PLANE4 = 34,
+    GR_CAPABILITY_CLIP_PLANE5 = 35,
     GR_CAPABILITY_POLYGON_OFFSET_FILL = 14,
     GR_CAPABILITY_SCISSOR_TEST = 15,
     GR_CAPABILITY_CULL_FACE = 16,
@@ -241,8 +256,8 @@ enum GR_CAPABILITY_e
  * orgSpotDirection=fx1, orgPosition=&txMax[1] of elem 0, exponent=txMin[0]
  * of elem +2, attenuation=&txMin[1] of elem +2, cosSpotCutoff=txMax[1] of
  * texCoordTransform[8][0].padding[80*plane - 1] (Hex-Rays artifact; the
- * EPOC build writes state+4168+80*plane = origUserClipMatrices base
- * +4968, i.e. origUserClipMatrices[plane-GR_CLIP_USER0]) and the plane
+ * EPOC build writes state+4168+80*plane = userClipMatrix base
+ * +4968, i.e. userClipMatrix[plane-GR_CLIP_USER0]) and the plane
  * equation to &normalsToEyePal[17][0].originalVertex + plane (EPOC:
  * state+4648+20*plane = origUserClipPlanes[plane-GR_CLIP_USER0]).
  *
@@ -418,6 +433,7 @@ typedef struct Gerbera_s
     _grRect surfaceScissor;
     _grRect renderScissor;
     int scissorDirty;
+    int rejectAllState;                 /* cached "reject all" verdict */
     int rejectAllStateDirty;
     int pixelPipelineDirty;
     int vertexPipelineDirty;
@@ -443,7 +459,7 @@ typedef struct Gerbera_s
     _XNormalTransform normalsToEyePal[9];                      /* +4368 */
     _IFVector4 userClipPlanes[GR_MAX_USER_CLIP_PLANES];        /* +4728 */
     _IFVector4 origUserClipPlanes[GR_MAX_USER_CLIP_PLANES];    /* +4848 */
-    _IMatrix4x4 origUserClipMatrices[GR_MAX_USER_CLIP_PLANES]; /* +4968 */
+    _IMatrix4x4 userClipMatrix[GR_MAX_USER_CLIP_PLANES];       /* +4968 */
     int enabledUserClipPlaneIndices;                           /* +7620 */
 
     /* --- draw surface ----------------------------------------------------- */
