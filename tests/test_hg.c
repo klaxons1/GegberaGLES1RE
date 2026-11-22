@@ -132,6 +132,15 @@ static void test_64(void)
     CHECK_EQ(hgMulu64h(0x80000000u, 2u), 1u);
     CHECK_EQ(hgMadd64(10, 3, 4), 22);
     CHECK_EQ(hgMadd64h(0, 0x40000000, 4), 1);
+    CHECK_EQ(hgMul64x32((HGint64)0x100000000ll, 3), (HGint64)0x300000000ll);
+    CHECK_EQ(hgMul64x32(-2, 3), -6);
+    CHECK_EQ(hgMul64x32(3, -2), -6);
+    CHECK_EQ(hgMul64x32(-3, -2), 6);
+    CHECK_EQ(hgMul64x32((HGint64)0xFFFFFFFFll, 0x7FFFFFFF),
+             (HGint64)0x7FFFFFFE80000001ll);
+    CHECK_EQ(hgMul64x32((HGint64)0x123456789ll, -5),
+             (HGint64)0x123456789ll * -5);
+    CHECK_EQ(hgMul64x32((HGint64)(-0x100000000ll), -1), (HGint64)0x100000000ll);
     CHECK_EQ(hgNeg64(hgSet64s(5)), -5);
     CHECK_EQ(hgNot64(0), -1);
     CHECK_EQ(hgAbs64(-5), 5);

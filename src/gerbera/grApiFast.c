@@ -470,53 +470,56 @@ void grCheckPixelPipeStack(Gerbera_s *state)
     _grPixelPipe *pixelPipe = (_grPixelPipe *)state->pixelPipeline;
     int ok = 1;
 
-    if (pixelPipe->colorBufferStride != ((int *)&state->drawSurface)[7] &&
-        grAssert("pixelPipe->colorBufferStride == drawSurface->buffers[GR_BUFFERTYPE_COLOR].stride",
+    /* the checked block is the assert-order placeholder at _grPixelPipe+128;
+     * its real offsets get pinned by grSetupRendering */
+
+    if (pixelPipe->checked.colorBufferStride != ((int *)&state->drawSurface)[7] &&
+        grAssert("pixelPipe->checked.colorBufferStride == drawSurface->buffers[GR_BUFFERTYPE_COLOR].stride",
                  "grApiFast.inl", 491) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->depthBufferStride != ((int *)&state->drawSurface)[9] &&
-        grAssert("pixelPipe->depthBufferStride == drawSurface->buffers[GR_BUFFERTYPE_DEPTH].stride",
+    if (pixelPipe->checked.depthBufferStride != ((int *)&state->drawSurface)[9] &&
+        grAssert("pixelPipe->checked.depthBufferStride == drawSurface->buffers[GR_BUFFERTYPE_DEPTH].stride",
                  "grApiFast.inl", 492) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->stencilBufferStride != ((int *)&state->drawSurface)[11] &&
-        grAssert("pixelPipe->stencilBufferStride == drawSurface->buffers[GR_BUFFERTYPE_STENCIL].stride",
+    if (pixelPipe->checked.stencilBufferStride != ((int *)&state->drawSurface)[11] &&
+        grAssert("pixelPipe->checked.stencilBufferStride == drawSurface->buffers[GR_BUFFERTYPE_STENCIL].stride",
                  "grApiFast.inl", 493) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->fogColor != state->packedFogColor &&
-        grAssert("pixelPipe->fogColor == state->packedFogColor", "grApiFast.inl", 495) != 0)
+    if (pixelPipe->checked.fogColor != state->packedFogColor &&
+        grAssert("pixelPipe->checked.fogColor == state->packedFogColor", "grApiFast.inl", 495) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->alphaReference != state->alphaReference &&
-        grAssert("pixelPipe->alphaReference == state->alphaReference", "grApiFast.inl", 496) != 0)
+    if (pixelPipe->checked.alphaReference != state->alphaReference &&
+        grAssert("pixelPipe->checked.alphaReference == state->alphaReference", "grApiFast.inl", 496) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->stencilReference != state->stencilReference &&
-        grAssert("pixelPipe->stencilReference == state->stencilReference", "grApiFast.inl", 497) != 0)
+    if (pixelPipe->checked.stencilReference != state->stencilReference &&
+        grAssert("pixelPipe->checked.stencilReference == state->stencilReference", "grApiFast.inl", 497) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->stencilReferenceMasked !=
+    if (pixelPipe->checked.stencilReferenceMasked !=
             (unsigned char)(state->stencilReference & state->stencilTestMask) &&
-        grAssert("pixelPipe->stencilReferenceMasked == (state->stencilReference & state->stencilTestMask)",
+        grAssert("pixelPipe->checked.stencilReferenceMasked == (state->stencilReference & state->stencilTestMask)",
                  "grApiFast.inl", 498) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->stencilTestMask != state->stencilTestMask &&
-        grAssert("pixelPipe->stencilTestMask == state->stencilTestMask", "grApiFast.inl", 499) != 0)
+    if (pixelPipe->checked.stencilTestMask != state->stencilTestMask &&
+        grAssert("pixelPipe->checked.stencilTestMask == state->stencilTestMask", "grApiFast.inl", 499) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->stencilWriteMask != state->stencilWriteMask &&
-        grAssert("pixelPipe->stencilWriteMask == state->stencilWriteMask", "grApiFast.inl", 500) != 0)
+    if (pixelPipe->checked.stencilWriteMask != state->stencilWriteMask &&
+        grAssert("pixelPipe->checked.stencilWriteMask == state->stencilWriteMask", "grApiFast.inl", 500) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);

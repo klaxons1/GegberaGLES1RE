@@ -344,9 +344,11 @@ HGuint32 hgMulu64h(HGuint32 a, HGuint32 b)
 
 HGint64 hgMul64x32(HGint64 a, int b)
 {
-    /* a * b in two halves, avoiding 64x64 multiply */
+    /* a * b in two halves, avoiding 64x64 multiply (DLL 22624: hgMulu64's
+     * FULL 64-bit product is kept - its high word carries the partial-product
+     * carry into the result high word) */
     HGuint32 low  = (HGuint32)hgGet64l(a);
-    HGuint32 lowP = hgMulu64(low, (HGuint32)b);
+    HGuint64 lowP = hgMulu64(low, (HGuint32)b);
     HGint64  res  = hgToSigned64(lowP);
     int highP = b * hgGet64h(a);
     int mid   = hgGet64h(res) + highP;

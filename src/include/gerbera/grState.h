@@ -185,22 +185,95 @@ enum GR_FETCHTYPE_e
     GR_FETCHTYPE_MAX = 21
 };
 
-/* the pixel-pipe record header grCheckPixelPipeStack validates
- * (cv_anon_1722; lives at state->pixelPipeline in the render stack). Field
- * ORDER here follows the assert sequence - byte offsets get pinned when
- * grSetupRendering/the pixel pipeline is ported. */
+/* gradient identifiers (_enum_4510grFast_c): the pixel-pipe adder/reference
+ * arrays are indexed by this enum (grSetupGradient/grSetupTriangleGradients;
+ * DEPTH=0/FOG=1 pinned by the mask walk `for g = GR_GRADIENT_FOG; g >=
+ * GR_GRADIENT_DEPTH`, colors 2..5 by `gradient = g + 2`, texcoords 6..9 by
+ * `gradient = coord + 2*texIndex + 6`) */
+enum GR_GRADIENT_e
+{
+    GR_GRADIENT_DEPTH = 0,
+    GR_GRADIENT_FOG = 1,
+    GR_GRADIENT_COLOR_R = 2,
+    GR_GRADIENT_COLOR_G = 3,
+    GR_GRADIENT_COLOR_B = 4,
+    GR_GRADIENT_COLOR_A = 5,
+    GR_GRADIENT_TEX0_S = 6,
+    GR_GRADIENT_TEX0_T = 7,
+    GR_GRADIENT_TEX1_S = 8,
+    GR_GRADIENT_TEX1_T = 9,
+    GR_GRADIENT_MAX = 10
+};
+
+/* per-texture-unit record inside the pixel pipe (grSetupTextureUnit reaches
+ * them raw: unit = pixelPipe + 64*texIndex; fields +4 pixels/+8 palette/
+ * +12 linear/+16 sMask/+20 tMask/+24 rShift[2]/+32 log2DimS; +36..63 unpinned
+ * until the texture session) */
+typedef struct _grPixelPipeTextureUnit
+{
+    unsigned char pad0[4];          /* +0  */
+    void *pixels;                   /* +4  current mipmap pixel pointer */
+    void *palette;                  /* +8  texture->palette (tex+176) */
+    int linear;                     /* +12 mipmap flags bit0 (palette/
+                                     *     linear filtering) */
+    int sMask;                      /* +16 (1 << log2DimS) - 1 */
+    int tMask;                      /* +20 (1 << log2DimT) - 1 */
+    int rShift[2];                  /* +24 s/t fixed-point output shifts */
+    int log2DimS;                   /* +32 current mipmap log2 width */
+    unsigned char pad1[28];         /* +36..63 */
+} _grPixelPipeTextureUnit;          /* 64 bytes */
+
+/* the pixel-pipe record (cv_anon_1722) living in the render stack:
+ * grExecutePixelPipeline passes &renderStack[1830].whichPool =
+ * renderStack+14644 to the compiled program, and the render stack ends at
+ * +23860, so the record spans +14644..+23860 (9216 bytes).
+ *
+ * Pinned so far: the two 64-byte texture units at +0/+64 (grSetupTextureUnit)
+ * and the gradient arrays at +192/+232/+272 (grSetupTriangleGradients'
+ * flat-shade path reaches them raw as pixelPipe+192/232/272). The
+ * grCheckPixelPipeStack field block sits at +128..+191 as an assert-order
+ * placeholder - grSetupRendering pins its real offsets. */
 typedef struct _grPixelPipe
 {
-    int colorBufferStride;
-    int depthBufferStride;
-    int stencilBufferStride;
-    unsigned int fogColor;
-    int alphaReference;
-    unsigned int stencilReference;
-    unsigned char stencilReferenceMasked;
-    unsigned int stencilTestMask;
-    unsigned int stencilWriteMask;
-} _grPixelPipe;
+    _grPixelPipeTextureUnit textureUnit[2];   /* +0, +64 */
+    struct                                    /* +128: grCheckPixelPipeStack
+                                               * assert-order block (3p) -
+                                               * offsets unpinned until
+                                               * grSetupRendering */
+    {
+        int colorBufferStride;
+        int depthBufferStride;
+        int stencilBufferStride;
+        unsigned int fogColor;
+        int alphaReference;
+        unsigned int stencilReference;
+        unsigned char stencilReferenceMasked;
+        unsigned int stencilTestMask;
+        unsigned int stencilWriteMask;
+    } checked;
+    int reference[GR_GRADIENT_MAX];           /* +192 */
+    int xAdder[GR_GRADIENT_MAX];              /* +232 */
+    int yAdder[GR_GRADIENT_MAX];              /* +272 */
+    unsigned char tail[8904];                 /* +312..9215: pinned by the
+                                               * pixel-pipeline/interpreter
+                                               * sessions */
+} _grPixelPipe;                               /* 9216 bytes */
+
+/* gradient-setup context grSetupGradient/grComputeDeltas operate on
+ * (cv_anon_17A0; grSetupTriangleGradients builds one on the stack). Field
+ * order = its stack layout: pPP, v0 screen coords (16.4, already -4096),
+ * the four 16*delta*recipArea edge derivatives, the normalization shift. */
+typedef struct _grGradientInfo
+{
+    _grPixelPipe *pPP;     /* the pixel-pipe record */
+    int v0sx;              /* record0.sx - 4096 */
+    int v0sy;              /* record0.sy - 4096 */
+    int v01sxPerArea;      /* hgMul64h(16*(v1.sx - v0.sx), signed recip) */
+    int v01syPerArea;      /* hgMul64h(16*(v1.sy - v0.sy), signed recip) */
+    int v02sxPerArea;      /* hgMul64h(16*(v2.sx - v0.sx), signed recip) */
+    int v02syPerArea;      /* hgMul64h(16*(v2.sy - v0.sy), signed recip) */
+    int shift;             /* 31 - reciprocal shift */
+} _grGradientInfo;
 
 /* the queued-primitive record handed to the rasterizer draws
  * (cv_anon_17A7): packed cache indices (+ flags: bit 24 = triangle side,
@@ -612,6 +685,11 @@ typedef struct Gerbera_s
                                                        * (grSetupRendering) */
     unsigned int packedFogColor;                      /* fog color packed for
                                                        * the pixel pipe */
+    int activeGradientMask;                           /* per-attribute gradient
+                                                       * enable bits (1 depth,
+                                                       * 2 fog, 0x3C colors,
+                                                       * 0x40/0x80 tex0 s/t,
+                                                       * 0x100/0x200 tex1) */
     unsigned char textureUnitEnabled[2];              /* +48/49: per-unit texcoord
                                                        * stage active (set by the
                                                        * ogl texture-enable path) */
@@ -831,6 +909,23 @@ void grFetchPrimitives(Gerbera_s *state, int fetchType, int numVertices,
 void grRenderElements(Gerbera_s *state, int primitiveType, int vertexCount,
                       int dataType, void *indices);
 void grRenderArrays(Gerbera_s *state, int primitiveType, int vertexCount, int baseIndex);
+
+/* --- grRasterizer.inl: gradient setup ---------------------------------------- */
+void grSetupGradient(_grGradientInfo *info, int gradient, int g01, int g02,
+                     int reference);
+void grComputeDeltas(_grGradientInfo *info, int gradient, int g01, int g02);
+void grSetupTriangleGradients(Gerbera_s *state, _grClipTriangle *tri,
+                              int flatShadeIndex, unsigned int gradientMask);
+void grSetupTextureUnit(Gerbera_s *state, int texIndex, int (*pairs)[2],
+                        int v0sx, int v0sy);
+
+/* --- grSmall.c: gradient helpers --------------------------------------------- */
+int grComputeGradientReference(int v0sx, int v0sy, int xAdd, int yAdd);
+void grComputeDepthOffset(Gerbera_s *state);
+
+/* --- grUtil.h: polygon offset ------------------------------------------------ */
+int grIsDepthOffsetEnabled(Gerbera_s *state, int primitiveType);
+
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);
 void grApplyLighting(Gerbera_s *state, unsigned char *vertexList);

@@ -131,6 +131,7 @@ static void test_clipper(void);
 static void test_vertextcache(void);
 static void test_queueprimitive(void);
 static void test_fetchprimitives(void);
+static void test_gradients(void);
 
 int main(void)
 {
@@ -160,6 +161,7 @@ int main(void)
     test_vertextcache();
     test_queueprimitive();
     test_fetchprimitives();
+    test_gradients();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -2154,4 +2156,246 @@ static void test_fetchprimitives(void)
     CHECK(qidx == 0);
     CHECK(cache->totalFreeSlots == 64);
     st.compilationFailed = 0;
+}
+
+static void test_gradients(void)
+{
+    Gerbera_s st;
+    _grClipTriangle tri;
+    _grVertex *vb;
+    _grPixelPipe *pp;
+    _grGradientInfo info;
+    static unsigned char stack[GR_RENDER_STACK_SIZE];
+    int i;
+    HGint64 area;
+    HGint64 rec;
+
+    memset(&st, 0, sizeof(st));
+    memset(stack, 0, sizeof(stack));
+    st.renderStack = stack;
+    st.renderStackAllocated = 1;
+    st.vertexCache = stack;
+    st.pixelPipeline = stack + 14644; /* grExecutePixelPipeline's record */
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    pp = (_grPixelPipe *)(stack + 14644);
+    vb = (_grVertex *)(stack + 1332);
+
+    /* three well-separated screen positions in the real viewport-transform
+     * format (x/y pixel << 8 per IVector4_viewportTransform's <<8 pad, z in
+     * the depth-gradient units) with distinct depth/fog/front+back colors */
+    vb[0].screenPosition[0] = 100 << 8;
+    vb[0].screenPosition[1] = 80 << 8;
+    vb[0].screenPosition[2] = 1600;
+    vb[1].screenPosition[0] = 300 << 8;
+    vb[1].screenPosition[1] = 40 << 8;
+    vb[1].screenPosition[2] = 3200;
+    vb[2].screenPosition[0] = 60 << 8;
+    vb[2].screenPosition[1] = 400 << 8;
+    vb[2].screenPosition[2] = 6400;
+    vb[0].color.final[0][0] = 0x1000;
+    vb[0].color.final[0][1] = 0x2000;
+    vb[0].color.final[0][2] = 0x3000;
+    vb[0].color.final[0][3] = 0x8000;
+    vb[1].color.final[0][0] = 0xC000;
+    vb[1].color.final[0][1] = 0x4000;
+    vb[1].color.final[0][2] = 0x2000;
+    vb[1].color.final[0][3] = 0x4000;
+    vb[2].color.final[0][0] = 0x3000;
+    vb[2].color.final[0][1] = 0xE000;
+    vb[2].color.final[0][2] = 0x7000;
+    vb[2].color.final[0][3] = 0xC000;
+    vb[0].color.final[1][0] = 0x0500;
+    vb[0].color.final[1][1] = 0x0600;
+    vb[0].color.final[1][2] = 0x0700;
+    vb[0].color.final[1][3] = 0x0800;
+    vb[1].color.final[1][0] = 0x1500;
+    vb[1].color.final[1][1] = 0x1600;
+    vb[1].color.final[1][2] = 0x1700;
+    vb[1].color.final[1][3] = 0x1800;
+    vb[2].color.final[1][0] = 0x2500;
+    vb[2].color.final[1][1] = 0x2600;
+    vb[2].color.final[1][2] = 0x2700;
+    vb[2].color.final[1][3] = 0x2800;
+    tri.indices = grSetIndices(0, 1, 2);
+    tri.side = 0;
+    area = grRoundTriangleArea(grComputeTriangleArea(vb, tri.indices));
+    tri.area = (int)area;
+    CHECK(tri.area != 0);
+
+#define GRAD_VALUE(pp_, grad, sx, sy)                                      \
+    ((pp_)->reference[grad] +                                              \
+     ((((HGint64)(pp_)->xAdder[grad] * ((sx)-4096)) +                      \
+       ((HGint64)(pp_)->yAdder[grad] * ((sy)-4096))) >>                    \
+      12))
+
+#define GRAD_POISON()                                                      \
+    do                                                                     \
+    {                                                                      \
+        for (i = 0; i < GR_GRADIENT_MAX; ++i)                              \
+        {                                                                  \
+            pp->reference[i] = 0x5A5A5A5A;                                 \
+            pp->xAdder[i] = 0x5A5A5A5A;                                    \
+            pp->yAdder[i] = 0x5A5A5A5A;                                    \
+        }                                                                  \
+    } while (0)
+
+    /* mask 0 leaves the arrays untouched */
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 0);
+    CHECK(pp->reference[0] == 0x5A5A5A5A);
+    CHECK(pp->xAdder[5] == 0x5A5A5A5A);
+    CHECK(pp->yAdder[9] == 0x5A5A5A5A);
+
+    /* depth: exact reconstruction at v0 (reference subtracts the v0 term
+     * with the same floor), plane fit at v1/v2 */
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 1);
+    CHECK(pp->xAdder[0] != 0);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_DEPTH, vb[0].screenPosition[0],
+                     vb[0].screenPosition[1]);
+    CHECK(rec == 1600);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_DEPTH, vb[1].screenPosition[0],
+                     vb[1].screenPosition[1]);
+    CHECK(rec > 3200 - 64 && rec < 3200 + 64);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_DEPTH, vb[2].screenPosition[0],
+                     vb[2].screenPosition[1]);
+    CHECK(rec > 6400 - 64 && rec < 6400 + 64);
+
+    /* fog rides the back-alpha slot; reference base = (fog0 << 8) + 128 */
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 2);
+    CHECK(pp->reference[0] == 0x5A5A5A5A); /* depth untouched */
+    rec = GRAD_VALUE(pp, GR_GRADIENT_FOG, vb[0].screenPosition[0],
+                     vb[0].screenPosition[1]);
+    CHECK(rec == (0x0800 << 8) + 128);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_FOG, vb[1].screenPosition[0],
+                     vb[1].screenPosition[1]);
+    /* imRcpu's reciprocal carries ~2.6e-4 relative error (8-bit LUT seed +
+     * 2 NR steps, inherited from the DLL), so vertex fits are approximate */
+    CHECK(rec > (0x1800 << 8) - 2048 && rec < (0x1800 << 8) + 2048);
+
+    /* smooth colors: R/G/B/A plane fits, exact at v0, alpha from the FRONT
+     * row even on the back side */
+    grSetCapability(&st, GR_CAPABILITY_SMOOTH_SHADING, 1);
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 0x3C);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_COLOR_R, vb[0].screenPosition[0],
+                     vb[0].screenPosition[1]);
+    CHECK(rec == (0x1000 << 8) + 0x8000);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_COLOR_G, vb[0].screenPosition[0],
+                     vb[0].screenPosition[1]);
+    CHECK(rec == (0x2000 << 8) + 0x8000);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_COLOR_B, vb[0].screenPosition[0],
+                     vb[0].screenPosition[1]);
+    CHECK(rec == (0x3000 << 8) + 0x8000);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_COLOR_A, vb[0].screenPosition[0],
+                     vb[0].screenPosition[1]);
+    CHECK(rec == (0x8000 << 8) + 0x8000);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_COLOR_R, vb[1].screenPosition[0],
+                     vb[1].screenPosition[1]);
+    CHECK(rec > (0xC000 << 8) - 0x20000 && rec < (0xC000 << 8) + 0x20000);
+    tri.side = 1;
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 0x3C);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_COLOR_R, vb[0].screenPosition[0],
+                     vb[0].screenPosition[1]);
+    CHECK(rec == (0x0500 << 8) + 0x8000);
+    rec = GRAD_VALUE(pp, GR_GRADIENT_COLOR_A, vb[0].screenPosition[0],
+                     vb[0].screenPosition[1]);
+    CHECK(rec == (0x8000 << 8) + 0x8000);
+    tri.side = 0;
+
+    /* flat shading: constants from the flat-shade vertex, zero adders */
+    grSetCapability(&st, GR_CAPABILITY_SMOOTH_SHADING, 0);
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 0x3C);
+    CHECK(pp->reference[GR_GRADIENT_COLOR_R] == (0xC000 << 8) + 0x8000);
+    CHECK(pp->reference[GR_GRADIENT_COLOR_G] == (0x4000 << 8) + 0x8000);
+    CHECK(pp->reference[GR_GRADIENT_COLOR_B] == (0x2000 << 8) + 0x8000);
+    CHECK(pp->reference[GR_GRADIENT_COLOR_A] == (0x4000 << 8) + 0x8000);
+    CHECK(pp->xAdder[GR_GRADIENT_COLOR_R] == 0 &&
+          pp->xAdder[GR_GRADIENT_COLOR_G] == 0 &&
+          pp->xAdder[GR_GRADIENT_COLOR_B] == 0 &&
+          pp->xAdder[GR_GRADIENT_COLOR_A] == 0);
+    CHECK(pp->yAdder[GR_GRADIENT_COLOR_R] == 0 &&
+          pp->yAdder[GR_GRADIENT_COLOR_G] == 0 &&
+          pp->yAdder[GR_GRADIENT_COLOR_B] == 0 &&
+          pp->yAdder[GR_GRADIENT_COLOR_A] == 0);
+    /* back side takes the back-color row; alpha stays the front row */
+    tri.side = 1;
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 0x3C);
+    CHECK(pp->reference[GR_GRADIENT_COLOR_R] == (0x1500 << 8) + 0x8000);
+    CHECK(pp->reference[GR_GRADIENT_COLOR_A] == (0x4000 << 8) + 0x8000);
+    tri.side = 0;
+
+    /* depth offset: grSetupGradient rebuilds the reference fresh each call,
+     * then grComputeDepthOffset adds units once plus a format-scaled copy
+     * (drawSurface byte +10 = depthBytes: 1 -> <<8, 2 -> as-is, 4 -> >>16)
+     * and factor*steeperAdder >> 16 */
+    CHECK(grIsDepthOffsetEnabled(&st, GR_PRIMITIVETYPE_TRIANGLE) == 0);
+    grSetCapability(&st, GR_CAPABILITY_POLYGON_OFFSET_FILL, 1);
+    CHECK(grIsDepthOffsetEnabled(&st, GR_PRIMITIVETYPE_TRIANGLE) == 1);
+    st.depthOffsetUnits = 0;
+    st.depthOffsetFactor = 0;
+    st.drawSurface.depthBytes = 2;
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 1);
+    rec = pp->reference[0];   /* base gradient reference, no offset */
+    st.depthOffsetUnits = 5;
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 1);
+    CHECK(pp->reference[0] == rec + 10);   /* 5 + 5 (depthBytes 2) */
+    st.drawSurface.depthBytes = 4;
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 1);
+    CHECK(pp->reference[0] == rec + 5 + (5 >> 16));
+    st.drawSurface.depthBytes = 1;
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 1);
+    CHECK(pp->reference[0] == rec + 5 + (5 << 8));
+    st.drawSurface.depthBytes = 2;
+    st.depthOffsetFactor = 3;
+    GRAD_POISON();
+    grSetupTriangleGradients(&st, &tri, 1, 1);
+    {
+        int steep = pp->xAdder[0] > pp->yAdder[0] ? pp->xAdder[0] : pp->yAdder[0];
+
+        if (steep < 0)
+            steep = -steep;
+        CHECK(pp->reference[0] == rec + 10 + ((HGint64)3 * steep >> 16));
+    }
+    grSetCapability(&st, GR_CAPABILITY_POLYGON_OFFSET_FILL, 0);
+    st.depthOffsetFactor = 0;
+    st.depthOffsetUnits = 0;
+    st.drawSurface.depthBytes = 0;
+
+#undef GRAD_POISON
+
+    /* grSetupGradient vs grComputeDeltas produce identical adders (the
+     * >=32/<32 shift split is value-equivalent), and the reference identity
+     * ref = g01 - ((xAdd*v0sx + yAdd*v0sy) >> 12) holds */
+    info.pPP = pp;
+    info.shift = 0;
+    info.v0sx = 333;
+    info.v0sy = 444;
+    info.v01sxPerArea = 12345;
+    info.v01syPerArea = -23456;
+    info.v02sxPerArea = 34567;
+    info.v02syPerArea = -45678;
+    grSetupGradient(&info, GR_GRADIENT_TEX1_T, 777000, -888000, 999000);
+    grComputeDeltas(&info, GR_GRADIENT_TEX1_S, 777000, -888000);
+    CHECK(pp->xAdder[GR_GRADIENT_TEX1_T] == pp->xAdder[GR_GRADIENT_TEX1_S]);
+    CHECK(pp->yAdder[GR_GRADIENT_TEX1_T] == pp->yAdder[GR_GRADIENT_TEX1_S]);
+    CHECK(pp->reference[GR_GRADIENT_TEX1_T] ==
+          999000 - (((HGint64)pp->xAdder[GR_GRADIENT_TEX1_T] * 333 +
+                     (HGint64)pp->yAdder[GR_GRADIENT_TEX1_T] * 444) >> 12));
+    /* the >= 32 branch: shift + 14 >= 32 -> shift >= 18 */
+    info.shift = 20;
+    grSetupGradient(&info, GR_GRADIENT_TEX1_T, 777000, -888000, 999000);
+    grComputeDeltas(&info, GR_GRADIENT_TEX1_S, 777000, -888000);
+    CHECK(pp->xAdder[GR_GRADIENT_TEX1_T] == pp->xAdder[GR_GRADIENT_TEX1_S]);
+    CHECK(pp->yAdder[GR_GRADIENT_TEX1_T] == pp->yAdder[GR_GRADIENT_TEX1_S]);
+
+#undef GRAD_VALUE
 }
