@@ -53,8 +53,13 @@ per-translation-unit inline clones that were deduped).
   GR_DATATYPE member names from oglSmall mapping functions + callers.
   GR_CAPABILITY values are NOW PINNED (session 3f).
 - User clip planes (normalsToEyePal[17][0].originalVertex area +
-  texCoordTransform[8] stride-80) need the normalsToEyePal/texCoordTransform
-  record layouts - deferred to the transform stack port.
+  texCoordTransform[8] stride-80) need the transform-stack record layouts.
+  _ITCTransform is NOW PINNED (session 3f, from ITCTransform_copy in
+  _helpers_core): { e[4] uint, m[4][4], lsh[4][4], rsh[4][4], im[4] int64
+  (row 3 * 0x10000 shifted), cl } - lsh/rsh = clamp(e-119, 0..31) /
+  clamp(119-e, 0..31). The state->texCoordTransform records are 80-byte
+  stride _IMatrix4x4 copies (user clip planes use slots 8..13);
+  normalsToEyePal layout still open.
 - grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.
 - grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.
 - grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.

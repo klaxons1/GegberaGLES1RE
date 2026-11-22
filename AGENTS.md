@@ -12,6 +12,10 @@ anything else, then read `PROGRESS.md` to see where the work stands.
   "1.1.0").
 - `docs/libGLES_CM.dll.c` - raw Hex-Rays decompilation (62k lines). This is
   INPUT, never edit it. Everything in it is derived from this file.
+- `docs/libgles_cm.dll.epoc.c` - SECOND reference: the stripped ARM device
+  build (44k lines, all sub_XXXX, no symbols, GNU C++). Use it to recover
+  .data tables Hex-Rays truncated in the WINSCW decompile (e.g. the
+  capability keys table) and to cross-check ambiguous code. Never edit.
 
 ## The workflow (caveman rules)
 
