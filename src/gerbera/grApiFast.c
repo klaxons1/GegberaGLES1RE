@@ -1097,3 +1097,77 @@ void grCleanupRendering(Gerbera_s *state)
     }
     grrEndRendering(state);
 }
+
+/* --- grSetupTextureRectGradients (grApiFast.inl 1687; DLL 33077-33172) -----
+ * Sets up the pixel-pipe gradient arrays for a texture-rect draw: per-unit
+ * texture-coordinate gradients (via grSetupTextureUnit), the fog gradient
+ * (fogAtZero when fogMode==0), the flat color gradients (defaultColorRGBA)
+ * and the depth gradient (zNear..zFar lerp by info->z). */
+
+void grSetupTextureRectGradients(Gerbera_s *state, _grTRGradSetupInfo *info)
+{
+    int gradientMask;
+    _grPixelPipe *pixelPipe;
+    int i;
+
+    if (state == NULL && grAssert("state", "grApiFast.inl", 1687) != 0)
+        grDie(0);
+    gradientMask = state->activeGradientMask;
+    pixelPipe = (_grPixelPipe *)state->pixelPipeline;
+    for (i = 1; i >= 0; --i)
+    {
+        if (((192 << (2 * i)) & gradientMask) != 0)
+        {
+            int txMin = info->txMin[i];
+            int txMax = info->txMax[i];
+            int tyMin = info->tyMin[i];
+            int tyMax = info->tyMax[i];
+            int dTx = txMax - txMin;
+            int dTy = tyMax - tyMin;
+            int dFx = info->fx1 - info->fx0;
+            int dFy = info->fy1 - info->fy0;
+            int xAdder = hgGet64l(hgDiv64_32(hgLsl64(hgSet64s(dTx), 12), dFx));
+            int yAdder = hgGet64l(hgDiv64_32(hgLsl64(hgSet64s(dTy), 12), dFy));
+            int pairs[2][2];
+
+            pixelPipe->xAdder[2 * i + 6] = xAdder;
+            pixelPipe->yAdder[2 * i + 6] = 0;
+            pixelPipe->xAdder[2 * i + 7] = 0;
+            pixelPipe->yAdder[2 * i + 7] = yAdder;
+            pairs[0][0] = txMin + (xAdder >> 1) - 1;
+            pairs[0][1] = tyMin + (yAdder >> 1) + 1;
+            grSetupTextureUnit(state, i, pairs, info->fx0, info->fy0);
+        }
+    }
+    if ((gradientMask & 2) != 0)
+    {
+        int fog = 0;
+
+        if (grTestCapability(state, GR_CAPABILITY_FOG) != 0 && state->fogMode == 0)
+            fog = (int)state->fogAtZero;
+        pixelPipe->reference[1] = (fog & 0xFFFF) << 8;
+        pixelPipe->xAdder[1] = 0;
+        pixelPipe->yAdder[1] = 0;
+    }
+    if ((gradientMask & 0x3C) != 0)
+    {
+        for (i = 3; i >= 0; --i)
+        {
+            pixelPipe->reference[i + 2] = state->defaultColorRGBA[i] << 8;
+            pixelPipe->xAdder[i + 2] = 0;
+            pixelPipe->yAdder[i + 2] = 0;
+        }
+    }
+    if ((gradientMask & 1) != 0)
+    {
+        int zNear = state->zNear;
+        int zFar = state->zFar;
+        int z = IScalar_add(IScalar_mul(info->z, IScalar_sub(zFar, zNear)), zNear);
+
+        pixelPipe->reference[0] = IScalar_toFixedHO(z, 30);
+        pixelPipe->xAdder[0] = 0;
+        pixelPipe->yAdder[0] = 0;
+        if (grIsDepthOffsetEnabled(state, state->primitiveType) != 0)
+            grComputeDepthOffset(state);
+    }
+}

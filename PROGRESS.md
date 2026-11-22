@@ -1391,3 +1391,23 @@ sites (`grApiFast.inl` file/line strings kept verbatim).
   pre-inserted cache program, head-block pins (dither kernel, strides,
   fog/alpha/stencil refs), cleanup frees the stack. 295 hg / 311 imath /
   1068 core, 0 failures.
+
+## Session 3y — grSetupTextureRectGradients (grApiFast.inl 1687)
+
+Committed: texture-rect gradient setup with decompile-matching assert site.
+
+- **grSetupTextureRectGradients** (1687; DLL 33077-33172): per-unit
+  texture-coordinate gradients (xAdder/yAdder = (dTx/dTy << 12) / (dFx/dFy)
+  via hgSet64s/hgLsl64/hgDiv64_32/hgGet64l, pairs = txMin+(xAdder>>1)-1 /
+  tyMin+(yAdder>>1)+1, grSetupTextureUnit), fog gradient (fogAtZero when
+  fogMode==0, reference[1] = (fog & 0xFFFF) << 8), flat color gradients
+  (reference[i+2] = defaultColorRGBA[i] << 8), depth gradient
+  (IScalar lerp zNear..zFar by info->z, IScalar_toFixedHO(...,30)).
+  Gradient indices: tex unit i at 2*i+6/2*i+7, fog at 1, colors at 2..5,
+  depth at 0. The texture-enable mask is (192 << 2*i) & gradientMask.
+- **_grTRGradSetupInfo** defined in grState.h: z@0, fx0/fy0/fx1/fy1@4..16,
+  txMin/tyMin/txMax/tyMax pointers@20..32.
+- Tests: test_texturerect (+18 checks, 1068 -> 1086): texture adders
+  (40960 for 1000<<12/100), fog reference, color references, depth
+  reference (IScalar_toFixedHO(0.5f,30) = 0x1FFFFFE0). 295 hg / 311 imath /
+  1086 core, 0 failures.

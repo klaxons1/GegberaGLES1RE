@@ -138,6 +138,7 @@ static void test_tessellate(void);
 static void test_pipecache(void);
 static void test_signature(void);
 static void test_setuprendering(void);
+static void test_texturerect(void);
 static void test_gradients(void);
 
 int main(void)
@@ -176,6 +177,7 @@ int main(void)
     test_pipecache();
     test_signature();
     test_setuprendering();
+    test_texturerect();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -3487,4 +3489,73 @@ static void test_setuprendering(void)
     CHECK(st.renderStackAllocated == 0);
     CHECK(st.renderStack == (void *)0xBAADF00D);
     CHECK(st.pixelPipeline == (void *)0xBAADF00D);
+}
+
+/* --- test_texturerect: grSetupTextureRectGradients ------------------------- */
+static void test_texturerect(void)
+{
+    Gerbera_s st;
+    _grTRGradSetupInfo info;
+    int txMin[2] = { 0, 100 };
+    int tyMin[2] = { 0, 200 };
+    int txMax[2] = { 1000, 1100 };
+    int tyMax[2] = { 2000, 2200 };
+    _grPixelPipe pipe;
+
+    memset(&st, 0, sizeof(st));
+    memset(&pipe, 0, sizeof(pipe));
+    st.pixelPipeline = &pipe;
+    st.activeGradientMask = 0x3FF;  /* all gradients: depth, fog, colors, tex */
+    st.fogMode = 0;
+    st.fogAtZero = 0x1234;
+    st.defaultColorRGBA[0] = 0x11;
+    st.defaultColorRGBA[1] = 0x22;
+    st.defaultColorRGBA[2] = 0x33;
+    st.defaultColorRGBA[3] = 0x44;
+    st.zNear = 0;
+    st.zFar = 0x3F800000;  /* 1.0f in IScalar (float-as-bits) */
+    st.primitiveType = 4;  /* TEXTURE_RECT */
+    st.capabilities[GR_CAPABILITY_FOG] = 1;
+
+    info.z = 0x3F000000;   /* 0.5f in IScalar */
+    info.fx0 = 0;
+    info.fy0 = 0;
+    info.fx1 = 100;
+    info.fy1 = 200;
+    info.txMin = txMin;
+    info.tyMin = tyMin;
+    info.txMax = txMax;
+    info.tyMax = tyMax;
+
+    grSetupTextureRectGradients(&st, &info);
+
+    /* texture gradients: unit 0 at indices 6/7, unit 1 at 8/9 */
+    /* xAdder = (txMax-txMin) << 12 / (fx1-fx0) = 1000<<12/100 = 40960 */
+    CHECK(pipe.xAdder[6] == 40960);
+    CHECK(pipe.yAdder[6] == 0);
+    CHECK(pipe.xAdder[7] == 0);
+    /* yAdder = (tyMax-tyMin) << 12 / (fy1-fy0) = 2000<<12/200 = 40960 */
+    CHECK(pipe.yAdder[7] == 40960);
+    /* unit 1: dTx=1000, dTy=2000, same screen rect -> same adders */
+    CHECK(pipe.xAdder[8] == 40960);
+    CHECK(pipe.yAdder[9] == 40960);
+
+    /* fog gradient: reference[1] = (fogAtZero & 0xFFFF) << 8 */
+    CHECK(pipe.reference[1] == (0x1234 << 8));
+    CHECK(pipe.xAdder[1] == 0);
+    CHECK(pipe.yAdder[1] == 0);
+
+    /* color gradients: reference[i+2] = defaultColorRGBA[i] << 8 */
+    CHECK(pipe.reference[2] == (0x11 << 8));
+    CHECK(pipe.reference[3] == (0x22 << 8));
+    CHECK(pipe.reference[4] == (0x33 << 8));
+    CHECK(pipe.reference[5] == (0x44 << 8));
+    CHECK(pipe.xAdder[2] == 0);
+    CHECK(pipe.yAdder[5] == 0);
+
+    /* depth gradient: z = lerp(0.0f, 1.0f, 0.5f) = 0.5f;
+     * IScalar_toFixedHO(0.5f, 30) = 0.5 * (2^30-1) = 0x1FFFFFE0 (float rounding) */
+    CHECK(pipe.reference[0] == 0x1FFFFFE0);
+    CHECK(pipe.xAdder[0] == 0);
+    CHECK(pipe.yAdder[0] == 0);
 }

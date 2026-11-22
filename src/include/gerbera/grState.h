@@ -275,6 +275,24 @@ typedef struct _grPixelPipe
                                                * sessions */
 } _grPixelPipe;                               /* 9216 bytes */
 
+/* texture-rect gradient setup info (grSetupTextureRectGradients,
+ * grApiFast.inl 1687; DLL 33077-33172). The caller builds this on its
+ * stack: z (the rect's depth), the screen-space rect corners fx0/fy0/
+ * fx1/fy1, and per-unit texture-coordinate ranges txMin/tyMin/txMax/
+ * tyMax (pointers to int arrays indexed by unit). */
+typedef struct _grTRGradSetupInfo
+{
+    int z;              /* +0  rect depth (IScalar) */
+    int fx0;            /* +4  screen x of the rect's first corner */
+    int fy0;            /* +8  screen y of the rect's first corner */
+    int fx1;            /* +12 screen x of the second corner */
+    int fy1;            /* +16 screen y of the second corner */
+    int *txMin;         /* +20 per-unit texture s minimum */
+    int *tyMin;         /* +24 per-unit texture t minimum */
+    int *txMax;         /* +28 per-unit texture s maximum */
+    int *tyMax;         /* +32 per-unit texture t maximum */
+} _grTRGradSetupInfo;
+
 /* gradient-setup context grSetupGradient/grComputeDeltas operate on
  * (cv_anon_17A0; grSetupTriangleGradients builds one on the stack). Field
  * order = its stack layout: pPP, v0 screen coords (16.4, already -4096),
@@ -1081,6 +1099,7 @@ int  grClipper(Gerbera_s *state, unsigned char *outputFan, unsigned int indices)
 /* --- grFast vertex cache (grApiFast.inl, implemented in grApiFast.c) ------- */
 void grSetupRendering(Gerbera_s *state);
 void grCleanupRendering(Gerbera_s *state);
+void grSetupTextureRectGradients(Gerbera_s *state, _grTRGradSetupInfo *info);
 void grrBeginRendering(Gerbera_s *state);
 void grrEndRendering(Gerbera_s *state);
 void grrUpdateState(Gerbera_s *state);
