@@ -15,11 +15,20 @@
 
 #include "hg/hgDefs.h"
 
+/* grDefs.h defines _grVector3i; pointer-only here to avoid an include cycle */
+struct _grVector3i;
+
 HG_EXTERN_C_BEGIN
 
 void grPrintf(const char *format, ...);
 int  grAssert(const char *expr, const char *file, int line);
 void grDie(int v) ; /* marked noreturn in the port */
+
+/* --- state-free grUtil.h helpers (need grDefs.h types + grRGBA.h) -------- */
+int grVector3iGet(struct _grVector3i *v, int ndx);
+int grUnpackIndex(unsigned int indices, int n);
+unsigned int grSetIndices(int i0, int i1, int i2);
+int grMaskedColorsEqual(unsigned int color, unsigned int mask);
 
 /* combined check used by the ported .inl code */
 #define GR_CHECK(cond, file, line)                                          \
@@ -32,5 +41,12 @@ void grDie(int v) ; /* marked noreturn in the port */
     } while (0)
 
 HG_EXTERN_C_END
+
+#define GR_UTIL_CHECK(cond, file, line)          \
+    do                                           \
+    {                                            \
+        if (!(cond) && grAssert(#cond, (file), (line)) != 0) \
+            grDie(0);                            \
+    } while (0)
 
 #endif /* GR_UTIL_H */

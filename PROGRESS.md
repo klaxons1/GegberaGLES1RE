@@ -55,7 +55,9 @@ per-translation-unit inline clones that were deduped).
   state->textureUnit[2*ndx] (Hex-Rays types it as .xStart[0]); context fields
   seen so far: textureUnit[], pixelPipelineDirty, activeTexture,
   clientActiveTexture, getValues (rgbaOffsets inside), textureManager.
-- grUtil.h misc: grMaskedColorsEqual (port pending).
+- grUtil.h misc: DONE (grVector3iGet/_grVector3i, grUnpackIndex, grSetIndices,
+  grMaskedColorsEqual - ref channel = highest set mask bit, only masked
+  channels compare).
 - Then grApiSmall state setters -> grApiFast/grVertexPipeline -> rasterizer.
 
 ## DONE session 3c (core: color + texture utilities)
@@ -81,7 +83,14 @@ per-translation-unit inline clones that were deduped).
    parmMask=2), grInitTexture, get/set target, mip level access/format/
    initialized, wrap mode, gen mipmaps, crop rect (hgMemCopy 0x10), filter
    (MAG rejects mipmap bits). grGetTextureTargetDimensionality (2D only).
-4. **tests/test_core.c**: +54 checks. Totals: 288 + 311 + 101 = 700 green.
+4. **grUtil.c additions**: grVector3iGet (+_grVector3i from cv_anon_16FD),
+   grUnpackIndex, grSetIndices, grMaskedColorsEqual (ref channel = highest
+   set mask bit; only masked channels compared against it).
+5. **tests/test_core.c**: +65 checks. Totals: 288 + 311 + 112 = 711 green.
+6. **Gerbera_s census** (for the context port): 119 distinct `state->` fields
+   referenced across core fragments; heaviest users grVertexPipeline (247),
+   grApiSmall (242), grApiFast (169). Full field list in this file's git
+   history (session 3c survey).
 
 ## DONE session 3b (core: grDefs.h foundation)
 

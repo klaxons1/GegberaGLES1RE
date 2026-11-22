@@ -110,6 +110,7 @@ static void test_stack(void)
 static void test_rgba(void);
 static void test_pack_color(void);
 static void test_texture(void);
+static void test_util_helpers(void);
 
 int main(void)
 {
@@ -120,6 +121,7 @@ int main(void)
     test_rgba();
     test_pack_color();
     test_texture();
+    test_util_helpers();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -283,4 +285,27 @@ static void test_texture(void)
     }
     CHECK(grGetTextureTarget(&tex) == GR_TEXTURETARGET_2D);
     CHECK((tex.parmMask & 1u) != 0);
+}
+
+/* --- state-free grUtil.h helpers ------------------------------------------ */
+static void test_util_helpers(void)
+{
+    _grVector3i v;
+    v.x = 10; v.y = 20; v.z = 30;
+    CHECK(grVector3iGet(&v, 0) == 10);
+    CHECK(grVector3iGet(&v, 2) == 30);
+    CHECK(grUnpackIndex(grSetIndices(0x11, 0x22, 0x33), 0) == 0x11);
+    CHECK(grUnpackIndex(grSetIndices(0x11, 0x22, 0x33), 2) == 0x33);
+    CHECK(grSetIndices(255, 0, 128) == 0x8000FFu);
+    /* masked colors equal: ref channel = highest set mask bit */
+    {
+        unsigned int c = grSetRGBA(0x44, 0x44, 0x44, 0x44);
+        /* ref channel = highest set mask bit; only masked channels compare */
+        CHECK(grMaskedColorsEqual(c, 0x1u) == 1);
+        CHECK(grMaskedColorsEqual(grSetRGBA(0x44, 0x45, 0x44, 0x44), 0x1u) == 1);  /* G not in mask */
+        CHECK(grMaskedColorsEqual(grSetRGBA(0x44, 0x45, 0x44, 0x44), 0x2u) == 1);  /* ref IS G */
+        CHECK(grMaskedColorsEqual(grSetRGBA(0x44, 0x45, 0x44, 0x44), 0x5u) == 1);  /* ref = B; G ignored */
+        CHECK(grMaskedColorsEqual(grSetRGBA(0x44, 0x45, 0x44, 0x44), 0x3u) == 0);  /* R != ref G */
+        CHECK(grMaskedColorsEqual(grSetRGBA(0x44, 0x45, 0x44, 0x45), 0xFu) == 0);
+    }
 }

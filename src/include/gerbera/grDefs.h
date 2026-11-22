@@ -83,6 +83,12 @@ typedef struct _grRect
     int x0, x1, y0, y1;
 } _grRect;
 
+/* --- integer 3-vector (decompile type cv_anon_16FD; accessed via &v->x) --- */
+typedef struct _grVector3i
+{
+    int x, y, z;
+} _grVector3i;
+
 /* --- stack allocator (decompile type cv_anon_148D) ----------------------- */
 typedef struct _grStackAllocator
 {
