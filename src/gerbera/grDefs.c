@@ -16,13 +16,13 @@ const char grGetDataTypeSize_dataTypeSizes[12] = { 1, 1, 2, 2, 4, 4, 4, 4, 1, 0,
 void grClearDescriptor(_grSurfaceDescriptor *a)
 {
     GR_DEFS_CHECK(a != NULL, "grDefs.h", 219);
-    a->rgbaOffsets[0] = 0;
-    a->rgbaSizes[0] = 0;
-    a->colorMask = 0u;
-    a->colorBytes = 0u;
-    a->depthBytes = 0u;
-    a->stencilBytes = 0u;
-    a->pixelFormat = 0;
+    *(int *)a->rgbaOffsets = 0;
+    *(int *)a->rgbaSizes = 0;
+    a->colorMask = 0;
+    a->colorBytes = 0;
+    a->depthBytes = 0;
+    a->stencilBytes = 0;
+    *(int *)&a->pixelFormat = 0;
 }
 
 void grSetDescriptorSizes(_grSurfaceDescriptor *desc, int rSize, int gSize, int bSize, int aSize)
@@ -31,10 +31,10 @@ void grSetDescriptorSizes(_grSurfaceDescriptor *desc, int rSize, int gSize, int 
     GR_DEFS_CHECK(gSize >= 0 && gSize <= 15, "grDefs.h", 276);
     GR_DEFS_CHECK(bSize >= 0 && bSize <= 15, "grDefs.h", 277);
     GR_DEFS_CHECK(aSize >= 0 && aSize <= 15, "grDefs.h", 278);
-    desc->rgbaSizes[0] = rSize;
-    desc->rgbaSizes[1] = gSize;
-    desc->rgbaSizes[2] = bSize;
-    desc->rgbaSizes[3] = aSize;
+    desc->rgbaSizes[0] = (unsigned char)rSize;
+    desc->rgbaSizes[1] = (unsigned char)gSize;
+    desc->rgbaSizes[2] = (unsigned char)bSize;
+    desc->rgbaSizes[3] = (unsigned char)aSize;
 }
 
 void grSetDescriptorOffsets(_grSurfaceDescriptor *desc, int rOffset, int gOffset, int bOffset, int aOffset)
@@ -43,19 +43,24 @@ void grSetDescriptorOffsets(_grSurfaceDescriptor *desc, int rOffset, int gOffset
     GR_DEFS_CHECK(gOffset >= 0 && gOffset <= 31, "grDefs.h", 288);
     GR_DEFS_CHECK(bOffset >= 0 && bOffset <= 31, "grDefs.h", 289);
     GR_DEFS_CHECK(aOffset >= 0 && aOffset <= 31, "grDefs.h", 290);
-    desc->rgbaOffsets[0] = rOffset;
-    desc->rgbaOffsets[1] = gOffset;
-    desc->rgbaOffsets[2] = bOffset;
-    desc->rgbaOffsets[3] = aOffset;
+    desc->rgbaOffsets[0] = (unsigned char)rOffset;
+    desc->rgbaOffsets[1] = (unsigned char)gOffset;
+    desc->rgbaOffsets[2] = (unsigned char)bOffset;
+    desc->rgbaOffsets[3] = (unsigned char)aOffset;
 }
 
 int grDescriptorsEqual(_grSurfaceDescriptor *a, _grSurfaceDescriptor *b)
 {
     GR_DEFS_CHECK(!a->padding[0] && !a->padding[1], "grDefs.h", 236);
     GR_DEFS_CHECK(!b->padding[0] && !b->padding[1], "grDefs.h", 237);
-    if (a->rgbaOffsets[0] == b->rgbaOffsets[0] && a->rgbaSizes[0] == b->rgbaSizes[0] &&
-        a->colorMask == b->colorMask && a->pixelFormat == b->pixelFormat)
-        return 1;
+    /* whole-int compares like the decompile */
+    if (*(int *)a->rgbaOffsets == *(int *)b->rgbaOffsets &&
+        *(int *)a->rgbaSizes == *(int *)b->rgbaSizes &&
+        *(int *)&a->colorMask == *(int *)&b->colorMask)
+    {
+        if (*(int *)&a->pixelFormat == *(int *)&b->pixelFormat)
+            return 1;
+    }
     return 0;
 }
 
@@ -128,6 +133,18 @@ int grGetImageFormatNumComponents(int imageFormat)
         break;
     }
     return (int)result;
+}
+
+int grIsRectangleInRange(_grRect *rect, int mn, int mx)
+{
+    GR_DEFS_CHECK(rect != NULL, "grDefs.h", 341);
+    if (hgInRange32(rect->x0, mn, mx) == 0)
+        return 0;
+    if (hgInRange32(rect->x1, mn, mx) == 0)
+        return 0;
+    if (hgInRange32(rect->y0, mn, mx) != 0)
+        return hgInRange32(rect->y1, mn, mx) != 0;
+    return 0;
 }
 
 /* --- stack allocator ------------------------------------------------------- */

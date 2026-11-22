@@ -63,19 +63,55 @@ extern const char grGetDataTypeSize_dataTypeSizes[12];
 #define GR_PIXELFORMAT_MAX 6
 #define GR_PALETTEFORMAT_MAX 3
 
-/* --- surface descriptor (decompile type cv_anon_14F9) -------------------- */
+/* --- surface descriptor (decompile type cv_anon_14F9) --------------------
+ * rgbaOffsets/rgbaSizes are PACKED BYTES: the decompile clears/compares/copies
+ * them as whole ints (*(int*)a->rgbaOffsets = 0 in grClearDescriptor, and
+ * grGetDrawBufferDescriptor moves 4-byte chunks between drawSurface and the
+ * descriptor). colorMask + the 3 *Bytes form the next int; pixelFormat sits
+ * at int offset 3 (drawSurface int 3 -> desc->pixelFormat), so paletteFormat
+ * and padding[2] trail it. */
 typedef struct _grSurfaceDescriptor
 {
-    int rgbaOffsets[4];
-    int rgbaSizes[4];
-    unsigned int colorMask;
+    unsigned char rgbaOffsets[4];
+    unsigned char rgbaSizes[4];
+    unsigned char colorMask;
     unsigned char colorBytes;
     unsigned char depthBytes;
     unsigned char stencilBytes;
-    unsigned char padding[2];   /* decompile: padding[0], padding[1] */
     int pixelFormat;
     int paletteFormat;
+    unsigned char padding[2];
 } _grSurfaceDescriptor;
+
+/* --- draw surface (decompile cv_anon_1686; first 4 ints ARE the descriptor
+ * view, then width/height (assert strings name them), then per-buffer
+ * {data, stride} records with stride at ints 7/9/11) ---------------------- */
+typedef struct _grSurfaceBuffer
+{
+    void *data;
+    int stride;
+} _grSurfaceBuffer;
+
+enum GR_BUFFERTYPE_e
+{
+    GR_BUFFERTYPE_COLOR = 0,
+    GR_BUFFERTYPE_DEPTH = 1,
+    GR_BUFFERTYPE_STENCIL = 2
+};
+
+typedef struct _grDrawSurface
+{
+    unsigned char rgbaOffsets[4];
+    unsigned char rgbaSizes[4];
+    unsigned char colorMask;
+    unsigned char colorBytes;
+    unsigned char depthBytes;
+    unsigned char stencilBytes;
+    int pixelFormat;
+    int width;
+    int height;
+    _grSurfaceBuffer buffers[3];
+} _grDrawSurface;
 
 /* --- rectangle (decompile type cv_anon_1475) ----------------------------- */
 typedef struct _grRect
@@ -108,6 +144,7 @@ int  grGetDescriptorOffset(_grSurfaceDescriptor *desc, int channel);
 /* --- rectangles (grDefs.h) ---------------------------------------------- */
 void grSetRectangle(_grRect *rect, int x0, int x1, int y0, int y1);
 int  grIsRectangleEmpty(_grRect *rect);
+int  grIsRectangleInRange(_grRect *rect, int mn, int mx);
 
 /* --- data types / image formats (grDefs.h) ------------------------------ */
 int grGetDataTypeSize(int dataType);
@@ -129,8 +166,9 @@ int          grMaskedDescriptorsEqual(unsigned int mask, _grSurfaceDescriptor *a
 unsigned int grGetPackedColorWriteMask(_grSurfaceDescriptor *desc, unsigned int colorMask);
 unsigned int grUnpackColor(unsigned int color, _grSurfaceDescriptor *desc);
 
-/* --- alignment (grSmall.c) ---------------------------------------------- */
+/* --- alignment / bool validation (grSmall.c) ----------------------------- */
 int grIsAligned(void *ptr, int alignment);
+int grIsValidBool(int v);
 
 HG_EXTERN_C_END
 

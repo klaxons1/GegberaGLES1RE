@@ -111,6 +111,9 @@ static void test_rgba(void);
 static void test_pack_color(void);
 static void test_texture(void);
 static void test_util_helpers(void);
+static void test_state_cull(void);
+static void test_state_viewport(void);
+static void test_state_pixel(void);
 
 int main(void)
 {
@@ -122,6 +125,9 @@ int main(void)
     test_pack_color();
     test_texture();
     test_util_helpers();
+    test_state_cull();
+    test_state_viewport();
+    test_state_pixel();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -308,4 +314,200 @@ static void test_util_helpers(void)
         CHECK(grMaskedColorsEqual(grSetRGBA(0x44, 0x45, 0x44, 0x44), 0x3u) == 0);  /* R != ref G */
         CHECK(grMaskedColorsEqual(grSetRGBA(0x44, 0x45, 0x44, 0x45), 0xFu) == 0);
     }
+}
+
+/* --- grState.h / grApiSmall.c ---------------------------------------------- */
+#include "gerbera/grState.h"
+
+static void test_state_cull(void)
+{
+    Gerbera_s st;
+    memset(&st, 0, sizeof(st));
+
+    grSetCullMode(&st, GR_WINDING_CW, 1u);
+    CHECK(st.frontFace == GR_WINDING_CW);
+    CHECK(st.cullMask == 1u);
+    CHECK(st.cullNegative == 1);            /* cullMask bit0 set, CW */
+    CHECK(st.lightingSideMask == 1);
+    grSetCullMode(&st, GR_WINDING_CCW, 1u);
+    CHECK(st.cullNegative == 0);            /* CCW flips the negative test */
+    grSetCullMode(&st, GR_WINDING_CW, 0u);
+    CHECK(st.cullNegative == 0);
+    CHECK(grTestCapability(&st, GR_CAPABILITY_MAX - 1) == 0);
+    grEnableCapability(&st, 10);
+    CHECK(grTestCapability(&st, 10) == 1);
+    grDisableCapability(&st, 10);
+    CHECK(grTestCapability(&st, 10) == 0);
+    grSetCapability(&st, GR_CAPABILITY_LIGHT_MODEL_TWO_SIDE, 1);
+    CHECK(grGetCapability(&st, GR_CAPABILITY_LIGHT_MODEL_TWO_SIDE) == 1);
+    CHECK(st.lightingSideMask == 3);        /* updated by grSetCapability */
+    grSetCapability(&st, GR_CAPABILITY_LIGHT_MODEL_TWO_SIDE, 0);
+    CHECK(st.lightingSideMask == 1);
+    /* lights: caps 41..48 flip lightActiveMask bits */
+    grSetCapability(&st, 44, 1);
+    CHECK((st.lightActiveMask & (1 << 3)) != 0);
+    CHECK((st.lightActiveDirtyMask & (1 << 3)) != 0);
+    grSetCapability(&st, 44, 0);
+    CHECK((st.lightActiveMask & (1 << 3)) == 0);
+    CHECK(st.normalsToEyeDirty == 0);
+    grSetCapability(&st, GR_CAPABILITY_RESCALE_NORMAL, 1);
+    CHECK(st.normalsToEyeDirty == 1);
+    CHECK(st.normalsToEyePalDirty[8] == 1 && st.normalsToEyePalDirty[0] == 1);
+    /* color material marks all light colors dirty */
+    grSetCapability(&st, GR_CAPABILITY_COLOR_MATERIAL, 1);
+    CHECK(st.lightColorDirtyMask == 0xFFu);
+}
+
+static void test_state_viewport(void)
+{
+    Gerbera_s st;
+    memset(&st, 0, sizeof(st));
+
+    st.drawSurface.width = 320;
+    st.drawSurface.height = 240;
+    grSetViewport(&st, 10, 310, 20, 220);
+    CHECK(st.viewportRectangle.x0 == 10 && st.viewportRectangle.x1 == 310);
+    CHECK(st.viewportOffset.normal[0] == 16 * 10 + 8 * 300 + 8);
+    CHECK(st.viewportOffset.normal[1] == 16 * 20 + 8 * 200 + 8);
+    CHECK(st.viewportScale.normal[0] == (300 << 6));
+    CHECK(st.viewportScale.normal[1] == (int)((unsigned)(20 - 220) * 64u));
+    /* surface scissor = whole surface; render scissor = intersection */
+    CHECK(st.surfaceScissor.x0 == 0 && st.surfaceScissor.x1 == 320);
+    CHECK(st.renderScissor.x0 == 10 && st.renderScissor.x1 == 310);
+    CHECK(st.renderScissor.y0 == 20 && st.renderScissor.y1 == 220);
+    CHECK(st.scissorDirty == 0);
+    CHECK(st.rejectAllStateDirty == 1);
+    /* viewport outside the surface -> empty render scissor */
+    st.rejectAllStateDirty = 0;
+    grSetViewport(&st, 400, 500, 0, 100);
+    CHECK(st.renderScissor.x0 == 0 && st.renderScissor.x1 == 0);
+    CHECK(st.renderScissor.y0 == 0 && st.renderScissor.y1 == 0);
+    /* scissor clipping only applies when SCISSOR_TEST is enabled (faithful) */
+    grSetScissor(&st, 5, 200, 30, 300);
+    CHECK(st.scissorRectangle.x1 == 200);
+    CHECK(st.surfaceScissor.x1 == 320 && (HGuint32)st.surfaceScissor.y1 == 240u); /* ignored */
+    grSetCapability(&st, GR_CAPABILITY_SCISSOR_TEST, 1);
+    grSetScissor(&st, 5, 200, 30, 300);
+    CHECK(st.surfaceScissor.x0 == 5 && st.surfaceScissor.x1 == 200);
+    CHECK(st.surfaceScissor.y0 == 30 && st.surfaceScissor.y1 == 240);
+    /* render scissor = surface scissor ∩ viewport (400..500 x 0..100 = empty) */
+    CHECK(st.renderScissor.x0 == 0 && (HGuint32)st.renderScissor.x1 == 0u);
+    grSetViewport(&st, 0, 320, 0, 240);
+    grSetScissor(&st, 5, 200, 30, 300);
+    CHECK(st.renderScissor.x0 == 5 && st.renderScissor.x1 == 200);
+    CHECK(st.renderScissor.y0 == 30 && st.renderScissor.y1 == 240);
+    (void)0;
+
+    /* depth range 0.25..0.75 in 1.31 -> fixed(HO,30) */
+    grSetDepthRange(&st, FIN(0.25f), FIN(0.75f));
+    CHECK((HGuint32)st.zNear == (HGuint32)FIN(0.25f) && (HGuint32)st.zFar == (HGuint32)FIN(0.75f));
+    {
+        int zn = IScalar_toFixedHO(IScalar_clampUnit(FIN(0.25f)), 30);
+        int zf = IScalar_toFixedHO(IScalar_clampUnit(FIN(0.75f)), 30);
+        CHECK(st.viewportScale.normal[2] == ((zf - zn) >> 1));
+        CHECK(st.viewportOffset.normal[2] == ((zn + zf + 1) >> 1));
+    }
+    CHECK(st.pixelPipelineDirty == 1);
+}
+
+static void test_state_pixel(void)
+{
+    Gerbera_s st;
+    memset(&st, 0, sizeof(st));
+
+    grSetClearColor(&st, 0x8040C0FFu);
+    CHECK(st.clearColor == 0x8040C0FFu);
+    grSetClearDepth(&st, 0x40000000);       /* 0.5 in 1.31 */
+    CHECK(st.clearDepth == 0x7FFFFFFF);     /* (2*d*(2^32-1)) >> 32 */
+    grSetClearStencil(&st, 0xAB);
+    CHECK(st.clearStencil == 0xAB);
+
+    grSetAlphaFunc(&st, GR_FUNC_GEQUAL, FIN(0.5f));
+    CHECK(st.alphaFunc == GR_FUNC_GEQUAL);
+    CHECK(st.alphaReference == 128);        /* scalarToFixed(ref, 8) */
+    CHECK(st.pixelPipelineDirty == 1 && st.rejectAllStateDirty == 1);
+    grSetStencilFunc(&st, GR_FUNC_NOTEQUAL, 7, 0xFF);
+    CHECK(st.stencilFunc == GR_FUNC_NOTEQUAL && st.stencilTestMask == 0xFF && st.stencilReference == 7);
+    grSetStencilOp(&st, GR_STENCILOP_KEEP, GR_STENCILOP_INCR, GR_STENCILOP_REPLACE);
+    CHECK(st.stencilFail == GR_STENCILOP_KEEP);
+    CHECK(st.stencilZFail == GR_STENCILOP_INCR && st.stencilZPass == GR_STENCILOP_REPLACE);
+    grSetDepthFunc(&st, GR_FUNC_LEQUAL);
+    CHECK(st.depthFunc == GR_FUNC_LEQUAL);
+    grSetLogicOp(&st, GR_LOGICOP_XOR);
+    CHECK(st.logicOp == GR_LOGICOP_XOR);
+    grSetBlendFunc(&st, 2, 3);
+    CHECK(st.srcBlendFactor == 2 && st.dstBlendFactor == 3);
+    grSetColorMask(&st, 0x5);
+    CHECK(st.colorMask == 0x5);
+    grSetDepthMask(&st, 0);
+    CHECK(st.depthMask == 0);
+    grSetStencilMask(&st, 0xF0);
+    CHECK(st.stencilWriteMask == 0xF0);
+    grSetDepthOffset(&st, -2, 4);
+    CHECK(st.depthOffsetFactor == -2 && st.depthOffsetUnits == 4);
+    CHECK(grIsDepthOffsetEnabled(&st, 0) == grTestCapability(&st, 11));
+
+    /* fog */
+    grSetFogMode(&st, GR_FOGMODE_LINEAR);
+    CHECK(st.fogMode == GR_FOGMODE_LINEAR);
+    grSetFogDensity(&st, FIN(1.5f));
+    CHECK((HGuint32)st.fogDensity == (HGuint32)FIN(1.5f));
+    grSetFogRange(&st, FIN(10.0f), FIN(20.0f));
+    {
+        int range = IScalar_sub(FIN(20.0f), FIN(10.0f));
+        int oo = IScalar_rcp(range);
+        int v = IScalar_scalarToFixed(IScalar_mul(FIN(20.0f), oo), 16);
+        CHECK(st.fogOORange == oo);
+        CHECK(st.fogAtZero == (HGuint32)~(unsigned int)(unsigned short)hgClamp32_0_x(v, 0xFFFF));
+    }
+    grSetFogRange(&st, FIN(5.0f), FIN(5.0f));   /* equal -> OOR zero, fog@0 = 0xFFFF */
+    CHECK(st.fogOORange == IScalar_zero());
+    CHECK(st.fogAtZero == 0xFFFF);
+    grSetFogColor(&st, 0x00FFFFFFu);
+    CHECK(st.fogColor == 0x00FFFFFFu);
+    grSetRectGradients(&st, 1);
+    CHECK(st.screenRectGradients == 1);
+
+    /* global ambient */
+    {
+        _XColor3 amb;
+        XColor3_setx(&amb, 100, 200, 300);
+        grSetGlobalAmbient(&st, &amb);
+        CHECK(st.ambientColor.r == amb.r && st.ambientColor.g == amb.g && st.ambientColor.b == amb.b);
+        CHECK(st.ambientLightSumDirty == 1);
+        st.ambientLightSumDirty = 0;
+        grSetGlobalAmbient(&st, &amb);      /* same: no dirty */
+        CHECK(st.ambientLightSumDirty == 0);
+    }
+
+    /* draw surface descriptor roundtrip */
+    {
+        _grSurfaceDescriptor desc;
+        _grDrawSurface *ds = &st.drawSurface;
+        ds->rgbaOffsets[0] = 0; ds->rgbaOffsets[1] = 8;
+        ds->rgbaOffsets[2] = 16; ds->rgbaOffsets[3] = 24;
+        ds->rgbaSizes[0] = 8; ds->rgbaSizes[1] = 8;
+        ds->rgbaSizes[2] = 8; ds->rgbaSizes[3] = 8;
+        ds->colorMask = 0xF;
+        ds->pixelFormat = GR_IMAGEFORMAT_RGBA;
+        grGetDrawBufferDescriptor(&st, &desc);
+        CHECK(desc.rgbaOffsets[0] == 0 && desc.rgbaOffsets[3] == 24);
+        CHECK(desc.rgbaSizes[0] == 8 && desc.rgbaSizes[3] == 8);
+        CHECK(desc.colorMask == 0xF && desc.pixelFormat == GR_IMAGEFORMAT_RGBA);
+        (void)ds;
+    }
+
+    /* dither decision: any channel masked in with size 1..7 */
+    grSetCapability(&st, GR_CAPABILITY_DITHER, 1);
+    st.drawSurface.colorMask = 0xF;
+    st.drawSurface.rgbaSizes[0] = 8; st.drawSurface.rgbaSizes[1] = 8;
+    st.drawSurface.rgbaSizes[2] = 8; st.drawSurface.rgbaSizes[3] = 8;
+    grUpdateDither(&st);
+    CHECK(st.useDithering == 0);            /* all channels 8-bit: no dither */
+    st.drawSurface.rgbaSizes[1] = 5;
+    grUpdateDither(&st);
+    CHECK(st.useDithering == 1);            /* G 5-bit: dither */
+    st.drawSurface.colorMask = 0xC;         /* bits 2,3: G (bit 1) not written */
+    grUpdateDither(&st);
+    CHECK(st.useDithering == 0);
 }

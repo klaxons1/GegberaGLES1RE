@@ -1,0 +1,471 @@
+/* grApiSmall.c - state setters (port of the decompiled grApiSmall.inl,
+ * chunk 1: cull/scissor/viewport/capabilities/clears/fog/alpha/stencil/
+ * depth/blend/masks). The material/light/user-clip-plane setters need the
+ * lights/material/texCoordTransform record layouts and land later.
+ *
+ * Assert sites keep the original grApiSmall.inl file/line strings.
+ */
+#include "gerbera/grState.h"
+#include "gerbera/grRGBA.h"
+#include "hg/hgInt32.h"
+
+#define GR_API_CHECK(cond, line)                 \
+    do                                           \
+    {                                            \
+        if (!(cond) && grAssert(#cond, "grApiSmall.inl", (line)) != 0) \
+            grDie(0);                            \
+    } while (0)
+
+/* verbatim from the binary (docs/libGLES_CM.dll.c:5700/5706) */
+int grCapChangesRejectAllState_affectingCapabilities[] = { 98306 };
+int grCapChangesPixelPipeline_affectingCapabilities[15] =
+{
+    32766,
+    0,
+    1025536042,
+    1210589245,
+    1852405063,
+    808007796,
+    1966223736,
+    545029152,
+    1025536042,
+    1210589245,
+    1852405063,
+    808007796,
+    1966618488,
+    1147627520,
+    779314789
+};
+
+/* --- capabilities (grUtil.h) ---------------------------------------------- */
+
+int grTestCapability(Gerbera_s *state, int cap)
+{
+    GR_API_CHECK(hgInRange32(cap, 0, GR_CAPABILITY_MAX - 1), 35);
+    return state->capabilities[cap];
+}
+
+void grEnableCapability(Gerbera_s *state, int cap)
+{
+    GR_API_CHECK(hgInRange32(cap, 0, GR_CAPABILITY_MAX - 1), 41);
+    state->capabilities[cap] = 1;
+}
+
+void grDisableCapability(Gerbera_s *state, int cap)
+{
+    GR_API_CHECK(hgInRange32(cap, 0, GR_CAPABILITY_MAX - 1), 47);
+    state->capabilities[cap] = 0;
+}
+
+int grIsDepthOffsetEnabled(Gerbera_s *state, int primitiveType)
+{
+    GR_API_CHECK(state != NULL, 148);
+    return grTestCapability(state, primitiveType + 11);
+}
+
+/* --- cull ------------------------------------------------------------------ */
+
+void grUpdateCullMode(Gerbera_s *state)
+{
+    unsigned char cullNegative;
+    unsigned char lightingSideMask;
+
+    GR_API_CHECK(state != NULL, 37);
+    cullNegative = (state->cullMask & 1) != 0;
+    if (state->frontFace == 1)
+        cullNegative = (state->cullMask & 1) == 0;
+    state->cullNegative = cullNegative;
+    lightingSideMask = 1;
+    if (grTestCapability(state, GR_CAPABILITY_LIGHT_MODEL_TWO_SIDE) != 0)
+        lightingSideMask = 3;
+    state->lightingSideMask = lightingSideMask;
+}
+
+/* --- depth range / scissor / viewport -------------------------------------- */
+
+void grSetDepthRange(Gerbera_s *state, int n, int f)
+{
+    int zNear, zFar;
+
+    GR_API_CHECK(state != NULL, 81);
+    zNear = IScalar_toFixedHO(IScalar_clampUnit(n), 30);
+    zFar = IScalar_toFixedHO(IScalar_clampUnit(f), 30);
+    state->viewportScale.normal[2] = (zFar - zNear) >> 1;
+    state->viewportOffset.normal[2] = (zNear + zFar + 1) >> 1;
+    state->pixelPipelineDirty = 1;
+    state->zNear = n;
+    state->zFar = f;
+}
+
+void grUpdateScissor(Gerbera_s *state)
+{
+    int x0, y0, x1, y1;
+    int x0a, y0a, x1a, y1a;
+
+    GR_API_CHECK(state != NULL, 131);
+    x0 = 0;
+    y0 = 0;
+    x1 = state->drawSurface.width;
+    y1 = state->drawSurface.height;
+    if (grTestCapability(state, GR_CAPABILITY_SCISSOR_TEST) != 0)
+    {
+        int x0b = hgMax32(0, state->scissorRectangle.x0);
+        int y0b = hgMax32(0, state->scissorRectangle.y0);
+        x1 = hgMin32(x1, state->scissorRectangle.x1);
+        y1 = hgMin32(y1, state->scissorRectangle.y1);
+        x0 = hgMin32(x0b, x1);
+        y0 = hgMin32(y0b, y1);
+    }
+    grSetRectangle(&state->surfaceScissor, x0, x1, y0, y1);
+    x0a = hgMax32(x0, state->viewportRectangle.x0);
+    x1a = hgMin32(x1, state->viewportRectangle.x1);
+    y0a = hgMax32(y0, state->viewportRectangle.y0);
+    y1a = hgMin32(y1, state->viewportRectangle.y1);
+    if (x0a > x1a || y0a > y1a)
+    {
+        y1a = 0;
+        y0a = 0;
+        x1a = 0;
+        x0a = 0;
+    }
+    grSetRectangle(&state->renderScissor, x0a, x1a, y0a, y1a);
+    GR_API_CHECK(grIsRectangleInRange(&state->renderScissor, 0, GR_MAX_DISPLAY_DIMENSION) != 0, 176);
+    state->scissorDirty = 0;
+    state->rejectAllStateDirty = 1;
+}
+
+void grSetScissor(Gerbera_s *state, int x0, int x1, int y0, int y1)
+{
+    GR_API_CHECK(state != NULL, 195);
+    grSetRectangle(&state->scissorRectangle, x0, x1, y0, y1);
+    grUpdateScissor(state);
+}
+
+void grSetViewport(Gerbera_s *state, int x0, int x1, int y0, int y1)
+{
+    GR_API_CHECK(state != NULL, 221);
+    GR_API_CHECK(y0 <= y1 && x0 <= x1, 223);
+    GR_API_CHECK(x1 - x0 <= GR_MAX_VIEWPORT_DIMENSION, 224);
+    GR_API_CHECK(y1 - y0 <= GR_MAX_VIEWPORT_DIMENSION, 225);
+    grSetRectangle(&state->viewportRectangle, x0, x1, y0, y1);
+    state->viewportOffset.normal[0] = 16 * x0 + 8 * (x1 - x0) + 8;
+    state->viewportOffset.normal[1] = 16 * y0 + 8 * (y1 - y0) + 8;
+    state->viewportScale.normal[0] = imLsl32OF(x1 - x0, 6);
+    state->viewportScale.normal[1] = imLsl32OF(y0 - y1, 6);
+    grUpdateScissor(state);
+}
+
+/* --- capabilities ----------------------------------------------------------- */
+
+int grCapChangesRejectAllState(int cap)
+{
+    GR_API_CHECK(hgInRange32(cap, 0, GR_CAPABILITY_MAX - 1), 285);
+    return ((unsigned int)grCapChangesRejectAllState_affectingCapabilities[cap >> 5] >> (cap & 0x1F)) & 1;
+}
+
+int grCapChangesPixelPipeline(int cap)
+{
+    GR_API_CHECK(hgInRange32(cap, 0, GR_CAPABILITY_MAX - 1), 294);
+    return ((unsigned int)grCapChangesPixelPipeline_affectingCapabilities[cap >> 5] >> (cap & 0x1F)) & 1;
+}
+
+void grSetCapability(Gerbera_s *state, int cap, int status)
+{
+    GR_API_CHECK(state != NULL, 303);
+    GR_API_CHECK(hgInRange32(cap, 0, GR_CAPABILITY_MAX - 1), 304);
+    GR_API_CHECK(grIsValidBool(status) != 0, 305);
+    if (status != grTestCapability(state, cap))
+    {
+        int i;
+        if (status != 0)
+            grEnableCapability(state, cap);
+        else
+            grDisableCapability(state, cap);
+        if (cap == GR_CAPABILITY_DITHER)
+            grUpdateDither(state);
+        if (cap == GR_CAPABILITY_SCISSOR_TEST)
+            grUpdateScissor(state);
+        if (hgInRange32(cap, 41, 48) != 0)
+        {
+            int ndx = cap - 41;
+            state->lightActiveDirtyMask |= 1 << ndx;
+            GR_API_CHECK(status == ((state->lightActiveMask & (1 << ndx)) == 0), 325);
+            state->lightActiveMask ^= 1 << ndx;
+        }
+        if (cap == GR_CAPABILITY_COLOR_MATERIAL)
+            state->lightColorDirtyMask = 0xFF;
+        if (cap == GR_CAPABILITY_LIGHT_MODEL_TWO_SIDE)
+            grUpdateCullMode(state);
+        if (grCapChangesRejectAllState(cap) != 0)
+            state->rejectAllStateDirty = 1;
+        if (grCapChangesPixelPipeline(cap) != 0)
+            state->pixelPipelineDirty = 1;
+        if (cap == GR_CAPABILITY_RESCALE_NORMAL)
+        {
+            for (i = 8; i >= 0; --i)
+                state->normalsToEyePalDirty[i] = 1;
+            state->normalsToEyeDirty = 1;
+        }
+    }
+}
+
+int grGetCapability(Gerbera_s *state, int cap)
+{
+    GR_API_CHECK(state != NULL, 371);
+    return grTestCapability(state, cap);
+}
+
+void grUpdateDither(Gerbera_s *state)
+{
+    unsigned char useDither = 0;
+
+    if (grTestCapability(state, GR_CAPABILITY_DITHER) != 0 &&
+        (((state->drawSurface.colorMask & 1) != 0 && hgInRange32(state->drawSurface.rgbaSizes[0], 1, 7) != 0) ||
+         ((state->drawSurface.colorMask & 2) != 0 && hgInRange32(state->drawSurface.rgbaSizes[1], 1, 7) != 0) ||
+         ((state->drawSurface.colorMask & 4) != 0 && hgInRange32(state->drawSurface.rgbaSizes[2], 1, 7) != 0) ||
+         ((state->drawSurface.colorMask & 8) != 0 && hgInRange32(state->drawSurface.rgbaSizes[3], 1, 7) != 0)))
+    {
+        useDither = 1;
+    }
+    state->useDithering = useDither;
+}
+
+/* --- clears ------------------------------------------------------------------ */
+
+void grSetClearColor(Gerbera_s *state, unsigned int color)
+{
+    GR_API_CHECK(state != NULL, 426);
+    state->clearColor = color;
+}
+
+void grSetClearDepth(Gerbera_s *state, int depth)
+{
+    GR_API_CHECK(state != NULL, 455);
+    GR_API_CHECK(depth >= 0, 456);
+    state->clearDepth = (int)hgMulu64h(2 * depth, 0xFFFFFFFF);
+}
+
+void grSetClearStencil(Gerbera_s *state, unsigned int s)
+{
+    GR_API_CHECK(state != NULL, 469);
+    state->clearStencil = s;
+}
+
+/* --- cull mode ---------------------------------------------------------------- */
+
+void grSetCullMode(Gerbera_s *state, int frontFace, unsigned int cullMask)
+{
+    GR_API_CHECK(state != NULL, 483);
+    GR_API_CHECK(frontFace == GR_WINDING_CW || frontFace == GR_WINDING_CCW, 484);
+    GR_API_CHECK((cullMask & 0xFFFFFFFCu) == 0, 485);
+    state->frontFace = frontFace;
+    state->cullMask = cullMask;
+    grUpdateCullMode(state);
+}
+
+/* --- fog ----------------------------------------------------------------------- */
+
+void grSetFogMode(Gerbera_s *state, int fogMode)
+{
+    GR_API_CHECK(state != NULL, 542);
+    GR_API_CHECK(hgInRange32(fogMode, 0, GR_FOGMODE_MAX - 1), 543);
+    state->fogMode = fogMode;
+}
+
+void grSetFogDensity(Gerbera_s *state, int density)
+{
+    GR_API_CHECK(state != NULL, 556);
+    state->fogDensity = density;
+}
+
+void grSetFogRange(Gerbera_s *state, int fogStart, int fogEnd)
+{
+    int diff;
+
+    GR_API_CHECK(state != NULL, 572);
+    state->fogStart = fogStart;
+    state->fogEnd = fogEnd;
+    diff = IScalar_sub(state->fogEnd, state->fogStart);
+    GR_API_CHECK(state != NULL, 579);
+    if (IScalar_testeq(diff) != 0)
+    {
+        state->fogOORange = IScalar_zero();
+        state->fogAtZero = 0xFFFF;
+    }
+    else
+    {
+        int v;
+        state->fogOORange = IScalar_rcp(diff);
+        v = IScalar_mul(fogEnd, state->fogOORange);
+        v = IScalar_scalarToFixed(v, 16);
+        state->fogAtZero = ~(unsigned int)(unsigned short)hgClamp32_0_x(v, 0xFFFF);
+    }
+}
+
+void grSetFogColor(Gerbera_s *state, unsigned int fogColor)
+{
+    GR_API_CHECK(state != NULL, 606);
+    state->fogColor = fogColor;
+    state->pixelPipelineDirty = 1;
+}
+
+/* --- gradients ------------------------------------------------------------------ */
+
+void grSetRectGradients(Gerbera_s *state, int gradients)
+{
+    GR_API_CHECK(state != NULL, 622);
+    GR_API_CHECK(grIsValidBool(gradients) != 0, 623);
+    if (state->screenRectGradients != gradients)
+    {
+        state->screenRectGradients = gradients;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+/* --- global ambient --------------------------------------------------------------- */
+
+void grSetGlobalAmbient(Gerbera_s *state, _XColor3 *ambient)
+{
+    GR_API_CHECK(state != NULL, 764);
+    if (ambient->r != state->ambientColor.r ||
+        ambient->g != state->ambientColor.g ||
+        ambient->b != state->ambientColor.b)
+    {
+        state->ambientColor = *ambient;
+        state->ambientLightSumDirty = 1;
+    }
+}
+
+/* --- alpha / stencil / depth / blend / masks ---------------------------------------- */
+
+void grSetAlphaFunc(Gerbera_s *state, int func, int ref)
+{
+    GR_API_CHECK(state != NULL, 966);
+    GR_API_CHECK(hgInRange32(func, 0, GR_FUNC_MAX - 1), 967);
+    GR_API_CHECK(IScalar_testge(ref) != 0 && IScalar_cmple(ref, IScalar_one()) != 0, 968);
+    if (func != state->alphaFunc)
+    {
+        state->pixelPipelineDirty = 1;
+        state->rejectAllStateDirty = 1;
+    }
+    state->alphaFunc = func;
+    state->alphaReference = hgClamp32_0_x(IScalar_scalarToFixed(ref, 8), 255);
+}
+
+void grSetStencilFunc(Gerbera_s *state, int func, unsigned int ref, unsigned int mask)
+{
+    GR_API_CHECK(state != NULL, 984);
+    GR_API_CHECK(hgInRange32(func, 0, GR_FUNC_MAX - 1), 985);
+    if (func != state->stencilFunc || mask != state->stencilTestMask)
+    {
+        state->stencilFunc = func;
+        state->stencilTestMask = mask;
+        state->pixelPipelineDirty = 1;
+        state->rejectAllStateDirty = 1;
+    }
+    state->stencilReference = ref;
+}
+
+void grGetDrawBufferDescriptor(Gerbera_s *state, _grSurfaceDescriptor *desc)
+{
+    GR_API_CHECK(state != NULL && desc != NULL, 1008);
+    /* whole-int copies across the packed descriptor prefix, like the decompile */
+    *(int *)desc->rgbaOffsets = *(int *)state->drawSurface.rgbaOffsets;
+    *(int *)desc->rgbaSizes = *(int *)state->drawSurface.rgbaSizes;
+    *(int *)&desc->colorMask = *(int *)&state->drawSurface.colorMask;
+    *(int *)&desc->pixelFormat = state->drawSurface.pixelFormat;
+}
+
+void grSetDepthOffset(Gerbera_s *state, int factor, int units)
+{
+    GR_API_CHECK(state != NULL, 1014);
+    if (hgSign32(state->depthOffsetFactor) != hgSign32(factor) ||
+        hgSign32(state->depthOffsetUnits) != hgSign32(units))
+    {
+        state->pixelPipelineDirty = 1;
+    }
+    state->depthOffsetFactor = factor;
+    state->depthOffsetUnits = units;
+}
+
+void grSetStencilOp(Gerbera_s *state, int sFail, int dFail, int dPass)
+{
+    GR_API_CHECK(state != NULL, 1025);
+    GR_API_CHECK(hgInRange32(sFail, 0, GR_STENCILOP_MAX - 1), 1026);
+    GR_API_CHECK(hgInRange32(dFail, 0, GR_STENCILOP_MAX - 1), 1027);
+    GR_API_CHECK(hgInRange32(dPass, 0, GR_STENCILOP_MAX - 1), 1028);
+    if (state->stencilFail != sFail || state->stencilZFail != dFail || state->stencilZPass != dPass)
+    {
+        state->pixelPipelineDirty = 1;
+        state->stencilFail = sFail;
+        state->stencilZFail = dFail;
+        state->stencilZPass = dPass;
+    }
+}
+
+void grSetDepthFunc(Gerbera_s *state, int func)
+{
+    GR_API_CHECK(state != NULL, 1042);
+    GR_API_CHECK(hgInRange32(func, 0, GR_FUNC_MAX - 1), 1043);
+    if (state->depthFunc != func)
+    {
+        state->depthFunc = func;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+void grSetLogicOp(Gerbera_s *state, int logicOp)
+{
+    GR_API_CHECK(state != NULL, 1054);
+    GR_API_CHECK(hgInRange32(logicOp, 0, GR_LOGICOP_MAX - 1), 1055);
+    if (state->logicOp != logicOp)
+    {
+        state->logicOp = logicOp;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+void grSetBlendFunc(Gerbera_s *state, int srcFactor, int dstFactor)
+{
+    GR_API_CHECK(state != NULL, 1079);
+    GR_API_CHECK(hgInRange32(srcFactor, 0, GR_BLENDFACTOR_MAX - 1), 1080);
+    GR_API_CHECK(hgInRange32(dstFactor, 0, GR_BLENDFACTOR_MAX - 1), 1081);
+    if (state->srcBlendFactor != srcFactor || state->dstBlendFactor != dstFactor)
+    {
+        state->srcBlendFactor = srcFactor;
+        state->dstBlendFactor = dstFactor;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+void grSetColorMask(Gerbera_s *state, unsigned int mask)
+{
+    GR_API_CHECK(state != NULL, 1093);
+    GR_API_CHECK((mask & 0xFFFFFFF0u) == 0, 1094);
+    if (state->colorMask != mask)
+    {
+        state->colorMask = mask;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+void grSetDepthMask(Gerbera_s *state, int mask)
+{
+    GR_API_CHECK(state != NULL, 1104);
+    GR_API_CHECK(grIsValidBool(mask) != 0, 1105);
+    if (state->depthMask != mask)
+    {
+        state->depthMask = mask;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+void grSetStencilMask(Gerbera_s *state, unsigned int mask)
+{
+    GR_API_CHECK(state != NULL, 1115);
+    if (state->stencilWriteMask != mask)
+    {
+        state->stencilWriteMask = mask;
+        state->pixelPipelineDirty = 1;
+    }
+}
