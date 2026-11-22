@@ -326,6 +326,53 @@ typedef struct _grPipelineCache
 } _grPipelineCache;                 /* 32 bytes in the 32-bit DLL
                                        * (hgMemSet(cache, 0, 0x20)) */
 
+/* pipeline signature (cv_anon_18AA = grSignature, 144 bytes): the full
+ * pixel-pipeline configuration snapshot. Layout reconstructed from
+ * grEvaluatePixelPipeline's named writes + grCompressSignature's byte walk;
+ * byte positions are constrained by s_mainBitCounts/s_textureBitCounts
+ * (a field's value must fit its byte's bit count - the compress asserts
+ * verify). texture[] records are accessed by RAW BYTE OFFSET (the
+ * decompile never recovered their fields; the pipeline session pins them). */
+typedef struct _grSignature
+{
+    _grSurfaceDescriptor descriptor;    /* +0: 16 bytes */
+    unsigned char isValid;              /* +16 */
+    unsigned char logicOp;              /* +17 (4 bits) */
+    unsigned char logicOpEnabled;       /* +18 */
+    unsigned char blendEnabled;         /* +19 */
+    unsigned char alphaFunc;            /* +20 (3 bits) */
+    unsigned char alphaTest;            /* +21 */
+    unsigned char depthFunc;            /* +22 (3 bits) */
+    unsigned char depthTest;            /* +23 */
+    unsigned char depthMask;            /* +24 */
+    unsigned char constantDepth;        /* +25 */
+    unsigned char colorMask;            /* +26 (4 bits) */
+    unsigned char writeColor;           /* +27 */
+    unsigned char srcFactor;            /* +28 (4 bits) */
+    unsigned char dstFactor;            /* +29 (4 bits) */
+    unsigned char fogEnabled;           /* +30 */
+    unsigned char monochromeFog;        /* +31 */
+    unsigned char dither;               /* +32 */
+    unsigned char depthClampMin;        /* +33 */
+    unsigned char stencilFunc;          /* +34 (3 bits) */
+    unsigned char stencilFail;          /* +35 (3 bits) */
+    unsigned char stencilZFail;         /* +36 (3 bits) */
+    unsigned char stencilZPass;         /* +37 (3 bits) */
+    unsigned char stencilTest;          /* +38 */
+    unsigned char stencilTestMaskFull;  /* +39 */
+    unsigned char stencilWriteMaskFull; /* +40 */
+    unsigned char stencilAllOpsEqual;   /* +41 */
+    unsigned char stencilZOpsEqual;     /* +42 */
+    unsigned char depthClampMax;        /* +43 */
+    unsigned char flatShading;          /* +44 */
+    unsigned char constantWriteColor;   /* +45 */
+    unsigned char perPixelPack;         /* +46 */
+    unsigned char applyColorWriteMask;  /* +47 */
+    unsigned char screenRectGradients;  /* +48 (0/1 flag) */
+    unsigned char reserved[7];          /* +49..55 (zero bit counts) */
+    unsigned char texture[2][44];       /* +56: per-unit records (raw) */
+} _grSignature;                         /* 144 bytes */
+
 /* triangle tessellation status (grClassifyTriangle) */
 enum GR_TRIANGLESTATUS_e
 {
@@ -516,7 +563,11 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_UNUSED = 17,            /* flagged guess: unpinned gap;
                                            * scratch slot (grDrawClippedLine
                                            * clears it after its quad draws) */
-    GR_CAPABILITY_POLYGON_OFFSET_FILL = 14,
+    GR_CAPABILITY_DEPTH_OFFSET_POINT = 12,   /* grIsDepthOffsetEnabled:
+                                               * primitiveType (POINT=1) + 11 */
+    GR_CAPABILITY_DEPTH_OFFSET_LINE = 13,    /* primitiveType (LINE=2) + 11 */
+    GR_CAPABILITY_POLYGON_OFFSET_FILL = 14,  /* primitiveType (TRIANGLE=3) + 11
+                                               * = GR_CAPABILITY_DEPTH_OFFSET_FILL */
     GR_CAPABILITY_SCISSOR_TEST = 15,
     GR_CAPABILITY_CULL_FACE = 16,
     GR_CAPABILITY_LINE_SMOOTH = 18,
@@ -719,6 +770,27 @@ typedef struct _ITCTransform
 
 /* the driver context. Only fields used by ported functions are listed;
  * the set grows with the port (census: 119 distinct state-> fields). */
+/* --- texture unit record (decompile state->textureUnit element) ------------
+ * textureUnit[2*unit] is the bound-texture record; the odd records are the
+ * client-state halves (grSetActiveTextureClient). Field names from the
+ * decompile's xStart/xAdder aliasing; every byte is raw-offset accessed.
+ * The 32-byte element stride is UNPINNED (the texture session pins it). */
+typedef struct _grTextureUnitState
+{
+    void *texture;                /* +0  xStart[0]: bound texture object */
+    unsigned int envColor;        /* +4  xStart[1] */
+    unsigned char envMode;        /* +8  xAdder[0] (internal 0..4) */
+    unsigned char envFuncRGB;     /* +9  xAdder[1] */
+    unsigned char envFuncAlpha;   /* +10 xAdder[2] */
+    unsigned char envSrcRGB[3];   /* +11..13 xAdder[3..5] */
+    unsigned char envSrcAlpha[3]; /* +14..16 xAdder[6..8] */
+    unsigned char envOpRGB[3];    /* +17..19 combine ops (eval case 5) */
+    unsigned char envOpAlpha[3];  /* +20..22 */
+    unsigned char envScaleRGB;    /* +23 (31-clz -> shift) */
+    unsigned char envScaleAlpha;  /* +24 */
+    unsigned char pad25[7];       /* +25..31 (DLL unpinned) */
+} _grTextureUnitState;
+
 typedef struct Gerbera_s
 {
     /* --- capabilities --------------------------------------------------- */
@@ -762,6 +834,9 @@ typedef struct Gerbera_s
     /* --- draw surface ----------------------------------------------------- */
     _grDrawSurface drawSurface;
     int useDithering;
+
+    _grTextureUnitState textureUnit[2 * GR_MAX_TEXTURE_UNITS];
+    unsigned char useTexUnit[GR_MAX_TEXTURE_UNITS]; /* per-unit enable */
 
     /* --- vertex pipeline (EPOC: vertexArray +308, 8 records; renderStack
      * pool pointer +116, vertex fetch buffer at pool+1332, 128-byte vertex
@@ -1049,6 +1124,14 @@ void *grCacheInsert(_grPipelineCache *cache, _grCacheSignature *signature,
 int grCacheGetFreeMemory(_grPipelineCache *cache);
 void grCacheSelfCheck(_grPipelineCache *cache);
 _grCacheEntry *grCacheFindFreeEntry(_grPipelineCache *cache, int dataSize);
+
+/* --- grPixelPipeline.inl: signature machinery --------------------------------- */
+int grIsGradientUsed(unsigned char *paramMask, int g);
+void grCompressSignature(_grCacheSignature *compressed,
+                         _grSignature *uncompressed);
+void grEvaluatePixelPipeline(Gerbera_s *state, _grSignature *signature);
+void grEnsureValidPixelPipeline(Gerbera_s *state);
+void grCheckPixelPipeConsistency(Gerbera_s *state);
 void grCheckPixelPipeStack(Gerbera_s *state);
 void grFetchPrimitives(Gerbera_s *state, int fetchType, int numVertices,
                        int vertexCount, void *srcIndices, int baseIndex);
@@ -1090,6 +1173,9 @@ void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
                            unsigned int origIndices, int emptyBits);
 void grExecutePixelPipeline(Gerbera_s *state);
 void grICacheFlush(void *start, unsigned int numBytes);
+int grIsStencilMaskFull(Gerbera_s *state, unsigned int stencilMask);
+int grMaskedDescriptorsEqual(unsigned int mask, _grSurfaceDescriptor *a,
+                             _grSurfaceDescriptor *b);
 
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);
@@ -1102,6 +1188,17 @@ int  grGetPrimitiveVertices(int primitiveType);
 void *grGetVertexArrayPointer(Gerbera_s *state, int arrayType);
 unsigned int grGetVertexArrayBinding(Gerbera_s *state, int arrayType);
 void grResetVertexArray(Gerbera_s *state, int arrayType);
+
+/* --- grSmall.c prefix getters (grSmall.c 34729-34780) ---------------------- */
+int grGetAlphaFunc(Gerbera_s *state);
+int grGetSrcBlendFactor(Gerbera_s *state);
+int grGetDstBlendFactor(Gerbera_s *state);
+int grGetStencilFunc(Gerbera_s *state);
+int grGetStencilFail(Gerbera_s *state);
+int grGetStencilZFail(Gerbera_s *state);
+int grGetStencilZPass(Gerbera_s *state);
+int grGetLogicOp(Gerbera_s *state);
+int grGetRectGradients(Gerbera_s *state);
 
 /* --- capabilities (grUtil.h) --------------------------------------------- */
 int  grTestCapability(Gerbera_s *state, int cap);

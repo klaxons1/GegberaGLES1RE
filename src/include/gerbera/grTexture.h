@@ -86,24 +86,64 @@ typedef struct _grMipLevel
     int pbuffer;
 } _grMipLevel;
 
-/* texture object (decompile cv_anon_1477). Field ORDER in memory is not
- * pinned by the decompile (fields are always accessed by name); only the
- * field set is. */
+/* texture format info row (decompile cv_anon_182B; s_infos[18] in
+ * data.fragments.c 3351, indexed by GR_TEXTUREFORMAT) */
+typedef struct _grTextureFormatInfo
+{
+    unsigned char colorBytes;
+    unsigned char rSize;
+    unsigned char gSize;
+    unsigned char bSize;
+    unsigned char aSize;
+    unsigned char rOffset;
+    unsigned char gOffset;
+    unsigned char bOffset;
+    unsigned char aOffset;
+    unsigned char pixelFormat;
+    unsigned char paletteFormat;
+    unsigned char padding;
+} _grTextureFormatInfo;             /* 12 bytes */
+
+/* texture object (decompile cv_anon_1477). The named fields are always
+ * accessed by name; the RAW-OFFSET consumers (grEvaluatePixelPipeline,
+ * grRasterizer texture setup) pin these byte positions:
+ *   +8   u16 texFormat (the descriptor source)
+ *   +176 palette base pointer (copied into the pipe unit +8)
+ *   +183 flags byte (0x10 -> signature, 0x20 -> rasterizer enable)
+ *   +204/205 per-coord texcoord data format (0=u16, 1=u8, 2=u10; asserted)
+ *   +206 flags (bit0 -> signature, bit1 -> rasterizer)
+ *   +207 flags (bit0 -> signature)
+ * The mipmap base offset is NOT pinned; everything between numMipLevels
+ * and palette, and between palette and the coord formats, is unnamed DLL
+ * data (pads below reserve the pinned gaps). */
 typedef struct _grTexture
 {
-    unsigned int parmMask;
-    unsigned char filterMask[2];
-    unsigned char wrapMode[2];
-    unsigned char target;
-    unsigned char numMipLevels;
-    void *palette;
-    _grMipLevel mipmap[GR_MAX_TEXTURE_MIPMAPS];
+    unsigned int parmMask;              /* +0 */
+    unsigned char filterMask[2];        /* +4 */
+    unsigned char wrapMode[2];          /* +6 */
+    unsigned short texFormat;           /* +8  (DLL u16, pinned) */
+    unsigned char target;               /* +10 */
+    unsigned char numMipLevels;         /* +11 */
+    unsigned char pad12[164];           /* +12..175 (DLL unnamed params) */
+    void *palette;                      /* +176 (DLL, pinned) */
+    unsigned char pad180[3];            /* +180..182 */
+    unsigned char flags183;             /* +183 (DLL, pinned) */
+    unsigned char pad184[20];           /* +184..203 (DLL unnamed) */
+    unsigned char coordFormat[2];       /* +204/205 (DLL, pinned) */
+    unsigned char flags206;             /* +206 (DLL, pinned) */
+    unsigned char flags207;             /* +207 (DLL, pinned) */
+    _grMipLevel mipmap[GR_MAX_TEXTURE_MIPMAPS]; /* base UNPINNED */
     _grRect cropRect;
     int genMipMaps;
 } _grTexture;
 
 int grIsValidTexture(_grTexture *texture);
 void grUpdateTexture(_grTexture *texture);
+void grrGetTextureFormatDescriptor(_grSurfaceDescriptor *desc, int texFormat);
+
+/* texture-env combine ranges (grEvaluatePixelPipeline asserts) */
+#define GR_TEXENVCOMBSRC_MAX 4
+#define GR_TEXENVCOMBFUNC_MAX 8
 int grGetTextureTargetDimensionality(int texTarget);
 
 void grInitTexture(_grTexture *texture);

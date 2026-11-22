@@ -121,3 +121,22 @@ int grGetPrimitiveVertices(int primitiveType)
         grDie(0);
     return primitiveType;
 }
+
+/* --- grIsStencilMaskFull (grUtil.h; DLL 34802-34820) --------------------------
+ * Whether the stencil mask covers every bit of the surface's stencil field
+ * (stencilBytes = drawSurface byte 11; byte count 3 is illegal). */
+
+static const int grIsStencilMaskFull_masks[5] = { 0, 255, 65535, 0, -1 };
+
+int grIsStencilMaskFull(Gerbera_s *state, unsigned int stencilMask)
+{
+    int stencilBytes = ((unsigned char *)&state->drawSurface)[11];
+    unsigned int mask;
+
+    if ((hgInRange32(stencilBytes, 0, 4) == 0 || stencilBytes == 3) &&
+        grAssert("hgInRange32(stencilBytes, 0, 4) && (stencilBytes != 3)",
+                 "grUtil.h", 185) != 0)
+        grDie(0);
+    mask = (unsigned int)grIsStencilMaskFull_masks[stencilBytes];
+    return mask == (mask & stencilMask);
+}

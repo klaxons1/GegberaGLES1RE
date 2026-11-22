@@ -181,3 +181,53 @@ void grICacheFlush(void *start, unsigned int numBytes)
     (void)start;
     (void)numBytes;
 }
+
+/* --- grSmall.c prefix getters (DLL 34729-34780) -------------------------------
+ * Plain state-field readers used by grEvaluatePixelPipeline and the API
+ * query paths. The decompile declares them returning the enum types; the
+ * port returns int. */
+
+int grGetAlphaFunc(Gerbera_s *state)
+{
+    return state->alphaFunc;
+}
+
+int grGetSrcBlendFactor(Gerbera_s *state)
+{
+    return state->srcBlendFactor;
+}
+
+int grGetDstBlendFactor(Gerbera_s *state)
+{
+    return state->dstBlendFactor;
+}
+
+int grGetStencilFunc(Gerbera_s *state)
+{
+    return state->stencilFunc;
+}
+
+int grGetStencilFail(Gerbera_s *state)
+{
+    return state->stencilFail;
+}
+
+int grGetStencilZFail(Gerbera_s *state)
+{
+    return state->stencilZFail;
+}
+
+int grGetStencilZPass(Gerbera_s *state)
+{
+    return state->stencilZPass;
+}
+
+int grGetLogicOp(Gerbera_s *state)
+{
+    return state->logicOp;
+}
+
+int grGetRectGradients(Gerbera_s *state)
+{
+    return state->screenRectGradients;
+}

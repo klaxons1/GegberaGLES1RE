@@ -136,6 +136,7 @@ static void test_interpolate(void);
 static void test_linepoint(void);
 static void test_tessellate(void);
 static void test_pipecache(void);
+static void test_signature(void);
 static void test_gradients(void);
 
 int main(void)
@@ -172,6 +173,7 @@ int main(void)
     test_linepoint();
     test_tessellate();
     test_pipecache();
+    test_signature();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -3089,4 +3091,293 @@ static void test_pipecache(void)
     CHECK(grCacheInsert(&cache, &sigA, 1, arena, 512) == NULL);
     grCacheInit(&cache, NULL, entries, 0, 0);
     CHECK(grCacheInsert(&cache, &sigA, 1, arena, 4) == NULL);
+}
+
+/* --- test_signature: signature machinery (grEvaluatePixelPipeline, ------------
+ * grCompressSignature, grIsGradientUsed, grEnsureValidPixelPipeline,
+ * grCheckPixelPipeConsistency). Byte positions are validated by the
+ * compress asserts against the decompile's bit-count tables; the pinned
+ * values come from the 32-bit DLL state walk. */
+static void test_signature(void);
+
+static void test_signature(void)
+{
+    /* grIsGradientUsed: bit (48+g) of the HC parameter mask */
+    {
+        unsigned char pm[16];
+
+        memset(pm, 0, sizeof(pm));
+        pm[6] = 0x01;                       /* bit 48 -> gradient 0 */
+        pm[7] = 0x10;                       /* bit 60 -> gradient 12 */
+        CHECK(grIsGradientUsed(pm, 0) == 1);
+        CHECK(grIsGradientUsed(pm, 1) == 0);
+        CHECK(grIsGradientUsed(pm, 12) == 1);
+        CHECK(grIsGradientUsed(pm, 11) == 0);
+    }
+
+    /* grCompressSignature: bytes built from the DLL's bit-count tables
+     * pack MSB-first into exactly 10 words (314 significant bits) */
+    {
+        _grSignature sig;
+        _grCacheSignature cs;
+        unsigned char *p = (unsigned char *)&sig;
+        static const unsigned char mainCounts[56] =
+        {
+            5, 5, 5, 5, 4, 4, 4, 4, 4, 3, 3, 3, 3, 0, 0, 0,
+            1, 4, 1, 1, 3, 1, 3, 1, 1, 1, 4, 1, 4, 4, 1, 1,
+            1, 1, 3, 3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 0, 0, 0, 0, 0, 0, 0
+        };
+        static const unsigned char texCounts[44] =
+        {
+            5, 5, 5, 5, 4, 4, 4, 4, 4, 3, 3, 3, 3, 2, 0, 0,
+            1, 1, 3, 1, 1, 2, 2, 1, 2, 2, 2, 2, 2, 2, 2, 2,
+            2, 2, 2, 2, 3, 3, 2, 2, 1, 1, 0, 0
+        };
+        static const unsigned int want[10] =
+        {
+            0x5C2BAF49u, 0xE315785Cu, 0x569F2AAFu, 0x2AA9F913u,
+            0x582D7C39u, 0x91458D8Du, 0x8CC34307u, 0x74E83D62u,
+            0xAE551636u, 0x006C6F1Au
+        };
+        int i;
+
+        memset(&sig, 0, sizeof(sig));
+        for (i = 0; i < 56; ++i)
+            p[i] = (unsigned char)((i * 37 + 11) & ((1u << mainCounts[i]) - 1));
+        p += 56;
+        for (i = 0; i < 44; ++i)
+            p[i] = (unsigned char)((i * 53 + 7) & ((1u << texCounts[i]) - 1));
+        p += 44;
+        for (i = 0; i < 44; ++i)
+            p[i] = (unsigned char)((i * 29 + 3) & ((1u << texCounts[i]) - 1));
+        memset(&cs, 0xAB, sizeof(cs));
+        grCompressSignature(&cs, &sig);
+        for (i = 0; i < 10; ++i)
+        {
+            unsigned int w;
+            memcpy(&w, cs.bytes + 4 * i, 4);
+            CHECK(w == want[i]);
+        }
+    }
+
+    /* grEvaluatePixelPipeline: RGBA8888 surface, blend + depth + stencil +
+     * alpha test + fog + depth offset, two bound texture units (unit 0:
+     * RGBA/modulate-style env 1, unit 1: RGB/env 5 combine) */
+    {
+        Gerbera_s st;
+        _grTexture tex[2];
+        _grSignature sig;
+        _grCacheSignature cs;
+        int i;
+
+        memset(&st, 0, sizeof(st));
+        st.drawSurface.rgbaOffsets[0] = 16;
+        st.drawSurface.rgbaOffsets[1] = 8;
+        st.drawSurface.rgbaOffsets[2] = 0;
+        st.drawSurface.rgbaOffsets[3] = 24;
+        st.drawSurface.rgbaSizes[0] = 8;
+        st.drawSurface.rgbaSizes[1] = 8;
+        st.drawSurface.rgbaSizes[2] = 8;
+        st.drawSurface.rgbaSizes[3] = 8;
+        st.drawSurface.colorMask = 0xF;
+        st.drawSurface.colorBytes = 4;
+        st.drawSurface.pixelFormat = 4;
+        st.drawSurface.buffers[0].data = (void *)0x1000;
+        st.drawSurface.buffers[1].data = (void *)0x2000;
+        st.drawSurface.buffers[2].data = (void *)0x3000;
+        st.colorMask = 0xF;
+        st.useDithering = 1;
+        st.depthFunc = 5;
+        st.depthMask = 1;
+        st.viewportScale.normal[2] = 1;
+        st.srcBlendFactor = 2;
+        st.dstBlendFactor = 3;
+        st.fogColor = 0x8040C0FFu;
+        st.alphaFunc = 4;
+        st.stencilFunc = 5;
+        st.stencilFail = 1;
+        st.stencilZFail = 2;
+        st.stencilZPass = 3;
+        st.stencilTestMask = 0xFF;
+        st.stencilWriteMask = 0xFF;
+        st.screenRectGradients = 1;
+        grEnableCapability(&st, GR_CAPABILITY_BLEND);
+        grEnableCapability(&st, GR_CAPABILITY_DEPTH_TEST);
+        grEnableCapability(&st, GR_CAPABILITY_STENCIL_TEST);
+        grEnableCapability(&st, GR_CAPABILITY_ALPHA_TEST);
+        grEnableCapability(&st, GR_CAPABILITY_FOG);
+        grEnableCapability(&st, GR_CAPABILITY_DEPTH_OFFSET_LINE);
+        grEnableCapability(&st, GR_CAPABILITY_SMOOTH_SHADING);
+        for (i = 0; i < 2; ++i)
+        {
+            grInitTexture(&tex[i]);
+            tex[i].texFormat = (unsigned short)(i == 0 ? 2 : 1);
+            tex[i].coordFormat[0] = 0;
+            tex[i].coordFormat[1] = 1;
+            tex[i].flags183 = 0x10;
+            tex[i].flags206 = 1;
+            tex[i].flags207 = 0;
+            st.textureUnit[2 * i].texture = &tex[i];
+            st.useTexUnit[i] = 1;
+        }
+        st.textureUnit[0].envMode = 1;
+        st.textureUnit[2].envMode = 5;
+        st.textureUnit[2].envFuncRGB = 1;
+        st.textureUnit[2].envFuncAlpha = 2;
+        st.textureUnit[2].envSrcRGB[0] = 0;
+        st.textureUnit[2].envSrcRGB[1] = 1;
+        st.textureUnit[2].envSrcRGB[2] = 2;
+        st.textureUnit[2].envOpRGB[0] = 0;
+        st.textureUnit[2].envOpRGB[1] = 1;
+        st.textureUnit[2].envOpRGB[2] = 2;
+        st.textureUnit[2].envSrcAlpha[0] = 1;
+        st.textureUnit[2].envSrcAlpha[1] = 2;
+        st.textureUnit[2].envSrcAlpha[2] = 0;
+        st.textureUnit[2].envOpAlpha[0] = 2;
+        st.textureUnit[2].envOpAlpha[1] = 1;
+        st.textureUnit[2].envOpAlpha[2] = 0;
+        st.textureUnit[2].envScaleRGB = 8;
+        st.textureUnit[2].envScaleAlpha = 9;
+
+        grEvaluatePixelPipeline(&st, &sig);
+        CHECK(sig.isValid == 1);
+        CHECK(sig.dither == 1);
+        CHECK(sig.logicOp == 0);
+        CHECK(sig.logicOpEnabled == 0);
+        CHECK(sig.blendEnabled == 1);
+        CHECK(sig.alphaFunc == 4);
+        CHECK(sig.alphaTest == 1);
+        CHECK(sig.depthFunc == 5);
+        CHECK(sig.depthTest == 1);
+        CHECK(sig.depthMask == 1);
+        CHECK(sig.constantDepth == 0);
+        CHECK(sig.colorMask == 0xF);
+        CHECK(sig.writeColor == 1);
+        CHECK(sig.srcFactor == 2);
+        CHECK(sig.dstFactor == 3);
+        CHECK(sig.fogEnabled == 1);
+        CHECK(sig.monochromeFog == 0);
+        CHECK(sig.depthClampMin == 0);
+        CHECK(sig.depthClampMax == 0);
+        CHECK(sig.stencilFunc == 5);
+        CHECK(sig.stencilFail == 1);
+        CHECK(sig.stencilZFail == 2);
+        CHECK(sig.stencilZPass == 3);
+        CHECK(sig.stencilTest == 1);
+        CHECK(sig.stencilTestMaskFull == 1);
+        CHECK(sig.stencilWriteMaskFull == 1);
+        CHECK(sig.stencilAllOpsEqual == 0);
+        CHECK(sig.stencilZOpsEqual == 0);
+        CHECK(sig.flatShading == 0);
+        CHECK(sig.constantWriteColor == 0);
+        CHECK(sig.perPixelPack == 1);
+        CHECK(sig.applyColorWriteMask == 0);
+        CHECK(sig.screenRectGradients == 1);
+        CHECK(st.packedFogColor == 0x8040C0FFu);
+        /* the surface descriptor is copied verbatim (4 ints) */
+        CHECK(memcmp(sig.descriptor.rgbaOffsets, st.drawSurface.rgbaOffsets,
+                     4) == 0);
+        CHECK(memcmp(sig.descriptor.rgbaSizes, st.drawSurface.rgbaSizes, 4) == 0);
+        CHECK(sig.descriptor.colorMask == 0xF);
+        CHECK(sig.descriptor.colorBytes == 4);
+        CHECK(sig.descriptor.pixelFormat == 4);
+        /* unit 0 record: RGBA descriptor + env-1 decode */
+        CHECK(sig.texture[0][12] == 5);       /* pixelFormat RGBA */
+        CHECK(sig.texture[0][16] == 1);       /* enabled */
+        CHECK(sig.texture[0][17] == 1);       /* flags183 & 0x10 */
+        CHECK(sig.texture[0][19] == 0);       /* flags207 & 1 */
+        CHECK(sig.texture[0][20] == 1);       /* flags206 & 1 */
+        CHECK(sig.texture[0][21] == 0);       /* coord format s */
+        CHECK(sig.texture[0][22] == 1);       /* coord format t */
+        CHECK(sig.texture[0][24] == 0);
+        CHECK(sig.texture[0][25] == 3);
+        CHECK(sig.texture[0][27] == 2);
+        CHECK(sig.texture[0][28] == 3);
+        CHECK(sig.texture[0][34] == 2);
+        CHECK(sig.texture[0][36] == 4);
+        CHECK(sig.texture[0][37] == 1);
+        CHECK(sig.texture[0][40] == 1);
+        CHECK(sig.texture[0][41] == 1);
+        /* unit 1 record: RGB descriptor + env-5 combine decode */
+        CHECK(sig.texture[1][8] == 7);        /* colorMask (RGB) */
+        CHECK(sig.texture[1][12] == 4);       /* pixelFormat RGB */
+        CHECK(sig.texture[1][16] == 1);
+        CHECK(sig.texture[1][24] == 0);       /* rgbSource0 */
+        CHECK(sig.texture[1][25] == 1);       /* alphaSource0 */
+        CHECK(sig.texture[1][27] == 2);       /* alphaOp0 */
+        CHECK(sig.texture[1][29] == 2);       /* alphaSource1 */
+        CHECK(sig.texture[1][31] == 1);       /* alphaOp1 */
+        CHECK(sig.texture[1][35] == 2);       /* alphaOp2 default */
+        CHECK(sig.texture[1][36] == 1);       /* rgbFunction */
+        CHECK(sig.texture[1][37] == 2);       /* alphaFunction */
+        CHECK(sig.texture[1][38] == 3);       /* rgbScale shift */
+        CHECK(sig.texture[1][39] == 3);       /* alphaScale shift */
+        CHECK(sig.texture[1][40] == 1);
+        CHECK(sig.texture[1][41] == 1);
+
+        /* compress: pinned 10-word key for this signature */
+        grCompressSignature(&cs, &sig);
+        {
+            static const unsigned int want[10] =
+            {
+                0x82018888u, 0x8F804833u, 0x77C8EA94u, 0xF82C100Cu,
+                0x44447C02u, 0x98446584u, 0x15087040u, 0x011100F0u,
+                0x08611091u, 0x001022BFu
+            };
+            int k;
+
+            for (k = 0; k < 10; ++k)
+            {
+                unsigned int w;
+                memcpy(&w, cs.bytes + 4 * k, 4);
+                CHECK(w == want[k]);
+            }
+        }
+
+        /* grEnsureValidPixelPipeline: miss on an empty cache takes the
+         * compile-failure exit until the hc module lands */
+        {
+            _grPipelineCache emptyCache;
+            _grCacheEntry emptyEntries[8];
+            unsigned char emptyArena[256];
+
+            grCacheInit(&emptyCache, emptyArena, emptyEntries, 256, 8);
+            st.pipelineCache = &emptyCache;
+            grEnsureValidPixelPipeline(&st);
+            CHECK(st.compilationFailed == 1);
+        }
+
+        /* hit path: the pre-inserted program is published */
+        {
+            _grPipelineCache cache;
+            _grCacheEntry entries[8];
+            static unsigned char arena[16384];
+            static unsigned char prog[16384];
+            void *ins;
+
+            memset(&st.pixelPipelineCode, 0, sizeof(st.pixelPipelineCode));
+            st.compilationFailed = 0;
+            grCacheInit(&cache, arena, entries, (int)sizeof(arena), 8);
+            memset(prog, 0x77, sizeof(prog));
+            ins = grCacheInsert(&cache, &cs, 0x1234u, prog,
+                                (int)sizeof(_grPixelPipe));
+            CHECK(ins != NULL);
+            st.pipelineCache = &cache;
+            grEnsureValidPixelPipeline(&st);
+            CHECK(st.compilationFailed == 0);
+            CHECK((void *)st.pixelPipelineCode == ins);
+            CHECK(st.activeGradientMask == 0x1234);
+            /* the index walk covers gradients 0..9 only (bit 12 ignored) */
+            CHECK(st.numActiveGradients == 4);
+            CHECK(st.activeGradientIndex[0] == 2);
+            CHECK(st.activeGradientIndex[1] == 4);
+            CHECK(st.activeGradientIndex[2] == 5);
+            CHECK(st.activeGradientIndex[3] == 9);
+            /* consistency: the cache still resolves to the same program */
+            st.pixelPipelineDirty = 0;
+            grCheckPixelPipeConsistency(&st);
+            CHECK(st.compilationFailed == 0);
+        }
+    }
 }

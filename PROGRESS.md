@@ -1253,3 +1253,102 @@ resolves tables the WINSCW decompile truncates:
   `imAssert(expr, file, line)`. Keep them distinct when porting.
 - The x86 JIT (hcX86Backend.c) emits native code for the emulator build; its
   "emulator" (hcEmulator.c) interprets the same opcodes. Port both.
+
+## Session 3w — signature machinery (grPixelPipeline.inl 89-988 / DLL 36304-37335)
+
+Committed: signature build + compress + cache glue, all with decompile-matching
+assert sites (`grPixelPipeline.inl` file/line strings kept verbatim).
+
+- **grIsGradientUsed** (702; DLL 36949-36959): reads bit `(48+g)>>3` / `(48+g)&7`
+  of the HC parameter mask (gradients live at mask bits 48..57).
+- **s_mainBitCounts[56] / s_textureBitCounts[44]** (data.fragments.c 3222/3281)
+  transcribed verbatim into grPixelPipeline.c. Total significant bits =
+  110 + 2x102 = 314 -> exactly 10 packed words = GR_CACHE_SIGNATURE_SIZE 40
+  (independently confirms the cache key size).
+- **_grSignature (cv_anon_18AA, 144 bytes)** laid out in grState.h:
+  descriptor (16B = the drawSurface descriptor ints), then scalars
+  isValid@16, logicOp@17(4b), logicOpEnabled@18, blendEnabled@19,
+  alphaFunc@20(3b), alphaTest@21, depthFunc@22(3b), depthTest@23,
+  depthMask@24, constantDepth@25, colorMask@26(4b), writeColor@27,
+  srcFactor@28(4b), dstFactor@29(4b), fogEnabled@30, monochromeFog@31,
+  dither@32, depthClampMin@33, stencilFunc/Fail/ZFail/ZPass@34-37(3b),
+  stencilTest@38, stencilTestMaskFull@39, stencilWriteMaskFull@40,
+  stencilAllOpsEqual@41, stencilZOpsEqual@42, **depthClampMax@43,
+  flatShading@44, constantWriteColor@45, perPixelPack@46,
+  applyColorWriteMask@47, screenRectGradients@48**, reserved 49..55
+  (zero bit counts), texture[2][44]. Byte positions validated by the
+  compress asserts (out-of-range values would die) + probe runs with
+  single-variable toggles (depthClampMax / flatShading / perPixelPack /
+  screenRectGradients each pinned to its byte).
+- **grCompressSignature** (845; DLL 36962-37109): per source byte
+  srcSize = table[byte], includeBits = min(srcSize, numFreeBits),
+  excludeBits = remainder; value = (acc << includeBits) + (src >>
+  excludeBits); numFreeBits hits 0 -> flush a word (MSB-first, bytes may
+  straddle words); excludeBits != 0 -> residual byte seeds the next
+  accumulator. Asserts 845/846/850/860 (main) and 872/881/882/886/896
+  (texture loop, src walks &texture[i]) + 903/909 (dst lands exactly on
+  &bytes[(40+3)/4] = 10 words).
+- **grEvaluatePixelPipeline** (89; DLL 36304-36946): full port. The
+  decompile's 0xCC-scratched 8-descriptor combinedMask array is kept
+  (value fields), spilled pointer fields replaced by typed locals.
+  Behaviour notes pinned by probe: descriptor = drawSurface ints 0..3
+  (drawSurface colorMask is descriptor byte 8 — the decompile's
+  `*(char *)(&drawSurface + 1)` is byte 8, its element type is 8 bytes);
+  buffers[i].data checks are ints 6/8/10; the unit loop counter lives in
+  combinedMask[4].colorMask (int-semantics byte, 1 then 0);
+  `signature->flatShading` is READ at loop start (always 0 -> the
+  constantWriteColor computation is dead in the DLL, transcribed as-is);
+  env switch is on the unit record's envMode byte (xAdder[0], unit +8):
+  cases 0..4 are the fixed env modes over the texture's PIXELFORMAT
+  (0=ALPHA,1=LUMINANCE,2=LUMINANCE_ALPHA,3=INTENSITY,4=RGB,5=RGBA from
+  s_infos), case 5 is TEXENV_COMBINE reading the unit record's
+  combine sources/ops/scales (record +24..+39), default dies (605);
+  post-switch asserts 609-612 (source 0..3, function 0..7);
+  rec+40/41 = 1; the "texture replaces vertex color" block (646) clears
+  vertexRGB/AlphaUsed and sets rec[23] + perPixelPack = 0.
+- **_grTexture raw layout** (cv_anon_1477) pinned where consumed:
+  texFormat u16@+8, palette@+176, flags183@+183 (0x10 -> rec17, 0x20 ->
+  rasterizer), coordFormat[2]@+204/205 (texcoord data formats 0/1/2 ->
+  rec21/22 and the rasterizer rShift switch), flags206@+206 (bit0 -> rec20,
+  bit1 -> rasterizer), flags207@+207 (bit0 -> rec19). mipmap base offset
+  NOT pinned (named-only access); pads reserve the pinned gaps in
+  grTexture.h. grInitTexture/grUpdateTexture keep named access.
+- **_grTextureUnitState** (state->textureUnit element, 32B stride
+  UNPINNED): texture@0 (xStart[0]), envColor@4 (xStart[1]), envMode@8,
+  envFuncRGB@9, envFuncAlpha@10, envSrcRGB[3]@11, envSrcAlpha[3]@14,
+  envOpRGB[3]@17, envOpAlpha[3]@20, envScaleRGB@23, envScaleAlpha@24
+  (case 5 reads 9..24; xAdder[6..8] = srcAlpha). Units live at elements
+  0 and 2 (odd elements = client halves). useTexUnit[2] separate.
+- **s_infos[18]** (cv_anon_182B, grrTexture.c): per-format rows
+  {colorBytes, rSize, gSize, bSize, aSize, rOffset, gOffset, bOffset,
+  aOffset, pixelFormat, paletteFormat} — paletteFormat 0=direct,
+  1=RGB565 palette, 2=RGBA4444 palette. **grrGetTextureFormatDescriptor**
+  (132/133 asserts) builds a _grSurfaceDescriptor via the grDefs helpers.
+- **grMaskedDescriptorsEqual** already existed in grUtilSmall.c (assert
+  296); **grIsStencilMaskFull** added to grUtil.c (masks {0,255,65535,0,-1},
+  assert 185) + grGetTextureTargetDimensionality dedup (kept in
+  grTexture.c only).
+- **grSmall.c prefix getters** added (DLL 34729-34780): grGetAlphaFunc /
+  SrcBlendFactor / DstBlendFactor / StencilFunc / StencilFail /
+  StencilZFail / StencilZPass / LogicOp / RectGradients.
+- **Cap chain**: GR_CAPABILITY_DEPTH_OFFSET_POINT = 12, LINE = 13 (=
+  grIsDepthOffsetEnabled: primitiveType POINT=1/LINE=2/TRIANGLE=3 + 11);
+  POLYGON_OFFSET_FILL = 14 = DEPTH_OFFSET_FILL.
+- **grEnsureValidPixelPipeline** (1080; DLL 37112-37279): evaluate ->
+  compress -> grCacheFind; hit publishes gradientMask (activeGradientIndex
+  walk covers gradients 0..9 ONLY — mask bits 10+ ignored), numActiveGradients,
+  activeGradientMask, pixelPipelineCode = entry; stack canary asserts at
+  1149/1196. MISS path: the scratch-grow + grExecuteProgram + HC_compile
+  loop is transcribed verbatim in a comment and lands with the hc-module
+  session (grGetBackend / grScratchGrowMemory / grExecuteProgram /
+  HC_compile); until then a miss takes the decompile's compile-failure
+  exit (compilationFailed = 1, return).
+- **grCheckPixelPipeConsistency** (1213; DLL 37282-37335): re-evaluates +
+  re-finds and asserts pixelPipelineCode equality (1235) and gradientMask
+  equality (1236) when pixelPipelineDirty == 0; canary assert 1239.
+- Tests: test_signature (+105 checks, 945 -> 1050): grIsGradientUsed bits,
+  10-word compress pins for a table-driven signature, full
+  grEvaluatePixelPipeline state walk (scalar pins + both texture records +
+  compress word pins), ensure-valid miss (compilationFailed=1) and hit
+  (mask 0x1234 -> indices {2,4,5,9}, bit 12 ignored) + consistency pass.
+  295 hg / 311 imath / 1050 core, 0 failures.
