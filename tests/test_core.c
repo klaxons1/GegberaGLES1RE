@@ -135,6 +135,7 @@ static void test_scanconvert(void);
 static void test_interpolate(void);
 static void test_linepoint(void);
 static void test_tessellate(void);
+static void test_pipecache(void);
 static void test_gradients(void);
 
 int main(void)
@@ -170,6 +171,7 @@ int main(void)
     test_interpolate();
     test_linepoint();
     test_tessellate();
+    test_pipecache();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -2994,4 +2996,97 @@ static void test_tessellate(void)
     st->renderStackAllocated = 0;
     st->pixelPipeline = NULL;
     st->pixelPipelineCode = NULL;
+}
+
+/* --- test_pipecache: the compiled-pipeline program cache ----------------------
+ * 4 entries, 256-byte arena. Exercises find-miss, insert (tail allocation
+ * of the free block), find-hit (timeStamp bump), eviction (LRU), free-block
+ * merging and defragmentation. */
+static void test_pipecache(void)
+{
+    static unsigned char arena[256];
+    static _grCacheEntry entries[4];
+    _grPipelineCache cache;
+    _grCacheSignature sigA, sigB;
+    unsigned int mask;
+    unsigned char *code;
+    unsigned char *code2;
+    int i;
+
+    memset(&sigA, 0, sizeof(sigA));
+    memset(&sigB, 0, sizeof(sigB));
+    sigA.bytes[0] = 0xAA;
+    sigB.bytes[0] = 0xBB;
+
+    grCacheInit(&cache, arena, entries, 256, 4);
+    CHECK(cache.firstFree == entries);
+    CHECK(cache.firstFree->dataSize == 256);
+    CHECK(cache.firstUnused == &entries[1]);
+    CHECK(entries[1].next == &entries[2]);
+    CHECK(entries[2].next == &entries[3]);
+    CHECK(entries[3].next == NULL);
+    CHECK(grCacheGetFreeMemory(&cache) == 256);
+
+    /* miss on the empty cache */
+    CHECK(grCacheFind(&cache, &sigA, &mask) == NULL);
+
+    /* insert A (64 bytes): allocated at the TAIL of the free block */
+    code = grCacheInsert(&cache, &sigA, 0x35, arena, 64);
+    CHECK(code == arena + 192);
+    CHECK(cache.firstUsed == &entries[1]);
+    CHECK(entries[1].dataOffset == 192);
+    CHECK(entries[1].dataSize == 64);
+    CHECK(entries[1].gradientMask == 0x35);
+    CHECK(memcmp(entries[1].signature.bytes, sigA.bytes, 40) == 0);
+    CHECK(cache.firstFree == &entries[0]);
+    CHECK(entries[0].dataSize == 192);
+    CHECK(grCacheGetFreeMemory(&cache) == 192);
+    CHECK(memcmp(arena + 192, arena, 64) == 0);   /* data copied */
+
+    /* hit refreshes the timestamp and returns the code */
+    code = grCacheFind(&cache, &sigA, &mask);
+    CHECK(code == arena + 192);
+    CHECK(mask == 0x35);
+    CHECK(entries[1].timeStamp == 2);
+
+    /* insert B (64): second used entry, free block shrinks again */
+    code2 = grCacheInsert(&cache, &sigB, 0x5A, arena, 64);
+    CHECK(code2 == arena + 128);
+    CHECK(cache.firstUsed == &entries[2]);
+    CHECK(entries[2].dataOffset == 128);
+    CHECK(grCacheGetFreeMemory(&cache) == 128);
+
+    /* fill the arena: insert C (128 bytes) fits exactly */
+    code2 = grCacheInsert(&cache, &sigB, 0x11, arena, 128);
+    CHECK(code2 == arena);
+    CHECK(grCacheGetFreeMemory(&cache) == 0);
+    CHECK(cache.firstFree == NULL);
+
+    /* inserting now EVICTS the least-recently-used entry (A, stamp 2);
+     * its freed block (at the arena tail) is reused as-is: tail allocation
+     * of the exact-fit free block returns the same address */
+    sigA.bytes[1] = 1;
+    code = grCacheInsert(&cache, &sigA, 0x77, arena, 64);
+    CHECK(code == arena + 192);
+    CHECK(grCacheFind(&cache, &sigA, &mask) == arena + 192);
+    CHECK(mask == 0x77);
+    CHECK(grCacheFind(&cache, &sigB, &mask) != NULL);   /* B still resident */
+
+    /* remove both B entries: the freed blocks merge with neighbours */
+    grCacheRemove(&cache, &entries[2]);
+    CHECK(grCacheGetFreeMemory(&cache) == 64);
+    grCacheRemove(&cache, &entries[3]);
+    CHECK(grCacheGetFreeMemory(&cache) == 192);
+    CHECK(cache.firstFree != NULL);
+    CHECK(cache.firstFree->dataSize == 192);
+    CHECK(cache.firstFree->next == NULL);        /* fully merged */
+
+    /* defragment: single free block -> no-op loop */
+    grCacheDefragment(&cache);
+    CHECK(grCacheGetFreeMemory(&cache) == 192);
+
+    /* oversized insert fails cleanly */
+    CHECK(grCacheInsert(&cache, &sigA, 1, arena, 512) == NULL);
+    grCacheInit(&cache, NULL, entries, 0, 0);
+    CHECK(grCacheInsert(&cache, &sigA, 1, arena, 4) == NULL);
 }

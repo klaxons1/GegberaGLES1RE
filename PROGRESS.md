@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3u)
+Last updated: 2026-11-22 (session 3v)
 
 ## Legend
 
@@ -109,6 +109,49 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3v (grPipelineCache.c: compiled-program cache)
+
+- **grPipelineCache.c (new, Makefile += )**: all 9 grPipelineCache.inl
+  functions + the 3 grSmall.c helpers. grCacheMatchSignatures (assert 44,
+  hgMemCompare 0x28 = 40-byte signature); grCacheGetOldestUsed (assert 58,
+  min timeStamp over firstUsed); grCacheChangeList (asserts 140/146 - the
+  decompile's prev[1]/colorsx writes = the standard entry->prev->next /
+  entry->next->prev relink: unlink from *oldList (head-ownership asserted),
+  relink at *newList head); grCacheMergeFreeBlock (assert 177, TWO passes -
+  merge entry with an adjacent free block either side, survivor keeps the
+  free list); grCacheRemove (assert 223: dataSize != 0 -> free list + merge,
+  else -> unused pool); grCacheDefragment (asserts 248/249/278: while >= 2
+  free blocks, take the lower-offset one, move the USED block that follows
+  it onto it (memmove + grICacheFlush), advance + merge); grCacheInit
+  (asserts 349/350/351: entries[0] = the whole-arena free block, entries
+  1..n-1 chained via ->next as the unused pool); grCacheFind (assert 419:
+  signature match -> timeStamp refresh + gradientMask out + arena ptr);
+  grCacheInsert (asserts 463/464/503/506: rejects dataSize > arenaSize or
+  entryCount < 2; LRU-evicts while free < dataSize || no unused || no free;
+  best-fit free block, TAIL allocation (offset = best->dataSize - dataSize,
+  dst = arena + best->dataOffset + offset); leftover stays free, exact fit
+  moves the block free->unused). Helpers: grCacheGetFreeMemory (sum of free
+  blocks), grCacheSelfCheck (DLL empty), grCacheFindFreeEntry (first fit).
+- **grICacheFlush ported** (grSmall.c; DLL 42318-42321): EPOC = User::
+  IMB_Range; hosted no-op.
+- **grState.h**: _grCacheSignature (40B cv_anon_1725), _grCacheEntry
+  (sig + gradientMask + timeStamp + dataOffset + dataSize + prev/next;
+  64B in the 32-bit DLL), _grPipelineCache (8 words: firstUsed/firstFree/
+  firstUnused/entries/arena/arenaSize/entryCount/timeStamp; 32B in the DLL);
+  state->pipelineCache/scratchMemory/scratchMemorySize/setjmpConfig (offsets
+  UNPINNED).
+- **32-bit sizeof trap (REAL BUG avoided)**: the decompile's hgMemSet(cache,
+  0, 0x20) and hgMemSet(entries, entryCount << 6) are the 32-bit struct
+  sizes; on x86-64 they under-zero the structs (stale arenaSize/entryCount
+  -> the eviction loop removed a NULL oldest). Ported as sizeof(*cache)/
+  sizeof(*entries) with the DLL literals in comments.
+- **tests/test_core.c test_pipecache (+40)**: init chaining, find-miss,
+  insert tail-allocation (A@192, B@128, C@0 exact-fit frees the block),
+  find-hit (ts bump + gradientMask), LRU eviction (A out, its tail block
+  reused for the new insert @192), explicit removes with adjacency merge
+  (64 -> 192 single block), defragment no-op on one free block, oversize +
+  zero-arena rejects.
 
 ## DONE session 3u (grTessellator.c: perspective subdivision)
 

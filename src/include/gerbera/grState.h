@@ -291,6 +291,41 @@ typedef struct _grGradientInfo
     int shift;             /* 31 - reciprocal shift */
 } _grGradientInfo;
 
+/* compiled-pixel-pipeline cache (grPipelineCache.inl, cv_anon_172A). The
+ * cache keeps JIT-compiled pipeline programs in an arena; entries are
+ * 64 bytes (grCacheInit zeroes entryCount << 6). The signature is the 40-
+ * byte compressed pipeline descriptor (cv_anon_1725, grCompressSignature). */
+typedef struct _grCacheSignature
+{
+    unsigned char bytes[40];
+} _grCacheSignature;
+
+typedef struct _grCacheEntry
+{
+    _grCacheSignature signature;    /* 40 bytes */
+    unsigned int gradientMask;
+    int timeStamp;
+    int dataOffset;
+    int dataSize;
+    struct _grCacheEntry *prev;
+    struct _grCacheEntry *next;
+} _grCacheEntry;                    /* 64 bytes in the 32-bit DLL
+                                       * (entryCount << 6 zeroing); larger
+                                       * with hosted pointers */
+
+typedef struct _grPipelineCache
+{
+    _grCacheEntry *firstUsed;
+    _grCacheEntry *firstFree;
+    _grCacheEntry *firstUnused;
+    _grCacheEntry *entries;
+    void *arena;
+    int arenaSize;
+    int entryCount;
+    int timeStamp;
+} _grPipelineCache;                 /* 32 bytes in the 32-bit DLL
+                                       * (hgMemSet(cache, 0, 0x20)) */
+
 /* triangle tessellation status (grClassifyTriangle) */
 enum GR_TRIANGLESTATUS_e
 {
@@ -757,6 +792,11 @@ typedef struct Gerbera_s
     int activeGradientIndex[GR_GRADIENT_MAX];
     grPixelPipelineCode_fn pixelPipelineCode;         /* compiled program
                                                        * (hc compiler) */
+    _grPipelineCache *pipelineCache;                  /* offset UNPINNED */
+    void *scratchMemory;                              /* offset UNPINNED */
+    int scratchMemorySize;                            /* offset UNPINNED */
+    void *setjmpConfig;                               /* offset UNPINNED (HC
+                                                       * setjmp container) */
     unsigned char textureUnitEnabled[2];              /* +48/49: per-unit texcoord
                                                        * stage active (set by the
                                                        * ogl texture-enable path) */
@@ -991,6 +1031,24 @@ int grClassifyTriangle(Gerbera_s *state, _grVertex *vertexCache,
 int grSplitEdge(_grVertex *dst, _grVertex *v0, _grVertex *v1, int forceSplit);
 void grTriangleTessellator(Gerbera_s *state, _grClipTriangle *tri,
                            unsigned int origIndices);
+
+/* --- grPipelineCache.inl: compiled-program cache ------------------------------ */
+int grCacheMatchSignatures(_grCacheSignature *a, _grCacheSignature *b);
+_grCacheEntry *grCacheGetOldestUsed(_grPipelineCache *cache);
+void grCacheChangeList(_grCacheEntry *entry, _grCacheEntry **newList,
+                       _grCacheEntry **oldList);
+void grCacheMergeFreeBlock(_grPipelineCache *cache, _grCacheEntry *entry);
+void grCacheRemove(_grPipelineCache *cache, _grCacheEntry *entry);
+void grCacheDefragment(_grPipelineCache *cache);
+void grCacheInit(_grPipelineCache *cache, void *arena,
+                 _grCacheEntry *entries, int arenaSize, int entryCount);
+void *grCacheFind(_grPipelineCache *cache, _grCacheSignature *signature,
+                  unsigned int *gradientMask);
+void *grCacheInsert(_grPipelineCache *cache, _grCacheSignature *signature,
+                    unsigned int gradientMask, void *data, int dataSize);
+int grCacheGetFreeMemory(_grPipelineCache *cache);
+void grCacheSelfCheck(_grPipelineCache *cache);
+_grCacheEntry *grCacheFindFreeEntry(_grPipelineCache *cache, int dataSize);
 void grCheckPixelPipeStack(Gerbera_s *state);
 void grFetchPrimitives(Gerbera_s *state, int fetchType, int numVertices,
                        int vertexCount, void *srcIndices, int baseIndex);
@@ -1030,9 +1088,8 @@ int grScanConvertTriangle(Gerbera_s *state, _grRasterPoint *p0,
 /* --- grSmall.c / grPixelPipeline.h: triangle fill ---------------------------- */
 void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
                            unsigned int origIndices, int emptyBits);
-void grTriangleTessellator(Gerbera_s *state, _grClipTriangle *tri,
-                           unsigned int origIndices);
 void grExecutePixelPipeline(Gerbera_s *state);
+void grICacheFlush(void *start, unsigned int numBytes);
 
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);

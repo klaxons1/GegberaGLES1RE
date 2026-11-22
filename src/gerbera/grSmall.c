@@ -170,3 +170,14 @@ void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
          * window to re-check - magic0/magic1 keep the locals alive */
     }
 }
+
+/* --- grICacheFlush (grSmall.c; DLL 42318-42321) -------------------------------
+ * EPOC: User::IMB_Range(start, start + numBytes) - instruction-cache
+ * maintenance over freshly written JIT code. Hosted builds run coherent
+ * caches, so this is a no-op. */
+
+void grICacheFlush(void *start, unsigned int numBytes)
+{
+    (void)start;
+    (void)numBytes;
+}
