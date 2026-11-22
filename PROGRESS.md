@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3s)
+Last updated: 2026-11-22 (session 3t)
 
 ## Legend
 
@@ -109,6 +109,67 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3t (grDrawClippedLine + grDrawClippedPoint)
+
+- **grRasterizer.c += grDrawClippedLine** (DLL 26391-26556, asserts grRasterizer.inl
+  931/933/936/938/943/945/947/1067/1073). Geometry (all recovered, hand-verified):
+  lineWidth = LINE_SMOOTH ? 0x10000 : max((state->lineWidth + 0x8000) & 0xFFFF0000,
+  0x10000); steep = |dx| < |dy| (dx/dy = screenPosition deltas); slope = (imRcpu(
+  |major|).mantissa * minor) >> (shift + 19) & ~0xFF (2.14 px/row on the minor
+  axis); hw = lineWidth >> 5 (half-width, 0.12 px); PERPENDICULAR offset = hw
+  (steep: offX, non-steep: offY = -hw), MAJOR half-pixel snap = 2048 (steep:
+  snapY, non-steep: snapX), SLANT term = slope on the minor axis (steep: snapX,
+  non-steep: snapY); the slant/snap SIGN flips when the far endpoint sits at
+  larger major coordinate (the decompile's dstPos[13]/dstPos[11] swap - only
+  the slope/snap terms negate; rec0/rec1 are NOT swapped, only the slope+snap
+  pair); the weights set origIndex0 -> (1,0) / origIndex1 -> (0,1) in
+  normal[0..1] BEFORE the swap test. Corner loop k=3..0: record slots 64..67
+  (bytes of 1128415552 = 0x43434340), src = (k&2) ? rec1 : rec0, copies
+  normal[0..1] + clipPosition, stateMask = 79 (0x4F: COLOR_COMPUTED|2D|3D|
+  TRANSFORMED|VIEWPORT), screenPosition = snap? + src + offset*sign[k] with
+  THE SAME sign table for both axes (sign[] = { -1,+1,+1,-1 } = the DLL
+  ySign; using xSign degenerates the non-steep end edges - found by probe),
+  z = src z. grInterpolateVertexGradients per corner, then two quads (64,65,66)
+  and (66,67,64) via grDrawClippedTriangle(., ., origIndices, 8), assert 1073
+  (both triangles same area), grDisableCapability(GR_CAPABILITY_UNUSED) after.
+  RECONSTRUCTION: dstPos[4].shift/dstPos[6].rcp stores are Hex-Rays-lost;
+  recovered as the half-width (matches the visible steep-branch store, keeps
+  corners 256-aligned and the quad a parallelogram). Zero-length line (dx==0 &&
+  dy==0) draws NOTHING (decompile if (!dx && !dy) skip).
+- **grRasterizer.c += grDrawClippedPoint** (DLL 26559-26698, asserts 1106/1107/
+  1108/1259-canary). size = POINT_SMOOTH ? 0x10000 : (POINT_SIZE_ARRAY &&
+  vertexArray[5].data ? record->pointSize(+104) : state->pointSize); distance
+  attenuation (computePointDistAttn): size = scalarToFixed(fixedToScalar(size,16)
+  * attenuateRsq(IVector3_length(&record->position), &state->pointDistAttn), 16)
+  (position union alias for the eye-space xyz); hgClamp32(size, pointSizeMin,
+  pointSizeMax), hgMin32(size, 0x400000), size = max((size + 0x8000) &
+  0xFFFF0000, 0x10000); odd = (size >> 16) & 1 (odd pixel size); half =
+  (size >> 5) & 0xFFFFF800; center = (screen - 2048) rounded to the pixel grid:
+  odd -> (v & ~0xFFF) + 2048, even -> (v + 2048) & ~0xFFF; corners = center +
+  half * sign (xSign for X, ySign for Y here - the POINT uses the standard
+  tables), z copied; stateMask 79; grInterpolateVertexGradients (weights 0,0
+  -> orig record); POINT_SPRITE (cap 20, flagged guess slot) && textureUnit-
+  Enabled[u] -> texCoord[u] = xTexCoord/yTexCoord[k] ({0,0,0x1FFFFF,...}).
+  Two quads like the line; NO assert-1073 check, NO UNUSED disable (those are
+  line-only).
+- **grState.h**: GR_CAPABILITY_KEY23 -> GR_CAPABILITY_POINT_SPRITE = 20 (flagged
+  guess: slot pinned by grDrawClippedPoint's grGetCapability; the ogl
+  point-parameter path confirms in the api session); state->lineWidth/pointSize/
+  pointSizeMin/pointSizeMax (offsets UNPINNED - setters land with the api
+  session; values 16.16).
+- **tests/test_core.c test_linepoint (+53)**: horizontal line (10,15)->(30,15)
+  lineWidth 2px: corners 64=(8.5,16) 65=(10.5,14) 66=(30.5,14) 67=(28.5,16)
+  (with the slant +-1px on the non-major axis), stateMask 0x2F, corner colors
+  from the barycentric weights, second triangle scans 2 rows from y=14
+  (27|3, 25|5); vertical line (20,10)->(20,30): corners on x=[19,21], rows
+  trimmed to 10 from y=19 (zero-width rows drop); zero-length line no-ops;
+  point (20,20) size 3px (odd snap, [18,21] box, z copied, color from orig
+  record 2), even size 2px ([19,21] box), point-sprite texcoords per unit.
+- **Sign-table lesson**: grDrawClippedLine multiplies BOTH axis offsets by the
+  same sign[] table (= ySign); grDrawClippedPoint uses xSign/ySign. The
+  decompile's single `sign[dstPos[14].shift]` read covers both axes - copying
+  the point's two-table pattern silently degenerates non-steep quads.
 
 ## DONE session 3s (grInterpolateVertexGradients)
 

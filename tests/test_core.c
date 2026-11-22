@@ -133,6 +133,7 @@ static void test_queueprimitive(void);
 static void test_fetchprimitives(void);
 static void test_scanconvert(void);
 static void test_interpolate(void);
+static void test_linepoint(void);
 static void test_gradients(void);
 
 int main(void)
@@ -166,6 +167,7 @@ int main(void)
     test_gradients();
     test_scanconvert();
     test_interpolate();
+    test_linepoint();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -2696,4 +2698,156 @@ static void test_interpolate(void)
     CHECK(target->texCoord[1].x == 100);
 
     st->renderStackAllocated = 0;
+}
+
+/* --- test_linepoint: grDrawClippedLine + grDrawClippedPoint -------------------
+ * Hand-worked quads. Line: (10,15)->(30,15) px, lineWidth 2px -> hw = 1px,
+ * corners 64=(8.5,16) 65=(8.5,14) 66=(30.5,14) 67=(30.5,16); the second
+ * triangle (66,67,64) scan-converts to 2 rows starting at y=14. Point:
+ * (20,20) px at size 3px -> odd snap, corners on the [18,21] box. */
+static void test_linepoint(void)
+{
+    static unsigned char stack[23860];
+    static unsigned char colorBuf[64 * 64 * 2];
+    static unsigned char depthBuf[64 * 64 * 4];
+    static unsigned char stencilBuf[64 * 64];
+    Gerbera_s stObj;
+    Gerbera_s *st = &stObj;
+    _grPixelPipe *pp;
+    _grVertex *vb;
+    _grClipTriangle tri;
+    unsigned int *words;
+
+    memset(st, 0, sizeof(*st));
+    st->renderStack = stack;
+    st->renderStackAllocated = 1;
+    st->pixelPipeline = (_grPixelPipe *)(stack + 14644);
+    st->pixelPipelineCode = noopPipeline;
+    pp = st->pixelPipeline;
+    vb = (_grVertex *)(stack + 1332);
+    memset(stack, 0xCC, sizeof(stack));
+    memset(&vb[0], 0, 3 * sizeof(vb[0]));
+    vb[0].color.final[0][0] = 11;
+    vb[1].color.final[0][0] = 22;
+    vb[2].color.final[0][0] = 33;
+    vb[2].texCoord[0].x = 77;
+    st->drawSurface.buffers[0].data = colorBuf;
+    st->drawSurface.buffers[0].stride = 64 * 2;
+    st->drawSurface.buffers[1].data = depthBuf;
+    st->drawSurface.buffers[1].stride = 64 * 4;
+    st->drawSurface.buffers[2].data = stencilBuf;
+    st->drawSurface.buffers[2].stride = 64;
+    st->lineWidth = 0x20000;              /* 2.0 px -> hw = 1px */
+    st->pointSize = 0x30000;              /* 3.0 px */
+    st->pointSizeMin = 0x10000;
+    st->pointSizeMax = 0x400000;
+    st->numActiveGradients = 0;
+    st->activeGradientMask = 0;
+    grSetRectangle(&st->renderScissor, 0, 64, 0, 64);
+
+    /* horizontal line: corners are 256-aligned 20.12 positions */
+    vb[0].screenPosition[0] = 10 << 12;
+    vb[0].screenPosition[1] = 15 << 12;
+    vb[1].screenPosition[0] = 30 << 12;
+    vb[1].screenPosition[1] = 15 << 12;
+    tri.indices = grSetIndices(0, 1, 1);
+    tri.area = 0;
+    tri.side = 0;
+    grDrawClippedLine(st, &tri, grSetIndices(0, 1, 1));
+    CHECK(vb[64].screenPosition[0] == 8 * 4096 + 2048);   /* 8.5 px */
+    CHECK(vb[64].screenPosition[1] == 16 << 12);
+    CHECK(vb[65].screenPosition[0] == 10 * 4096 + 2048);  /* 10.5 px */
+    CHECK(vb[65].screenPosition[1] == 14 << 12);
+    CHECK(vb[66].screenPosition[0] == 30 * 4096 + 2048);  /* 30.5 px */
+    CHECK(vb[66].screenPosition[1] == 14 << 12);
+    CHECK(vb[67].screenPosition[0] == 28 * 4096 + 2048);  /* 28.5 px */
+    CHECK(vb[67].screenPosition[1] == 16 << 12);
+    CHECK(vb[64].stateMask == 0x2F);   /* 79 with INTERPOLATE cleared */
+    CHECK(vb[64].color.final[0][0] == 11);   /* weights (1,0) -> orig rec 0 */
+    CHECK(vb[66].color.final[0][0] == 22);   /* weights (0,1) -> orig rec 1 */
+    CHECK(pp->yStart == 14);                 /* second triangle's scan */
+    CHECK(pp->numScanlines == 2);
+    words = pp->scanlineInfo;
+    CHECK(words[0] == 27 | (3 << 16));
+    CHECK(words[1] == 25 | (5 << 16));
+
+    /* vertical line: steep path, coverage [19,21] x [8.5,30.5] */
+    vb[0].screenPosition[0] = 20 << 12;
+    vb[0].screenPosition[1] = 10 << 12;
+    vb[1].screenPosition[0] = 20 << 12;
+    vb[1].screenPosition[1] = 30 << 12;
+    grDrawClippedLine(st, &tri, grSetIndices(0, 1, 1));
+    CHECK(vb[64].screenPosition[0] == 19 << 12);
+    CHECK(vb[64].screenPosition[1] == 8 * 4096 + 2048);
+    CHECK(vb[65].screenPosition[0] == 21 << 12);
+    CHECK(vb[65].screenPosition[1] == 10 * 4096 + 2048);
+    CHECK(vb[66].screenPosition[0] == 21 << 12);
+    CHECK(vb[66].screenPosition[1] == 30 * 4096 + 2048);
+    CHECK(vb[67].screenPosition[0] == 19 << 12);
+    CHECK(vb[67].screenPosition[1] == 28 * 4096 + 2048);
+    /* the scan trims the zero-width rows: 10 rows from y=19 (the fat
+     * middle; rows where both edges round to the same pixel draw nothing) */
+    CHECK(pp->yStart == 19);
+    CHECK(pp->numScanlines == 10);
+    words = pp->scanlineInfo;
+    CHECK(words[0] == 19 | (1 << 16));
+    CHECK(words[8] == 19 | (1 << 16));
+    CHECK(words[9] == 20 | (1 << 16));
+
+    /* zero-length line draws nothing */
+    vb[0].screenPosition[0] = 12 << 12;
+    vb[0].screenPosition[1] = 12 << 12;
+    vb[1].screenPosition[0] = 12 << 12;
+    vb[1].screenPosition[1] = 12 << 12;
+    pp->numScanlines = -7;
+    grDrawClippedLine(st, &tri, grSetIndices(0, 1, 1));
+    CHECK(pp->numScanlines == -7);
+
+    /* point at (20,20) px, size 3px: odd size -> half-pixel snap keeps the
+     * center at 19.5; corners on the [18,21] box */
+    vb[2].screenPosition[0] = 20 << 12;
+    vb[2].screenPosition[1] = 20 << 12;
+    vb[2].screenPosition[2] = 5 << 12;
+    tri.indices = grSetIndices(2, 2, 2);
+    grDrawClippedPoint(st, &tri, grSetIndices(2, 2, 2));
+    CHECK(vb[64].screenPosition[0] == 18 << 12);
+    CHECK(vb[64].screenPosition[1] == 18 << 12);
+    CHECK(vb[64].screenPosition[2] == 5 << 12);
+    CHECK(vb[65].screenPosition[0] == 18 << 12);
+    CHECK(vb[65].screenPosition[1] == 21 << 12);
+    CHECK(vb[66].screenPosition[0] == 21 << 12);
+    CHECK(vb[66].screenPosition[1] == 21 << 12);
+    CHECK(vb[67].screenPosition[0] == 21 << 12);
+    CHECK(vb[67].screenPosition[1] == 18 << 12);
+    CHECK(vb[64].color.final[0][0] == 33);   /* weights (0,0) -> rec 2 */
+    CHECK(vb[64].texCoord[0].x == 77);
+    CHECK(pp->yStart == 18);
+    CHECK(pp->numScanlines > 0);
+
+    /* even size 2px: no snap shift, [19,21] box */
+    st->pointSize = 0x20000;
+    grDrawClippedPoint(st, &tri, grSetIndices(2, 2, 2));
+    CHECK(vb[64].screenPosition[0] == 19 << 12);
+    CHECK(vb[64].screenPosition[1] == 19 << 12);
+    CHECK(vb[66].screenPosition[1] == 21 << 12);
+
+    /* point sprite texcoords replace the interpolated ones per unit */
+    grSetCapability(st, GR_CAPABILITY_POINT_SPRITE, 1);
+    st->textureUnitEnabled[0] = 1;
+    st->textureUnitEnabled[1] = 0;
+    grDrawClippedPoint(st, &tri, grSetIndices(2, 2, 2));
+    CHECK(vb[64].texCoord[0].x == 0);
+    CHECK(vb[64].texCoord[0].y == 0);
+    CHECK(vb[65].texCoord[0].x == 0);
+    CHECK(vb[65].texCoord[0].y == 2097151);
+    CHECK(vb[66].texCoord[0].x == 2097151);
+    CHECK(vb[66].texCoord[0].y == 2097151);
+    CHECK(vb[67].texCoord[0].x == 2097151);
+    CHECK(vb[67].texCoord[0].y == 0);
+    grSetCapability(st, GR_CAPABILITY_POINT_SPRITE, 0);
+    st->textureUnitEnabled[0] = 0;
+
+    st->renderStackAllocated = 0;
+    st->pixelPipeline = NULL;
+    st->pixelPipelineCode = NULL;
 }

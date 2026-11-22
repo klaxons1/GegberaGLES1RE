@@ -779,3 +779,234 @@ void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
         vertex->texCoord[1].y = rec->texCoord[1].y;
     }
 }
+
+/* --- DLL data tables (data.fragments.c 56-66) --------------------------------
+ * Corner signs and point-sprite texcoords for the 4-corner quads built by
+ * grDrawClippedLine / grDrawClippedPoint (corners 64..67; xSign/ySign give
+ * the quadrant per corner). 2097151 = 0x1FFFFF max texcoord. */
+
+static const signed char g_xSign[4] = { -1, -1, 1, 1 };
+static const signed char g_ySign[4] = { -1, 1, 1, -1 };
+static const int g_xTexCoord[4] = { 0, 0, 2097151, 2097151 };
+static const int g_yTexCoord[4] = { 0, 2097151, 2097151, 0 };
+
+/* corner index bytes of 1128415552 (0x43434340): vertex-cache slots 64..67 */
+#define GR_QUAD_CORNER_BYTES 1128415552u
+
+/* --- grDrawClippedLine (grRasterizer.inl 931; DLL 26391-26556) ----------------
+ * Builds the thick-line quad in the vertex cache (slots 64..67): each
+ * endpoint contributes two corners offset by the rounded half-width, with a
+ * slope term slanting the near/far ends and a +-2048 (half-pixel) snap along
+ * the major axis. Both offsets multiply the SAME sign table (the decompile's
+ * sign[] = { -1, +1, +1, -1 } = g_ySign; xSign would degenerate the
+ * non-steep end edges). RECONSTRUCTION NOTE: the decompile loses two stores
+ * (dstPos[4].shift / dstPos[6].rcp in the non-steep branch) to stack reuse;
+ * both recover as the half-width (dstPos[10].rcp >> 5, matching the visible
+ * steep-branch store), which is the only value that keeps every corner
+ * 256-aligned (emptyBits 8) and the quad a parallelogram (assert 1073). */
+
+void grDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri,
+                       unsigned int origIndices)
+{
+    _grVertex *vertexBuffer = GR_VERTEX_BUFFER(state);
+    _grVertex *rec0;
+    _grVertex *rec1;
+    int i0 = grUnpackIndex(tri->indices, 0);
+    int i1 = grUnpackIndex(tri->indices, 1);
+    int dx, dy, steep, lineWidth, hw, slope, major, minor;
+    HGint64 r;
+    int sh, snapX, snapY, offX, offY;
+    int k;
+
+    if ((state == NULL || tri == NULL) &&
+        grAssert("state && tri", "grRasterizer.inl", 931) != 0)
+        grDie(0);
+    rec0 = vertexBuffer + i0;
+    rec1 = vertexBuffer + i1;
+    if (grTestCapability(state, GR_CAPABILITY_LINE_SMOOTH) != 0)
+        lineWidth = 0x10000;
+    else
+        lineWidth = hgMax32((state->lineWidth + 0x8000) & 0xFFFF0000, 0x10000);
+    dx = rec1->screenPosition[0] - rec0->screenPosition[0];
+    dy = rec1->screenPosition[1] - rec0->screenPosition[1];
+    steep = hgAbs32(dx) < hgAbs32(dy);
+    if (dx != 0 || dy != 0)
+    {
+        major = steep ? dy : dx;
+        minor = steep ? dx : dy;
+        r = imRcpu((unsigned int)hgAbs32(major));
+        sh = (int)(unsigned int)r;                  /* low: shift */
+        slope = (hgLsl64h_0_31(hgMul64((int)(r >> 32), minor), sh) >> 19) &
+                (int)0xFFFFFF00u;
+        hw = lineWidth >> 5;
+        if (steep != 0)
+        {
+            offX = hw;                              /* perpendicular in X */
+            snapX = slope;                          /* slant term on X */
+            snapY = 2048;                           /* half-pixel snap on Y */
+            offY = hw;                              /* along Y (recovered) */
+        }
+        else
+        {
+            offY = -hw;                             /* perpendicular in Y */
+            snapY = slope;                          /* slant term on Y */
+            snapX = 2048;                           /* half-pixel snap on X */
+            offX = hw;                              /* along X (recovered) */
+        }
+        /* the endpoints carry their barycentric weights for the corner
+         * copies: orig vertex 0 -> (1,0), orig vertex 1 -> (0,1) */
+        vertexBuffer[grUnpackIndex(origIndices, 0)].normal[0] = IUNITSCALAR_ONE;
+        vertexBuffer[grUnpackIndex(origIndices, 0)].normal[1] = 0;
+        vertexBuffer[grUnpackIndex(origIndices, 1)].normal[0] = 0;
+        vertexBuffer[grUnpackIndex(origIndices, 1)].normal[1] = IUNITSCALAR_ONE;
+        /* direction swap: only the slant/snap terms negate (the decompile
+         * swaps dstPos[13]/dstPos[11], whose only live effect is the sign
+         * of the slope and half-pixel terms), keeping the coverage biased
+         * toward the rec0 side on the major axis */
+        if (grVector3iGet((_grVector3i *)&rec1->screenPosition[0], steep) >
+            grVector3iGet((_grVector3i *)&rec0->screenPosition[0], steep))
+        {
+            snapX = -snapX;
+            snapY = -snapY;
+        }
+        for (k = 3; k >= 0; --k)
+        {
+            _grVertex *corner = vertexBuffer +
+                (unsigned char)(GR_QUAD_CORNER_BYTES >> (8 * k));
+            _grVertex *src = ((k & 2) != 0) ? rec1 : rec0;
+
+            corner->normal[0] = src->normal[0];
+            corner->normal[1] = src->normal[1];
+            corner->stateMask = 79;
+            IVector4_copy((_IVector4 *)&corner->clipPosition,
+                          (_IVector4 *)&src->clipPosition);
+            corner->screenPosition[0] = snapX + src->screenPosition[0] +
+                                        offX * g_ySign[k];
+            corner->screenPosition[1] = snapY + src->screenPosition[1] +
+                                        offY * g_ySign[k];
+            corner->screenPosition[2] = src->screenPosition[2];
+            grInterpolateVertexGradients(state, corner, origIndices, tri->side);
+        }
+        {
+            _grClipTriangle quad;
+            HGint64 area64;
+
+            quad.side = tri->side;
+            quad.indices = grSetIndices(64, 65, 66);
+            area64 = grComputeTriangleArea(vertexBuffer, quad.indices);
+            quad.area = grRoundTriangleArea(area64);
+            if (quad.area == 0 &&
+                grAssert("newTri.area != 0", "grRasterizer.inl", 1067) != 0)
+                grDie(0);
+            grDrawClippedTriangle(state, &quad, origIndices, 8);
+            quad.indices = grSetIndices(66, 67, 64);
+            if (quad.area != grRoundTriangleArea(
+                    grComputeTriangleArea(vertexBuffer, quad.indices)) &&
+                grAssert("newTri.area == grRoundTriangleArea(grComputeTriangleArea(vertexCache, newTri.indices))",
+                         "grRasterizer.inl", 1073) != 0)
+                grDie(0);
+            grDrawClippedTriangle(state, &quad, origIndices, 8);
+            grDisableCapability(state, GR_CAPABILITY_UNUSED);
+        }
+    }
+}
+
+/* --- grDrawClippedPoint (grRasterizer.inl 1106; DLL 26559-26698) --------------
+ * Builds the point sprite quad (slots 64..67) around the point vertex,
+ * sizes it (point size array / attenuation / smooth / clamp / rounding) and
+ * draws it as two triangles. Point-sprite texcoords replace the interpolated
+ * ones per enabled texture unit. */
+
+void grDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri,
+                        unsigned int origIndices)
+{
+    _grVertex *vertexBuffer = GR_VERTEX_BUFFER(state);
+    _grVertex *rec;
+    int i0;
+    int x, y, z;
+    int size, odd, half;
+    int k, u;
+
+    i0 = grUnpackIndex(tri->indices, 0);
+    if ((state == NULL || tri == NULL) &&
+        grAssert("state && tri", "grRasterizer.inl", 1106) != 0)
+        grDie(0);
+    if ((i0 != grUnpackIndex(tri->indices, 1) ||
+         i0 != grUnpackIndex(tri->indices, 2)) &&
+        grAssert("i0==grUnpackIndex(tri->indices, 1) && i0==grUnpackIndex(tri->indices, 2)",
+                 "grRasterizer.inl", 1107) != 0)
+        grDie(0);
+    if (((vertexBuffer[i0].stateMask & 0x40) != 0) &&
+        grAssert("!(vertexCache[i0].stateMask & GR_VERTEXMASK_INTERPOLATE_GRADIENTS)",
+                 "grRasterizer.inl", 1108) != 0)
+        grDie(0);
+    rec = vertexBuffer + i0;
+    x = rec->screenPosition[0] - 2048;
+    y = rec->screenPosition[1] - 2048;
+    z = rec->screenPosition[2];
+    if (grTestCapability(state, GR_CAPABILITY_POINT_SMOOTH) != 0)
+        size = 0x10000;
+    else if (grTestCapability(state, GR_CAPABILITY_POINT_SIZE_ARRAY) != 0 &&
+             state->vertexArray[5].data != NULL)
+        size = rec->pointSize;
+    else
+        size = state->pointSize;
+    if (state->computePointDistAttn != 0)
+    {
+        int dist = IVector3_length((_IVector3 *)&rec->position);
+        int attn = IScalar_attenuateRsq(dist, &state->pointDistAttn);
+
+        size = IScalar_scalarToFixed(
+            IScalar_mul(IScalar_fixedToScalar(size, 16), attn), 16);
+    }
+    size = hgClamp32(size, state->pointSizeMin, state->pointSizeMax);
+    size = hgMin32(size, 0x400000);
+    size = hgMax32((size + 0x8000) & 0xFFFF0000, 0x10000);
+    odd = (size >> 16) & 1;
+    half = (size >> 5) & (int)0xFFFFF800u;
+    if (odd != 0)
+    {
+        x = (x & (int)0xFFFFF000u) + 2048;
+        y = (y & (int)0xFFFFF000u) + 2048;
+    }
+    else
+    {
+        x = (x + 2048) & (int)0xFFFFF000u;
+        y = (y + 2048) & (int)0xFFFFF000u;
+    }
+    for (k = 3; k >= 0; --k)
+    {
+        _grVertex *corner = vertexBuffer +
+            (unsigned char)(GR_QUAD_CORNER_BYTES >> (8 * k));
+
+        corner->normal[0] = 0;
+        corner->normal[1] = 0;
+        corner->stateMask = 79;
+        corner->screenPosition[0] = x + half * g_xSign[k];
+        corner->screenPosition[1] = y + half * g_ySign[k];
+        corner->screenPosition[2] = z;
+        grInterpolateVertexGradients(state, corner, origIndices, tri->side);
+        if (grGetCapability(state, GR_CAPABILITY_POINT_SPRITE) != 0)
+        {
+            for (u = 1; u >= 0; --u)
+            {
+                if (state->textureUnitEnabled[u] != 0)
+                {
+                    corner->texCoord[u].x = g_xTexCoord[k];
+                    corner->texCoord[u].y = g_yTexCoord[k];
+                }
+            }
+        }
+    }
+    {
+        _grClipTriangle quad;
+
+        quad.side = tri->side;
+        quad.indices = grSetIndices(64, 65, 66);
+        quad.area = grRoundTriangleArea(
+            grComputeTriangleArea(vertexBuffer, quad.indices));
+        grDrawClippedTriangle(state, &quad, origIndices, 8);
+        quad.indices = grSetIndices(66, 67, 64);
+        grDrawClippedTriangle(state, &quad, origIndices, 8);
+    }
+}

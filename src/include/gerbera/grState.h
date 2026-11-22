@@ -476,7 +476,9 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_CULL_FACE = 16,
     GR_CAPABILITY_LINE_SMOOTH = 18,
     GR_CAPABILITY_POINT_SMOOTH = 19,
-    GR_CAPABILITY_KEY23 = 20,             /* token unknown */
+    GR_CAPABILITY_POINT_SPRITE = 20,      /* flagged guess: unpinned slot (was
+                                           * KEY23); the ogl point-parameter
+                                           * path pins it in the api session */
     GR_CAPABILITY_LIGHTING = 36,
     GR_CAPABILITY_NORMALIZE = 37,
     GR_CAPABILITY_RESCALE_NORMAL = 38,
@@ -751,6 +753,14 @@ typedef struct Gerbera_s
     _grVertexArray vertexArray[8];                    /* +308 */
     _IFVector3 pointDistAttn;                         /* +576 */
     unsigned char computePointDistAttn;               /* +592 */
+    int lineWidth;                                    /* offset UNPINNED (16.16;
+                                                       * grSetLineWidth lands
+                                                       * with the api session) */
+    int pointSize;                                    /* offset UNPINNED (16.16;
+                                                       * grSetPointSize) */
+    int pointSizeMin;                                 /* offset UNPINNED (16.16;
+                                                       * oglPointParameter) */
+    int pointSizeMax;                                 /* offset UNPINNED (16.16) */
     unsigned char transformVE;                        /* +47  */
     unsigned char primitiveType;                      /* +22  */
     int defaultNormal[3];                             /* XNormal3 ints */
@@ -958,6 +968,10 @@ void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
 void grrDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices);
 void grrDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices);
 void grrDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices);
+void grDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri,
+                       unsigned int origIndices);
+void grDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri,
+                        unsigned int origIndices);
 void grCheckPixelPipeStack(Gerbera_s *state);
 void grFetchPrimitives(Gerbera_s *state, int fetchType, int numVertices,
                        int vertexCount, void *srcIndices, int baseIndex);
@@ -1000,8 +1014,6 @@ void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
 void grTriangleTessellator(Gerbera_s *state, _grClipTriangle *tri,
                            unsigned int origIndices);
 void grExecutePixelPipeline(Gerbera_s *state);
-void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
-                                  unsigned int origIndices, int side);
 
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);
