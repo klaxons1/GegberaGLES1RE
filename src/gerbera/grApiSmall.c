@@ -1,7 +1,6 @@
 /* grApiSmall.c - state setters (port of the decompiled grApiSmall.inl,
  * chunk 1: cull/scissor/viewport/capabilities/clears/fog/alpha/stencil/
- * depth/blend/masks). The material/light/user-clip-plane setters need the
- * lights/material/texCoordTransform record layouts and land later.
+ * depth/blend/masks/matrix/user-clip-planes).
  *
  * Assert sites keep the original grApiSmall.inl file/line strings.
  */
@@ -619,4 +618,40 @@ void grSetStencilMask(Gerbera_s *state, unsigned int mask)
         state->stencilWriteMask = mask;
         state->pixelPipelineDirty = 1;
     }
+}
+
+/* --- transform stack (decompile 41689-41713) ------------------------------- */
+
+void grSetMatrix(Gerbera_s *state, int mode, _IMatrix4x4 *matrix)
+{
+    GR_API_CHECK(state != NULL, 1743);
+    GR_API_CHECK(matrix != NULL, 1744);
+    GR_API_CHECK(hgInRange32(mode, 0, GR_MATRIXMODE_MAX - 1) != 0, 1745);
+    IMatrix4x4_copy(&state->matrix[mode], matrix);
+    grSetMatrixDirty(state, mode, 1);
+}
+
+/* --- user clip planes (decompile 39699-39745) -------------------------------
+ * The decompile's storage expressions are Hex-Rays type artifacts:
+ *   equation:  IFVector4_copy(&state->normalsToEyePal[17][0].originalVertex
+ *              + plane, equation)  ==  EPOC state+4648+20*plane
+ *              == origUserClipPlanes[plane-GR_CLIP_USER0] (base +4848)
+ *   matrix:    IMatrix4x4_copy(&state->texCoordTransform[8][0]
+ *              .padding[80*plane - 1], modelview)  ==  EPOC
+ *              state+4168+80*plane == origUserClipMatrices
+ *              [plane-GR_CLIP_USER0] (base +4968).                        */
+
+void grSetUserClipPlane(Gerbera_s *state, int plane, _IFVector4 *equation, _IMatrix4x4 *modelview)
+{
+    GR_API_CHECK(state != NULL, 503);
+    GR_API_CHECK(hgInRange32(plane, GR_CLIP_USER0, GR_CLIP_USER0 + GR_MAX_USER_CLIP_PLANES - 1) != 0, 504);
+    IFVector4_copy(&state->origUserClipPlanes[plane - GR_CLIP_USER0], equation);
+    IMatrix4x4_copy(&state->origUserClipMatrices[plane - GR_CLIP_USER0], modelview);
+}
+
+_IFVector4 *grGetUserClipPlane(Gerbera_s *state, int plane)
+{
+    GR_API_CHECK(state != NULL, 521);
+    GR_API_CHECK(hgInRange32(plane, GR_CLIP_USER0, GR_CLIP_USER0 + GR_MAX_USER_CLIP_PLANES - 1) != 0, 522);
+    return &state->origUserClipPlanes[plane - GR_CLIP_USER0];
 }

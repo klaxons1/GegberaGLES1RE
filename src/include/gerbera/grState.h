@@ -32,6 +32,27 @@ HG_EXTERN_C_BEGIN
 #define GR_COLORMASK_FULL 0xFu
 #define GR_SIDEMASK_BOTH 3u
 
+/* matrix modes (grSetMatrix / grSetMatrixDirty). MODELVIEW=0 and
+ * PROJECTION=1 are pinned from the EPOC grSetupCulling (objectToClip =
+ * matrix[1] * matrix[0], dirty bits 0/1); texture units sit at 2,3 (dirty
+ * bit i+2 per unit) and the matrix-palette matrices at 4..12 (dirty bit
+ * j+4). grSetMatrix accepts 0..GR_MATRIXMODE_MAX-1; the grUtil.h dirty
+ * helpers check 0..GR_MATRIXMODE_MAX inclusive (verbatim, one extra). */
+enum GR_MATRIXMODE_e
+{
+    GR_MATRIXMODE_MODELVIEW = 0,
+    GR_MATRIXMODE_PROJECTION = 1,
+    GR_MATRIXMODE_TEXTURE0 = 2,
+    GR_MATRIXMODE_TEXTURE1 = 3,
+    GR_MATRIXMODE_MATRIXPALETTE0 = 4, /* names beyond PROJECTION unpinned */
+    GR_MATRIXMODE_MAX = 13
+};
+
+/* clip-plane slots in the grSmall enum space (grSetUserClipPlane planes
+ * 10..15 == GR_CLIP_USER0 .. GR_CLIP_USER0+5). The ogl GL_CLIP_PLANE0..5
+ * tokens map to capabilities 30..35 - a different space. */
+#define GR_CLIP_USER0 10
+
 /* winding (grSetCullMode) */
 enum GR_WINDING_e
 {
@@ -156,15 +177,26 @@ enum GR_CAPABILITY_e
  * below: colors[i]=txMax[3i], spotDirectionNegated=&txMin[1] of elem +1,
  * orgSpotDirection=fx1, orgPosition=&txMax[1] of elem 0, exponent=txMin[0]
  * of elem +2, attenuation=&txMin[1] of elem +2, cosSpotCutoff=txMax[1] of
- * elem +2, spotCutoff=tyMin[1] of elem 0. The +20 lightMask byte offset is
- * from grVertexPipeline (assert "pLight->lightMask == lightMask").
- * lightMask bits: 1=ambient nonzero, 2=diffuse nonzero, 3=specular nonzero
- * (from grUpdateBaseColor's |= (test & 2)/(test & 4)/(test & 8)). */
+ * texCoordTransform[8][0].padding[80*plane - 1] (Hex-Rays artifact; the
+ * EPOC build writes state+4168+80*plane = origUserClipMatrices base
+ * +4968, i.e. origUserClipMatrices[plane-GR_CLIP_USER0]) and the plane
+ * equation to &normalsToEyePal[17][0].originalVertex + plane (EPOC:
+ * state+4648+20*plane = origUserClipPlanes[plane-GR_CLIP_USER0]).
+ *
+ * EPOC record map (base 5712, stride 208): positionXYZ +0 {_IVector3
+ * laid out {e,m[3]} there}, spotCutoff +16, lightMask +20, orgPosition
+ * +24, orgSpotDirection +44, spotDirectionNegated +56, colors[3] +72,
+ * exponent +108, attenuation +112, halfway +168, nVP +180, positional
+ * +192 (+196..207 unpinned 12 bytes; cosSpotCutoff/premul slot order
+ * inside +128..167 not yet pinned - grLightVertex will settle it).
+ * lightMask bits (grUpdateLight): 16=spotlight (spotCutoff != 180deg),
+ * 32=positional with attenuation != (1,1,1), 64=directional. */
 typedef struct _grLight
 {
     int positional;               /* IFVector4_tov3 return: w != 0 */
     _IVector3 positionXYZ[1];     /* shared-exp position, w divided out */
     int nVP[3];                   /* normalized position (10.21), directional lights */
+    int halfway[3];               /* headlight direction (directional lights only) */
     _IFVector4 orgPosition;       /* original float position */
     int lightMask;
     _XColor3 colors[3];           /* ambient, diffuse, specular */
@@ -203,6 +235,26 @@ typedef struct _grViewportParams
     int normal[3];
 } _grViewportParams;
 
+/* texture-coordinate transform record (_helpers_core.c fragment
+ * ITCTransform_copy). Size 132 bytes is pinned by the EPOC texCoordTransform
+ * stride (state+4064+132*unit; the WINSCW [11*unit] indexing = 11 records of
+ * 12 bytes per _ITCTransform): lsh/rsh are bytes and im is int (an earlier
+ * int64-im guess is WRONG).
+ *   e[ci]   = matrix column exponent words (packed 4 bytes, as stored)
+ *   lsh/rsh = clamp(eByte-119, 0..31) / clamp(119-eByte, 0..31)
+ *   im[ria] = imMulLsl64h(m[3][ria], 0x10000, lsh[3][ria]) >> rsh[3][ria]
+ *   cl      = classification: 0/1/2/3 per element (0 zero, 1 general,
+ *             2 +0x20000000, 3 -0x20000000 with eByte==119+8) */
+typedef struct _ITCTransform
+{
+    int e[4];
+    int m[4][4];
+    unsigned char lsh[4][4];
+    unsigned char rsh[4][4];
+    int im[4];
+    int cl;
+} _ITCTransform;
+
 /* the driver context. Only fields used by ported functions are listed;
  * the set grows with the port (census: 119 distinct state-> fields). */
 typedef struct Gerbera_s
@@ -225,6 +277,24 @@ typedef struct Gerbera_s
     _grViewportParams viewportOffset;
     int zNear;
     int zFar;
+
+    /* --- transform stack (EPOC offsets; the arena is contiguous there:
+     * matrix[13] +624, the _IVertexTransform records +1664..+4063, the
+     * _ITCTransform/_XNormalTransform records +4064..+4727, the user clip
+     * planes +4728..+4967 and their matrices +4968..+5367) --------------- */
+    int matrixDirtyMask;                                       /* +112  */
+    _IMatrix4x4 matrix[GR_MATRIXMODE_MAX];                     /* +624  */
+    _IVertexTransform modelviewTransform;                      /* +1664 */
+    _IVertexTransform objectToClipTransform;                   /* +1864 */
+    _IVertexTransform projectionTransform;                     /* +2064 */
+    _IVertexTransform matrixPalTransform[9];                   /* +2264 */
+    _ITCTransform texCoordTransform[2];                        /* +4064 */
+    _XNormalTransform normalsToEyeTransform;                   /* +4328 */
+    _XNormalTransform normalsToEyePal[9];                      /* +4368 */
+    _IFVector4 userClipPlanes[GR_MAX_USER_CLIP_PLANES];        /* +4728 */
+    _IFVector4 origUserClipPlanes[GR_MAX_USER_CLIP_PLANES];    /* +4848 */
+    _IMatrix4x4 origUserClipMatrices[GR_MAX_USER_CLIP_PLANES]; /* +4968 */
+    int enabledUserClipPlaneIndices;                           /* +7620 */
 
     /* --- draw surface ----------------------------------------------------- */
     _grDrawSurface drawSurface;
@@ -272,9 +342,13 @@ typedef struct Gerbera_s
     unsigned int lightActiveMask;
     unsigned int lightColorDirtyMask;
     unsigned int lightTypeDirtyMask;
+    unsigned char lightDirectionalMask;   /* EPOC byte field at +29 */
     unsigned char normalsToEyePalDirty[9];
     int normalsToEyeDirty;
     _grLight lights[GR_MAX_LIGHTS];
+    _grLight *l_directional[GR_MAX_LIGHTS + 1];  /* enabled lights with
+                                                  * lightMask bit 64, NUL-ended */
+    _grLight *l_positional[GR_MAX_LIGHTS + 1];   /* the rest, NUL-ended */
 
     /* --- culling -------------------------------------------------------------- */
     int frontFace;
@@ -284,12 +358,37 @@ typedef struct Gerbera_s
 
     /* --- global ambient -------------------------------------------------------- */
     _XColor3 ambientColor;
+    _XColor3 ambientLightSum;       /* ambientColor + sum of directional lights
+                                     * (EPOC +5588); maintained by
+                                     * grUpdateAmbientLightSum */
+    unsigned char ambientLightSumMask; /* directional mask it was built with */
     int ambientLightSumDirty;
 
     /* --- material ---------------------------------------------------------------- */
     _grMaterial material;
+    _XColor3 baseColor;             /* ambientLightSum*material.ambient+emission
+                                     * (grUpdateLights) */
     int baseColorDirty;
 } Gerbera_s;
+
+/* --- grApiSmall.inl: transform stack / user clip planes -------------------- */
+void grSetMatrix(Gerbera_s *state, int mode, _IMatrix4x4 *matrix);
+
+/* --- grUtil.h: matrix dirty helpers ---------------------------------------- */
+int  grIsMatrixDirty(Gerbera_s *state, int mode);
+void grSetMatrixDirty(Gerbera_s *state, int mode, int status);
+
+/* --- grApiSmall.inl: user clip planes -------------------------------------- */
+void grSetUserClipPlane(Gerbera_s *state, int plane, _IFVector4 *equation, _IMatrix4x4 *modelview);
+_IFVector4 *grGetUserClipPlane(Gerbera_s *state, int plane);
+
+/* --- _helpers_core.c fragment: texture-coordinate transforms ---------------- */
+void ITCTransform_copy(_ITCTransform *pD, _IMatrix4x4 *pM);
+
+/* --- grVertexPipeline.inl: light update ------------------------------------- */
+unsigned int grUpdateLight(Gerbera_s *state, int ndx);
+int  grUpdateLights(Gerbera_s *state);
+void grUpdateAmbientLightSum(Gerbera_s *state);
 
 /* --- capabilities (grUtil.h) --------------------------------------------- */
 int  grTestCapability(Gerbera_s *state, int cap);

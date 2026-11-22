@@ -4,7 +4,9 @@
  * grDie at 7741.  The reference build crashed via null dereference; on a
  * hosted build we abort after printing the same message.
  */
+// clang-format off
 #include "gerbera/grUtil.h"
+#include "gerbera/grState.h"
 #include "gerbera/grDefs.h"
 #include "gerbera/grRGBA.h"
 #include "hg/hgInt32.h"
@@ -37,6 +39,29 @@ void grDie(int v)
     fprintf(stderr, "grDie: fatal driver error\n");
     fflush(stderr);
     abort();
+}
+
+/* --- matrix dirty helpers (grUtil.h inlines, decompile 24642-24672 and
+ * 34783-34798; both grFast/grSmall TU variants share this source) --------- */
+
+int grIsMatrixDirty(Gerbera_s *state, int mode)
+{
+    if (!(state != NULL) && grAssert("state", "grUtil.h", 167) != 0)
+        grDie(0);
+    if (!(hgInRange32(mode, 0, GR_MATRIXMODE_MAX) != 0) && grAssert("hgInRange32((int)mode, 0, GR_MATRIXMODE_MAX)", "grUtil.h", 168) != 0)
+        grDie(0);
+    return ((1 << mode) & state->matrixDirtyMask) != 0;
+}
+
+void grSetMatrixDirty(Gerbera_s *state, int mode, int status)
+{
+    if (!(state != NULL) && grAssert("state", "grUtil.h", 174) != 0)
+        grDie(0);
+    if (!(hgInRange32(mode, 0, GR_MATRIXMODE_MAX) != 0) && grAssert("hgInRange32((int)mode, 0, GR_MATRIXMODE_MAX)", "grUtil.h", 175) != 0)
+        grDie(0);
+    /* verbatim bit juggling: clear bit `mode`, then set it from `status`.
+     * __ROL4__(-2, mode) == ~(1u << mode) for 0..31. */
+    state->matrixDirtyMask = (state->matrixDirtyMask & ~(1u << mode)) | (status << mode);
 }
 
 /* --- state-free grUtil.h helpers (decompile 24535-24589, 34837-34877) ----- */

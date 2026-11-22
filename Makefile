@@ -23,6 +23,7 @@ LIB_SRC := \
              src/gerbera/grTexture.c \
              src/gerbera/grApiSmall.c \
              src/gerbera/grVertexPipeline.c \
+ src/gerbera/grTransform.c \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
     src/imath/IUnitScalar.c \

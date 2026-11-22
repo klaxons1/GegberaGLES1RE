@@ -118,6 +118,8 @@ static void test_state_viewport(void);
 static void test_state_pixel(void);
 static void test_state_material(void);
 static void test_state_lights(void);
+static void test_transform(void);
+static void test_update_lights(void);
 
 int main(void)
 {
@@ -134,6 +136,8 @@ int main(void)
     test_state_pixel();
     test_state_material();
     test_state_lights();
+    test_transform();
+    test_update_lights();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -542,6 +546,146 @@ static void test_state_material(void)
     CHECK(st.material.alpha == 0xBEEFu);
     grSetMaterialShininess(&st, FIN(0.25f));
     CHECK((HGuint32)grGetMaterialShininess(&st) == (HGuint32)FIN(0.25f));
+}
+
+/* --- transform stack + user clip planes + ITC transform -------------------- */
+
+static void test_transform(void)
+{
+    Gerbera_s st;
+    _IMatrix4x4 id;
+    _IFVector4 eq;
+    _ITCTransform itc;
+    int ci;
+
+    memset(&st, 0, sizeof(st));
+    IMatrix4x4_identity(&id);
+
+    /* grSetMatrix: copy + dirty bit; MODELVIEW=0 / PROJECTION=1 (EPOC slots) */
+    grSetMatrix(&st, GR_MATRIXMODE_MODELVIEW, &id);
+    CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_MODELVIEW) == 1);
+    CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_PROJECTION) == 0);
+    for (ci = 0; ci < 4; ++ci)
+        CHECK(st.matrix[0].v[ci].e == id.v[ci].e &&
+              st.matrix[0].v[ci].m[0] == id.v[ci].m[0] &&
+              st.matrix[0].v[ci].m[3] == id.v[ci].m[3]);
+    grSetMatrix(&st, GR_MATRIXMODE_PROJECTION, &id);
+    CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_PROJECTION) == 1);
+    CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_TEXTURE0) == 0);
+
+    /* grSetMatrixDirty: set/clear one bit at a time */
+    grSetMatrixDirty(&st, GR_MATRIXMODE_TEXTURE1, 1);
+    CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_TEXTURE1) == 1);
+    grSetMatrixDirty(&st, GR_MATRIXMODE_TEXTURE1, 0);
+    CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_TEXTURE1) == 0);
+    CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_MODELVIEW) == 1);  /* untouched */
+
+    /* user clip planes: planes 10..15 -> slots 0..5 (EPOC bases verified) */
+    IFVector4_set(&eq, FIN(0.0f), FIN(1.0f), FIN(0.0f), FIN(-0.5f));
+    grSetUserClipPlane(&st, GR_CLIP_USER0 + 2, &eq, &id);
+    CHECK(st.origUserClipPlanes[2].m[0] == eq.m[0] &&
+          st.origUserClipPlanes[2].m[3] == eq.m[3]);
+    CHECK(st.origUserClipMatrices[2].v[0].e == id.v[0].e);
+    CHECK(grGetUserClipPlane(&st, GR_CLIP_USER0 + 2) == &st.origUserClipPlanes[2]);
+    grSetUserClipPlane(&st, GR_CLIP_USER0 + 5, &eq, &id);
+    CHECK(grGetUserClipPlane(&st, GR_CLIP_USER0 + 5) == &st.origUserClipPlanes[5]);
+
+    /* ITCTransform_copy: identity -> lsh=8 (127-119), rsh=0, im row 3 =
+     * 10.21 ones, classification 2-bits on the diagonal */
+    ITCTransform_copy(&itc, &id);
+    for (ci = 0; ci < 4; ++ci)
+    {
+        CHECK(itc.e[ci] == (0x7F << (8 * ci)));
+        CHECK(itc.lsh[ci][ci] == 8 && itc.rsh[ci][ci] == 0);
+        CHECK(itc.im[ci] == (ci == 3 ? 2097152 : 0));
+    }
+    CHECK(itc.cl == (int)0x80200802u);
+}
+
+/* --- grUpdateLight / grUpdateLights ----------------------------------------- */
+
+static void test_update_lights(void)
+{
+    Gerbera_s st;
+    _IFVector4 pos;
+    _XColor3 ac, lc, ma, me;
+    int ret;
+
+    /* grUpdateLight: directional -> mask 0x40 + headlight halfway =
+     * normalize(nVP + (0,0,2^21)); probed value pinned below */
+    memset(&st, 0, sizeof(st));
+    IFVector4_set(&pos, FIN(2.0f), FIN(0.0f), FIN(0.0f), FIN(0.0f));
+    grSetLightPosition(&st, 0, &pos);
+    grSetLightSpotCutoff(&st, 0, FIN(180.0f));
+    CHECK(grUpdateLight(&st, 0) == 0x40u);
+    CHECK(st.lights[0].lightMask == 0x40);
+    CHECK(st.lights[0].halfway[0] == 1482910);
+    CHECK(st.lights[0].halfway[1] == 0);
+    CHECK(st.lights[0].halfway[2] == 1482910);
+
+    /* positional spotlight: bit 16 (cutoff != 180) + bit 32 (attn != 1,1,1),
+     * halfway untouched */
+    memset(&st, 0, sizeof(st));
+    IFVector4_set(&pos, FIN(1.0f), FIN(2.0f), FIN(3.0f), FIN(1.0f));
+    grSetLightPosition(&st, 2, &pos);
+    grSetLightSpotCutoff(&st, 2, FIN(60.0f));
+    CHECK(grUpdateLight(&st, 2) == 0x30u);
+    CHECK(st.lights[2].halfway[0] == 0 && st.lights[2].halfway[2] == 0);
+
+    /* grUpdateLights: one directional + one positional, full refresh */
+    memset(&st, 0, sizeof(st));
+    XColor3_setx(&ac, 65536, 65536, 65536);       /* 2^21 = 1.0 (10.21) */
+    XColor3_setx(&lc, 32768, 16384, 8192);
+    XColor3_setx(&ma, 65536, 65536, 65536);
+    XColor3_setx(&me, 16384, 16384, 16384);
+    grSetGlobalAmbient(&st, &ac);
+    IFVector4_set(&pos, FIN(2.0f), FIN(0.0f), FIN(0.0f), FIN(0.0f));
+    grSetLightPosition(&st, 0, &pos);
+    grSetLightSpotCutoff(&st, 0, FIN(180.0f));
+    grSetLightColor(&st, 0, 0, &lc);
+    IFVector4_set(&pos, FIN(1.0f), FIN(2.0f), FIN(3.0f), FIN(1.0f));
+    grSetLightPosition(&st, 1, &pos);
+    grSetLightSpotCutoff(&st, 1, FIN(180.0f));
+    grSetMaterialColor(&st, 0, &ma);
+    grSetMaterialColor(&st, 3, &me);
+    grSetCapability(&st, GR_CAPABILITY_LIGHT0, 1);
+    grSetCapability(&st, GR_CAPABILITY_LIGHT0 + 1, 1);
+    ret = grUpdateLights(&st);
+    CHECK(ret == 1);                                  /* positional light on */
+    CHECK(st.lightDirectionalMask == 1);
+    CHECK(st.lightActiveDirtyMask == 0);
+    CHECK(st.lightTypeDirtyMask == 0);
+    CHECK((st.lightColorDirtyMask & 3u) == 0);        /* cleared for enabled */
+    CHECK(st.lights[0].lightMask == 0x40);            /* directional, no premul */
+    CHECK(st.lights[1].lightMask == 0x20);            /* positional, zero colors */
+    CHECK(st.l_directional[0] == &st.lights[0]);
+    CHECK(st.l_directional[1] == NULL);
+    CHECK(st.l_positional[0] == &st.lights[1]);
+    CHECK(st.l_positional[1] == NULL);
+    /* ambientLightSum = ambient + light0 ambient */
+    CHECK(st.ambientLightSum.r == 3145728);
+    CHECK(st.ambientLightSum.g == 2621440);
+    CHECK(st.ambientLightSum.b == 2359296);
+    /* baseColor = sum * material.ambient + material.emission */
+    CHECK(st.baseColor.r == 3670016);
+    CHECK(st.baseColor.g == 3145728);
+    CHECK(st.baseColor.b == 2883584);
+    CHECK(st.ambientLightSumMask == 1);
+    CHECK(st.ambientLightSumDirty == 0);
+    CHECK(st.baseColorDirty == 0);
+
+    /* second run: idempotent (all asserts inside grUpdateLights hold) */
+    ret = grUpdateLights(&st);
+    CHECK(ret == 1);
+    CHECK(st.ambientLightSum.r == 3145728);
+    CHECK(st.baseColor.r == 3670016);
+
+    /* disable the positional light -> partition drops it, return 0 */
+    grSetCapability(&st, GR_CAPABILITY_LIGHT0 + 1, 0);
+    ret = grUpdateLights(&st);
+    CHECK(ret == 0);
+    CHECK(st.l_positional[0] == NULL);
+    CHECK(st.l_directional[0] == &st.lights[0]);
 }
 
 static void test_state_lights(void)

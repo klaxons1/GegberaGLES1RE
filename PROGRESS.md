@@ -110,6 +110,43 @@ per-translation-unit inline clones that were deduped).
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
 
+## DONE session 3g (transform stack + user clip planes + light update)
+
+The EPOC decompile pinned the whole transform arena (Gerbera_s byte offsets,
+self-consistent): matrixDirtyMask +112, matrix[13] +624 (stride 80, slots
+0=MODELVIEW 1=PROJECTION 2,3=texture 4..12=matrix palette), modelview/
+objectToClip/projectionTransform +1664/+1864/+2064 (_IVertexTransform,
+stride 200), matrixPalTransform[9] +2264, texCoordTransform[2] +4064
+(_ITCTransform, stride 132!! - lsh/rsh are bytes, im is int[4]; the earlier
+int64-im guess was WRONG; the WINSCW `texCoordTransform[11*unit]` indexing =
+11 12-byte slots per unit), normalsToEyeTransform +4328 / normalsToEyePal[9]
++4368 (_XNormalTransform stride 40), userClipPlanes[6] +4728,
+origUserClipPlanes[6] +4848, origUserClipMatrices[6] +4968,
+l_directional/l_positional[9] +5448/+5484, material +5520, ambientLightSum
++5588, lights[8] +5712 (stride 208: positionXYZ +0, spotCutoff +16,
+lightMask +20, orgPosition +24, orgSpotDirection +44, spotDirectionNegated
++56, colors[3] +72, exponent +108, attenuation +112, halfway +168, nVP +180,
+positional +192), enabledUserClipPlaneIndices +7620. The WINSCW clip-plane
+storage expressions (`texCoordTransform[8][0].padding[80*plane-1]`,
+`normalsToEyePal[17][0].originalVertex + plane`) are Hex-Rays artifacts:
+EPOC = state+4168+80*plane / state+4648+20*plane with RAW plane 10..15 ==
+origUserClipMatrices/origUserClipPlanes[plane-10].
+
+- Ported grIsMatrixDirty/grSetMatrixDirty (grUtil.c), grSetMatrix,
+  grSetUserClipPlane, grGetUserClipPlane (grApiSmall.c), ITCTransform_copy
+  (new grTransform.c), grUpdateLight, grUpdateAmbientLightSum, grUpdateLights
+  (grVertexPipeline.c). GR_MATRIXMODE + GR_CLIP_USER0 enums added.
+- _grLight: halfway[3] added; lightMask bits 16=spot(cutoff!=180), 32=attn,
+  64=directional; grUpdateLights partitions lights into l_directional/
+  l_positional (NUL-ended, 9 slots), refreshes premul colors vs material,
+  ambientLightSum = ambientColor + sum(l_directional ambient colors[0]),
+  baseColor = ambientLightSum*material.ambient + material.emission, returns
+  "any positional light on" (transformVE bit for grUpdateVertexPipeline).
+- IScalar_immediate(f) = raw float bits: spotCutoff default 180 stores as
+  0x43340000, exactly the EPOC compare constant.
+- +61 checks (280 core, 879 total). enabledUserClipPlaneIndices packs the
+  enabled-plane list as base-16 digits (plane+1 per digit, grSetupCulling).
+
 ## DONE session 3f (capability enum pinned via the EPOC decompile)
 
 The user contributed `docs/libgles_cm.dll.epoc.c` - the stripped ARM device
