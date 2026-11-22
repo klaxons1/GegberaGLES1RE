@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 4b)
+Last updated: 2026-11-22 (session 4c)
 
 ## Legend
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-22 (session 4b)
 | gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z) - all functions ported, 1088 checks green |
 | gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z) - clears, blit, texture rect |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
-| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - opcode layer + grExecuteProgram interpreter done (4a/4b); HC_compile, x86/ARM backends next |
+| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - opcode layer + interpreter done (4a/4b); ARM backend mapped from EPOC decomp+binary (4c); HC_compile, backends, emulator next |
 | egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
 | egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
 | crt/platform | Symbian + MSL runtime | 44 | n/a (reference) |
@@ -1501,3 +1501,37 @@ test_interpreter (1120 -> 1325 checks, all green: 295 hg / 311 imath / 1325 core
   (stubs currently inert in grrStubs.c). ARM backend: not named in either
   decomp (main = x86 HCX86Backend; EPOC decomp is all sub_XXXX) - investigate
   EPOC decomp + hcBackend.h interface next.
+
+## Session 4c - ARM backend identified (EPOC decomp + binary vtable recovery)
+
+Docs updated (docs/analysis.md ARM section; this entry). Findings:
+
+- **The ARM decomp is docs/libgles_cm.dll.epoc.c** (44.5k lines): GNU C++ /
+  GCCE build of the EKA2 ARM image `libgles_cm.dll.epoc` (202 KB, "EPOC"
+  header); `libgles_cm.dso` is only the ELF32 ARM import lib.953 functions,
+ 866 decompiled, no assert strings (release build). VA->file: `off = VA - 0x7F64`.
+- **The ARM build HAS a native JIT backend** (own source, e.g.
+  hcARMBackend.c - the x86 string-derived tree only lists hcX86Backend.c).
+  Located via grEnsureValidPixelPipeline sub_20904 -> grGetBackend sub_25484
+  -> `off_36F6C` (decomp types it `[2]` - truncated).
+- **Full HCBackend_s recovered from the binary** at file 0x2F008 (VA 0x36F6C),
+  followed by swap[]="3412/0-.+,)*" like x86 backendDecl:
+  canCreateImmediate=sub_245C0 (ARM rotated-imm check), internalStackSpace
+  **60** (x86 40), internalStackSpaceAfterInvars=NULL, targetRegisterMapping
+ =sub_23D7C -> bytes {0..12,14} (14 hard regs, sp skipped), numHardRegs
+  **14** (x86 8), preRegallocFixer=sub_2417C, codegen=sub_24AEC (emits ARM
+  words via sub_23F2C/sub_24090 etc., 0xE0000000 AL cond), postRegallocFixer
+  **NULL** (compileWrap falls back), emulate=sub_24118 (program(stackPtr)),
+  slot9=sub_25480 (4-byte `bx lr` no-op; x86 NULL), isNative=1,
+  optimizationMask **NULL** (x86 NULL too).
+- ARM compileWrap (sub_2C298) confirmed same pass order as x86
+  compileInternal: preRegallocFixer(+20), fixImmediates, registerAllocation,
+  slot9/optMask(+44) &1 check, panic vs normal regalloc, postRegallocFixer
+  (+28, NULL-checked), codegen(+24,5 args). HC_compile=sub_2C76C ->
+  compilePriv sub_2C6E8 (emuDst=0) -> setjmpWrap(sub_2C6B8 -> sub_2C298).
+- ARM grExecuteProgram (sub_1F87C) matches the session-4b port semantics
+  exactly (BE offsets, inner HC loop without pop, repeat counter read) - the
+  port is valid for both builds.
+- Next: HC_compile port (shared), hcEmulator, then x86/ARM backend bodies
+  (ARM: sub_24AEC region 0x24090-0x24AEC + emit helpers; x86: fragments in
+  generated/fragments/hc/).

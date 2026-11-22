@@ -137,6 +137,57 @@ EGL 1.0 entry points, plus driver-private exports. The export table itself is
 in the binary at RVA 0x94000; GL names also appear in the `procedures` string
 table used for `eglGetProcAddress`.
 
+## The ARM build (`libgles_cm.dll.epoc` + `.epoc.c`, `libgles_cm.dso`)
+
+- `libgles_cm.dll.epoc` (202 KB) - Symbian **EKA2 target image**, ARM code
+  (header words `0x10000079 ... "EPOC"`); produced by **GNU C++ / GCCE**
+  (the decompiler banner says `Detected compiler: GNU C++`, unlike the
+  Metrowerks x86 build). Decompilation: `docs/libgles_cm.dll.epoc.c`
+  (44.5k lines, `nfuncs=953 queued=866 decompiled=866`, all functions
+  unnamed `sub_XXXX`, **no assert strings** - release build compiled them out).
+- `libgles_cm.dso` (8 KB) - ELF32 **ARM** static import library (no code).
+- VA-to-file mapping in the image: `file_off = VA - 0x7F64` (verified against
+  the backend vtable, code at VA 0x8028+, data at VA 0x36xxx).
+
+### ARM hc backend (recovered session 4c)
+
+The x86 source tree (assert strings) only ever mentions `hcX86Backend.c`; the
+ARM build ships its **own JIT backend** (unnamed in the decomp - likely
+`hcARMBackend.c` in the original tree). Identification path:
+`grEnsureValidPixelPipeline` (sub_20904) -> `grGetBackend` (sub_25484 ->
+`off_36F6C`) -> `HC_compile` (sub_2C76C/sub_2C6E8/sub_2C298 = compileWrap).
+
+The decompiler typed the vtable as `[2]` entries; the full 12-slot
+`HCBackend_s` was recovered from the binary at **file offset 0x2F008**
+(VA 0x36F6C), immediately followed by the `swap[] = "3412/0-.+,)*"` string -
+same data order as x86 `backendDecl`:
+
+| slot | member | ARM target | ARM value / role | x86 (hcX86Backend.c) |
+|---|---|---|---|---|
+| +0 | canCreateImmediate | sub_245C0 | ARM rotated-imm8 encodability check on the instruction immediate | returns 1 |
+| +4 | internalStackSpace | sub_24100 | **60** | **40** |
+| +8 | internalStackSpaceAfterInvars | NULL | - | NULL |
+| +12 | targetRegisterMapping | sub_23D7C | `&word_36F2A` = bytes `{0..12,14}` (r0-r12,r14; r13/sp skipped) | `&regRemap` |
+| +16 | numHardRegs | sub_24108 | **14** | **8** |
+| +20 | preRegallocFixer | sub_2417C | 4-arg (mgr,dest,src,handle) | present |
+| +24 | codegen | sub_24AEC | emits ARM words (`cond<<28 \| 0x08000000 ...`, `0xE0000000` AL), ~410 decomp lines | HCX86Backend_codegen |
+| +28 | postRegallocFixer | NULL | compileWrap falls back to sub_25E34 | present |
+| +32 | emulate | sub_24118 | `return program(stackPtr);` | same |
+| +36 | (slot 9, unnamed) | sub_25480 | 4-byte `bx lr` no-op (decomp skipped it) | NULL |
+| +40 | isNative | sub_24110 | **1** | 1 |
+| +44 | optimizationMask | NULL | compileWrap checks NULL before `&1` | NULL |
+
+ARM codegen emits 32-bit ARM instruction words via helpers sub_23F2C (emit
+word + track used-reg mask), sub_24090 (data-processing field assembly:
+cond in bits 31-28, I/opc/S fields), sub_24674/24734/2488C/248F4/2496C
+(load/store + operand decoding), sub_24ABC (128-byte code-buffer growth).
+`HC_opcodeDecls`-driven switch inside sub_24AEC (cases 4,5,6,7,8,0xB).
+
+The ARM `grExecuteProgram` (sub_1F87C, bytecode VM) matches the x86
+semantics line-for-line (verified against the session-4b port): big-endian
+16-bit offsets, HC-instruction inner loop without pop, repeat-frame
+`[limit, counter]` with cases 0xE/F/0x10 reading the counter.
+
 ## Strategy for full reconstruction
 
 1. Port leaf libraries first (hg done, imath next) - no struct unknowns.
