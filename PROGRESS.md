@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3m)
+Last updated: 2026-11-22 (session 3n)
 
 ## Legend
 
@@ -109,6 +109,48 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3n (grFast vertex cache: grVertexCacheInvalidate + grVertexCacheGet)
+
+- **_grVertexCache struct pinned** (grState.h, 168 bytes at renderStack+0 -
+  grSetupRendering assigns state->vertexCache = state->renderStack):
+  batchLockMask HGint64@0 (per-slot lock bits), totalFreeSlots@8 (the
+  decompile reaches it as cv_anon_1712.clipPosition[0].e), allocIndex@12,
+  prevVertexIndices[3]@16 (last queued primitive's raw vertex indices,
+  grQueuePrimitive u32 accesses), prevCacheIndices[3]@28, cacheIndices[32]@40
+  (hash table, 4 packed cache-index bytes each). Command queue starts at
+  renderStack+168 (42 dwords = 8-byte commands), commandQueueIndex u32@1192
+  COUNTS DWORDS (invalidate zeroes it; grQueuePrimitive appends 2 per
+  command: {packedIndices|0x10000000, 0} for clipped primitives). Render
+  stack total 23860 (grApiFast.inl 381 assert string). GR_RENDER_STACK_SIZE +
+  GR_RENDER_STACK_COMMAND_QUEUE_INDEX defined in grState.h.
+- **grApiFast.c** (new): grVertexCacheInvalidate (asserts 59/60: renderStack-
+  Allocated && renderStack, vertexCache; queue index 0, mask 0, prevVertex
+  -1x3, totalFreeSlots/allocIndex 64, prevCacheIndices 0x3, vb[0].index -1,
+  hgFill8(cacheIndices, 0, 128)) and grVertexCacheGet (dll.c 32127-32215):
+  hash = (v ^ v>>3 ^ v>>5), bucket = &0x1F, slot = &0x3F; 4-way byte scan of
+  the packed entry against vertexBuffer[byte].index, hits rotate the match
+  to byte0 via hgRor32(entry, 8n); miss takes the low-6 slot or, when the
+  lock bit is set, the highest unlocked slot 63-hgClz64(hgNot64(mask))
+  (asserts 793/830 "hgInRange32(cIndex, 0, GR_VERTEX_CACHE_SIZE-1)"); new
+  entry = (old << 8) | slot (byte3 drops); record gets index + stateMask 0,
+  weight fetch (MATRIX_PALETTE+MATRIX_INDEX_ARRAY+WEIGHT_ARRAY caps &&
+  vertexArray[3].data && vertexArray[4].data -> grFetchWeightAndIndex into
+  weights/weightIndices) then grTransformVertex; after the store:
+  totalFreeSlots -= hgGetBit64(oldMask, cIndex) ^ 1 and the lock bit is set.
+- **tests/test_core.c**: test_vertextcache (+44): invalidate fields; miss
+  slot 5 with the full transform pinned (position IFVector4 e=0x7f818181
+  m=0x28000000/0x30000000/0x38000000 for (5,6,7); clip shared-exponent
+  e=0x81, m=(0x28000000,0x30000000,0x38000000,0x08000000); stateMask 4 =
+  TRANSFORMED); hit keeps free slots; bucket entries 11 (0x0A) / 41 (0x2D,
+  bucket 9); eviction 0x41 (slot 11 locked) -> 63, entry 0x00000B3F, mask
+  0x8000020000000820; byte-1 hit rotation entry 0x3F00000B; get(0) overwrites
+  the invalidated vb[0] sentinel.
+- **Probe notes**: grVertexCacheGet tests need grSetupCulling first (populates
+  objectToClipTransform; grSetMatrix alone leaves it zeroed -> all-zero clip
+  output), a vertex array large enough for the biggest index used, and
+  state->vertexCache = state->renderStack (the real layout). grTransform-
+  Vertex requires hgInRange32(vertexArray[0].size, 2, 4).
 
 ## DONE session 3m (grClipper + vertex-cache/clip helpers + _grVertex layout pin)
 

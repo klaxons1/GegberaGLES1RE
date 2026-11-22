@@ -115,6 +115,30 @@ enum GR_POSITION_e
 #define GR_MAX_CLIPPER_GENERATED_VERTICES 12
 #define GR_MAX_CLIPPER_VERTICES 15
 
+/* the grFast vertex cache (cv_anon_16F8, 168 bytes; grSetupRendering sets
+ * state->vertexCache = state->renderStack, i.e. it lives at renderStack+0,
+ * followed by the command queue at +168). Offsets pinned from grVertexCache-
+ * Get (dll.c 32127: batchLockMask = *(long long*)cache, free-slot counter =
+ * cache->clipPosition[0].e as cv_anon_1712 = byte 8; hash table base =
+ * cache->color... = byte 40) and grQueuePrimitive (u32 accesses: 16/20/24 =
+ * previous primitive's vertex indices, 28/32/36 = their cache indices). */
+typedef struct _grVertexCache
+{
+    HGint64 batchLockMask;         /* +0:  per-slot lock bits (hgGet/SetBit64) */
+    int totalFreeSlots;            /* +8:  decremented when a slot locks */
+    int allocIndex;                /* +12 */
+    int prevVertexIndices[3];      /* +16: last queued primitive's vertex idxs */
+    int prevCacheIndices[3];       /* +28: their cache indices */
+    unsigned int cacheIndices[32]; /* +40: hash table, 4 packed bytes each */
+} _grVertexCache;                  /* 168 bytes */
+
+/* render stack (cv_anon_1717) byte offsets used by the grFast queue:
+ * +0 the vertex cache, +168 command queue (8-byte commands, u32 index
+ * counter at +1192 counting DWORDS), +1196/+1264 fetch lists, +1332 vertex
+ * buffer, 23860 bytes total (grApiFast.inl 381). */
+#define GR_RENDER_STACK_COMMAND_QUEUE_INDEX 1192
+#define GR_RENDER_STACK_SIZE 23860
+
 /* winding (grSetCullMode) */
 enum GR_WINDING_e
 {
@@ -494,6 +518,9 @@ typedef struct Gerbera_s
      * +47, stage pointers +7624..7652) -------------------------------------- */
     void *renderStack;                                /* +116 */
     unsigned char renderStackAllocated;
+    void *vertexCache;                                /* = renderStack while
+                                                       * allocated (grSetup-
+                                                       * Rendering) */
     unsigned char textureUnitEnabled[2];              /* +48/49: per-unit texcoord
                                                        * stage active (set by the
                                                        * ogl texture-enable path) */
@@ -686,6 +713,10 @@ int  grComputeDistanceToUserClipPlane(Gerbera_s *state, int plane, _IVector4 *po
 int  grClipConvexPolygon(_grClipVertex *clipped, int numVertices, _grClipVertex *inPoly,
                          int *distances, int swapDirection);
 int  grClipper(Gerbera_s *state, unsigned char *outputFan, unsigned int indices);
+
+/* --- grFast vertex cache (grApiFast.inl, implemented in grApiFast.c) ------- */
+void grVertexCacheInvalidate(Gerbera_s *state);
+int  grVertexCacheGet(Gerbera_s *state, int vtxIndex);
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);
 void grApplyLighting(Gerbera_s *state, unsigned char *vertexList);

@@ -128,6 +128,7 @@ static void test_light_vertex(void);
 static void test_setup_culling(void);
 static void test_clear(void);
 static void test_clipper(void);
+static void test_vertextcache(void);
 
 int main(void)
 {
@@ -154,6 +155,7 @@ int main(void)
     test_setup_culling();
     test_clear();
     test_clipper();
+    test_vertextcache();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -1691,4 +1693,103 @@ static void test_clipper(void)
     /* a triangle with no clip bit in any vertex dies at the grClipper.inl
      * 396 assert (the queue stage only calls grClipper when the packed
      * vertex clipMask has a clipping bit) - dead-end, not exercised */
+}
+
+/* --- grApiFast.inl: the grFast vertex cache --------------------------------- */
+
+static void test_vertextcache(void)
+{
+    Gerbera_s st;
+    _IMatrix4x4 id;
+    _grVertexCache *cache;
+    _grVertex *vb;
+    static float pos[66][3];
+    static unsigned char stack[GR_RENDER_STACK_SIZE];
+    int c, i;
+
+    for (i = 0; i < 66; ++i)
+    {
+        pos[i][0] = (float)i;
+        pos[i][1] = (float)(i + 1);
+        pos[i][2] = (float)(i + 2);
+    }
+    IMatrix4x4_identity(&id);
+    memset(&st, 0, sizeof(st));
+    memset(stack, 0, sizeof(stack));
+    st.renderStack = stack;
+    st.renderStackAllocated = 1;
+    st.vertexCache = stack;                  /* grSetupRendering layout */
+    grSetMatrix(&st, GR_MATRIXMODE_MODELVIEW, &id);
+    grSetMatrix(&st, GR_MATRIXMODE_PROJECTION, &id);
+    st.vertexArray[0].size = 3;
+    st.vertexArray[0].type = GR_DATATYPE_FLOAT;
+    st.vertexArray[0].data = pos;
+    st.vertexArray[0].stride = 12;
+    grSetCapability(&st, GR_CAPABILITY_VERTEX_ARRAY, 1);
+    grSetRectangle(&st.renderScissor, 0, 100, 0, 100);
+    grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+
+    grVertexCacheInvalidate(&st);
+    cache = (_grVertexCache *)stack;
+    vb = (_grVertex *)(stack + 1332);
+    CHECK(cache->batchLockMask == 0);
+    CHECK(cache->totalFreeSlots == 64 && cache->allocIndex == 64);
+    CHECK(cache->prevVertexIndices[0] == -1 && cache->prevVertexIndices[1] == -1 &&
+          cache->prevVertexIndices[2] == -1);
+    CHECK(cache->prevCacheIndices[0] == 0 && cache->prevCacheIndices[2] == 0);
+    CHECK(*(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX) == 0);
+    CHECK(vb[0].index == -1);
+    CHECK(cache->cacheIndices[0] == 0 && cache->cacheIndices[31] == 0);
+
+    /* miss: slot = (v ^ v>>3 ^ v>>5) & 0x3F; full transform runs */
+    c = grVertexCacheGet(&st, 5);
+    CHECK(c == 5);
+    CHECK(vb[5].index == 5);
+    CHECK(vb[5].stateMask == 4);
+    CHECK(vb[5].position.objectSpaceFloat[0].e == 0x7f818181u);
+    CHECK(vb[5].position.objectSpaceFloat[0].m[0] == 0x28000000);
+    CHECK(vb[5].position.objectSpaceFloat[0].m[1] == 0x30000000);
+    CHECK(vb[5].position.objectSpaceFloat[0].m[2] == 0x38000000);
+    CHECK(vb[5].clipPosition.e == 0x81);
+    CHECK(vb[5].clipPosition.m[0] == 0x28000000);
+    CHECK(vb[5].clipPosition.m[1] == 0x30000000);
+    CHECK(vb[5].clipPosition.m[2] == 0x38000000);
+    CHECK(vb[5].clipPosition.m[3] == 0x08000000);
+    CHECK(cache->totalFreeSlots == 63);
+    CHECK(cache->batchLockMask == 0x20);
+    CHECK(cache->cacheIndices[5] == 5);
+
+    /* hit: same index, no free-slot change */
+    CHECK(grVertexCacheGet(&st, 5) == 5);
+    CHECK(cache->totalFreeSlots == 63);
+
+    /* second bucket entry */
+    CHECK(grVertexCacheGet(&st, 0x0A) == 11);            /* 0x0A^1^0 = 0x0B */
+    CHECK(cache->cacheIndices[11] == 0x0B);
+    CHECK(cache->totalFreeSlots == 62);
+    CHECK(grVertexCacheGet(&st, 0x2D) == 41);            /* 0x2D^5^1 = 0x29 */
+    CHECK(cache->cacheIndices[9] == 0x29);
+    CHECK(cache->totalFreeSlots == 61);
+
+    /* byte-0 hit keeps the entry */
+    CHECK(grVertexCacheGet(&st, 0x0A) == 11);
+    CHECK(cache->cacheIndices[11] == 0x0B);
+    CHECK(cache->totalFreeSlots == 61);
+
+    /* eviction: 0x41 hashes to slot 11 (locked) -> highest unlocked = 63 */
+    CHECK(grVertexCacheGet(&st, 0x41) == 63);
+    CHECK(cache->cacheIndices[11] == 0x00000B3F);
+    CHECK(cache->totalFreeSlots == 60);
+    CHECK(cache->batchLockMask == 0x8000020000000820ull);
+    CHECK(vb[63].index == 0x41);
+
+    /* byte-1 hit rotates the packed entry */
+    CHECK(grVertexCacheGet(&st, 0x0A) == 11);
+    CHECK(cache->cacheIndices[11] == 0x3F00000B);
+    CHECK(cache->totalFreeSlots == 60);
+
+    /* sentinel overwrite: get(0) reuses the invalidated vb[0] slot */
+    CHECK(grVertexCacheGet(&st, 0) == 0);
+    CHECK(vb[0].index == 0);
+    CHECK(cache->totalFreeSlots == 59);
 }
