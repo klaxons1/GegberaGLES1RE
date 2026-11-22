@@ -14,28 +14,38 @@ LIB_SRC := \
     src/hg/hgAssert.c \
     src/hg/hgInt32.c \
     src/hg/hgFloat.c \
-    src/hg/hgFill.c
+    src/hg/hgFill.c \
+    src/gerbera/grUtil.c \
+    src/imath/imAssert.c \
+    src/imath/IScalar.c \
+    src/imath/IUnitScalar.c \
+    src/imath/IMath.c
 
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 
-TEST_SRC := tests/test_hg.c
+TEST_SRC := tests/test_hg.c tests/test_imath.c
 
 .PHONY: all test clean
-all: $(BUILD)/libhg.a
+all: $(BUILD)/libgerbera.a
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/libhg.a: $(LIB_OBJ)
+$(BUILD)/libgerbera.a: $(LIB_OBJ)
 	$(AR) rcs $@ $^
 
-$(BUILD)/test_hg: $(LIB_OBJ) $(TEST_SRC)
+$(BUILD)/test_hg: $(filter src/hg/%,$(LIB_OBJ)) tests/test_hg.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LIB_SRC) $(TEST_SRC) -lm -o $@
+	$(CC) $(CFLAGS) $(filter src/hg/%,$(LIB_SRC)) tests/test_hg.c -lm -o $@
 
-test: $(BUILD)/test_hg
+$(BUILD)/test_imath: $(LIB_OBJ) tests/test_imath.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LIB_SRC) tests/test_imath.c -lm -o $@
+
+test: $(BUILD)/test_hg $(BUILD)/test_imath
 	$(BUILD)/test_hg
+	$(BUILD)/test_imath
 
 clean:
 	rm -rf $(BUILD)

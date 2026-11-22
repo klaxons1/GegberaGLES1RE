@@ -41,9 +41,15 @@ HGuint32 F_ABS(HGuint32 a);
 HGuint32 F_NEG(HGuint32 a);
 HGuint32 F_ADD(HGuint32 a, HGuint32 b);
 HGuint32 F_SUB(HGuint32 a, HGuint32 b);
+HGuint32 F_MUL(HGuint32 a, HGuint32 b);
+HGuint32 F_SQR(HGuint32 a);
+HGuint32 F_ITOF(HGint32 x);
+HGuint32 F_RCP(HGuint32 a);
+HGuint32 F_RSQ(HGuint32 a);
 HGuint32 F_MIN(HGuint32 a, HGuint32 b);
 HGuint32 F_MAX(HGuint32 a, HGuint32 b);
 HGuint32 F_MAXZERO(HGuint32 a);
+
 
 /* float building blocks (hgFloat.c) */
 HGuint32 extractMantissa(HGuint32 a);
@@ -65,7 +71,6 @@ HGuint32 F_COS(HGuint32 a);
 
 HGfloat  hgFsin(HGfloat a);
 HGfloat  hgFcos(HGfloat a);
-
 HG_EXTERN_C_END
 
 #endif /* HG_FLOAT_H */

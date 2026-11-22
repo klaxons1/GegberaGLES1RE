@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 1)
+Last updated: 2026-11-22 (session 2)
 
 ## Legend
 
@@ -12,8 +12,8 @@ Last updated: 2026-11-22 (session 1)
 
 | module | original tree | functions (unique) | status |
 |---|---|---|---|
-| hg | renderer/libs/hg | 105 | **DONE** (this session) |
-| imath | renderer/libs/imath | 198 | SCAFFOLDED |
+| hg | renderer/libs/hg | 105 | **DONE** (session 1) |
+| imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar layer done (session 2) |
 | gerbera/core | .../gerbera/core/implementation | 318 | SCAFFOLDED |
 | gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | SCAFFOLDED |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
@@ -25,7 +25,40 @@ Last updated: 2026-11-22 (session 1)
 Total unique functions in the binary: 1402 (1776 definitions, of which 374 are
 per-translation-unit inline clones that were deduped).
 
-## DONE this session
+## DONE session 2 (imath scalar layer)
+
+1. **Assert machinery ported** (`src/gerbera/grUtil.{c,h}`, `src/imath/imAssert.c`)
+   - `grAssert(expr, file, line)`: prints `\nAssertion: %s (%s %d)\n`, returns 1
+   - `grDie(v)`: fatal handler - reference crashes via null write; port aborts
+   - `imAssert(expr, file, line)`: `grAssert(...)` then die (verbatim semantics)
+2. **IScalar.c + imApi.h**: full scalar port - set/setAndNormalize, accessors,
+   fixed-point conversions (fixedToScalar/scalarToFixed/toFixedHO/byteToScalar),
+   arith on bit patterns via F_* helpers, compares/tests, degreesToRadians,
+   log2_iterate + XScalar_log2, IUnitScalar.c (maxZero/lerp/tos), IMath.c
+   validity checkers. All assert call sites keep the original file/line strings.
+3. **hgFloat.c completed**: F_MUL/F_SQR/F_ITOF/F_RCP/F_RSQ + s_rcpTable[256] +
+   s_rsqlut[384] (extracted verbatim from decompile lines 6780/7039).
+4. **Tests**: test_imath.c added - 114 checks; total suite 402 checks, 0
+   failures, warning-free. Library renamed `libgerbera.a`.
+
+### Fidelity notes worth keeping (verified against decompile)
+
+- `IScalar_iftos` NaN/Inf: keeps the sign BYTE, forces mantissa 0x7FFFFF
+  (`a & 0xFF000000 | 0x7FFFFF`) - 0x7FC00000 -> 0x7F7FFFFF, not max-finite.
+- `IScalar_byteToScalar`: the `m + 256` carry is original behavior;
+  byte 128 -> 0x3F008081 (one ulp above b/255).
+- `F_RCP` Newton chain: second refinement uses `HIWORD(scaled)` = `scaled >> 16`
+  (got it wrong as the low word once - rcp(3.0) came out 0.5 instead of 1/3).
+- `F_RSQ` is a LUT + polynomial estimate with ~1 ulp error; F_RSQ(4.0) returns
+  0.49999995 (misses the 0.5 binade boundary) - faithful, do not "fix".
+- `XScalar_log2(y)` returns `(log2(y) - 21) << 21` (y <= 0 -> 0x80000000);
+  `IScalar_log2_iterate` is the 17-step shift-and-subtract chain with
+  constants 1256197404 ... 23637 (constants = round(2^31*log2(1+2^-i))),
+  final step (shift 17) does not update y.
+- `F_MUL` truncates (1 ulp low sometimes): degreesToRadians(180) = 0x40490FDA.
+- `IScalar_set` asserts m in (-0x40000000, 0x40000000) EXCLUSIVE (imApi.inl 169).
+
+## DONE session 1
 
 1. **Tooling** (`tools/split_decomp.py`)
    - parses the 62k-line monolith into 1776 function bodies
@@ -51,13 +84,12 @@ per-translation-unit inline clones that were deduped).
 
 ## Next up (recommended order)
 
-1. **imath** - self-contained fixed-point math. Start with IScalar.c +
-   IUnitScalar.c (IUnitScalar_sin/cos already ported into hgFloat.c as
-   provenance showed hgFloat.c), then imInline.inl types (XScalar, XColor3,
-   IFVector4...), then IVector3/4, INormal3, IMatrix3/4, IMath.c, imApi.inl.
-   Needs: imApi.h type reconstruction - `_IMatrix4x4` is a struct of 4 rows
-   `{ HGuint32 e; HGint32 m[4]; }` (per-row packed exponents + mantissas),
-   verify per-field from the fragment bodies.
+1. **imath (remaining)** - vectors/matrices next: IVector3/IVector4 (isValid
+   bodies already located; struct `_IVector3{int e; int m[3]}`), INormal3,
+   IMatrix3/4 (`_IMatrix4x4` = 4 rows of `{ HGuint32 e; HGint32 m[4]; }`),
+   then imInline.inl types (XScalar ops, XColor3, IFVector3/4 - needed by
+   attenuateRcp/Rsq which stay deferred until then), imApi.inl remainder,
+   IMath.c vector isValid functions move in with the vector port.
 2. **gerbera/core** - biggest module (15.3k decompiled lines). Needs the
    `Gerbera_s` context struct reconstructed first; the gr*.inl files hang off
    it. Port order: grUtil/grRGBA -> grDefs tables -> grrClear -> grrBlit ->
