@@ -24,6 +24,8 @@ LIB_SRC := \
              src/gerbera/grApiSmall.c \
              src/gerbera/grVertexPipeline.c \
  src/gerbera/grTransform.c \
+ src/gerbera/grFill.c \
+ src/gerbera/grrClear.c \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
     src/imath/IUnitScalar.c \

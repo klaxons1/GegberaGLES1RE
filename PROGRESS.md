@@ -110,6 +110,66 @@ per-translation-unit inline clones that were deduped).
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
 
+## DONE session 3l (grFlushBufferClears + grr clear family + grFill + grDitherColor + grClearBuffers)
+
+- **grr clear family** (grrClear.inl 62-285, DLL 0043E220-0043EA50) ported to
+  new src/gerbera/grrClear.c: grrClearDitheredColorBuffer (4 grDitherColor
+  calls per row x0..x0+3, y0 incrementing; bpp 1/2/4 through the fill4x
+  table), grrClearBuffer (fillFunctions1x[bpp-1] = grFill8/16/32Masked with
+  NULL at slot 2 - a 3-byte surface hits the fillFunc assert 153, faithful;
+  empty-scissor skip; stride == bpp*width -> single fill of width*height),
+  grrClearColorBuffer (fillMask -1 unless the info mask is a strict subset
+  of the surface mask, then grGetPackedColorWriteMask; grPackColor; dither
+  path when useDithering && clearColor), grrClearDepthBuffer (clearDepth >>
+  30-8*depthBytes for <4-byte depths), grrClearStencilBuffer (fillMask =
+  stencilWriteMask), grrClearBuffers (bufferMask 1/2/4 -> color/depth/
+  stencil).
+- **grFlushBufferClears** (grApiFast.inl 26, DLL 00430AE0): asserts 33/34/48
+  (hgInRange32(clearInfoIndex, 0, GR_CLEAR_BUFFER_SIZE) inclusive 4!), lock
+  -> per-record grrClearBuffers -> unlock -> index 0. grLockSurface/
+  grReleaseSurface (eglSymbian.inl 482/518) stubbed until the egl module.
+- **grClearBuffers** (grApiSmall.inl 388, DLL 00443AD0) in grApiSmall.c:
+  auto-flush when the queue is full (EPOC sub_221xx: index at +7472, records
+  at +7476, 36 bytes each = 9 dwords; WINSCW reaches them as clearInfos[9*i]),
+  asserts 395 (range 0..SIZE-1) + 399, record = surfaceScissor snapshot +
+  colorMask/depthMask/stencilWriteMask + clearColor/clearDepth/clearStencil +
+  useDithering. _grClearInfo added to grDefs.h (scissor x0,x1,y0,y1 at +0,
+  colors +16..24, byte pack +28..32: bufferMask/colorMask/depthMask/
+  stencilWriteMask/useDithering); clearInfos[GR_CLEAR_BUFFER_SIZE=4] in
+  Gerbera_s after clearInfoIndex.
+- **grFill.inl** (27402-27850) -> grFill.c: grFill8/16/32Masked (full mask
+  routes to hgFill8/16/32) and grFill4x8/16/32 cyclic pattern fills (the
+  dithered clear calls them with four per-row dithered colors). Endian
+  join: hgGetEndianess() returns TRUE for BIG in this hg - the decompile's
+  "!= HG_ENDIAN_LITTLE" big-endian branch is "== HG_TRUE" here (first port
+  inverted it; caught by the dithered-clear test: swapped fill1 shorts).
+- **grDitherColor** (grUtilSmall.inl 273, DLL 00439440) -> grUtilSmall.c
+  with the DLL data table g_orderedDitherKernel[4] =
+  { -7803290, 1140859562, -581579657, 295252923 } (0xFF88EE66, 0x440022AA,
+  0xDD557... as printed): kernel[y&3], byte (x&3) via hgRor32(.., 8*(x&3))
+  >> 24; channel = v - (v>>size) + (k>>size) per rgbaSizes, then grPackColor.
+- **DESCRIPTOR LAYOUT CORRECTED** (was wrong since 3c): pixelFormat/
+  paletteFormat are BYTES 12/13 inside int 3 with padding[2] at 14/15 - the
+  descriptor view is 16 bytes, ints 0..3. Evidence: grClearDescriptor zeroes
+  *(_DWORD*)&a->pixelFormat (int 3 wholesale); grIsValidDescriptor checks
+  hgInRange32(pixelFormat, 0, 6) / (paletteFormat, 0, 2) / padding == 0 -
+  all must stay inside ints 0..3 because the draw surface embeds the view
+  at int 0 and reads width/height at ints 4/5 (grUpdateScissor raw dwords,
+  grSetSurfaces copies cv_anon_1686 as 0x30 bytes; cv_anon_1686 = 48 bytes
+  pinned by oglSetBuffers' _QWORD[15] scratch: two objects at bytes 24/72).
+  _grSurfaceDescriptor + _grDrawSurface now share the 16-byte prefix;
+  grrClear* take _grDrawSurface and use it AS the descriptor (cast macro
+  GRR_DESC). GR_PIXELFORMAT_MAX 6 / GR_PALETTEFORMAT_MAX 3 now pinned by
+  the assert strings (were flagged conservative).
+- Fill dispatch tables (DLL 479264/479274) as FILL1/FILL4 macros with a
+  double cast through void(*)(void) to keep -Wcast-function-type quiet.
+- +121 checks (548 core, 1147 total): clear queue (record fields, 4-slot
+  wrap + auto-flush, flush reset), RGB565/depth/stencil clears (0xFFFF /
+  0x7FFF / 0xAB), masked clear (colorMask 0x3 -> write mask 0xFFE0, blue
+  bits survive), scissor sub-rect (6-wide surface, rows/cols offset), the
+  dithered pattern (row 0 flat 0x8410 over kernel 0xFF88EE66; row 1 =
+  7c0f 8410 7bef 7bef 7c0f 8410 over 0x440022AA), grFill4x8 full+masked,
+  grFill16/32Masked full+masked.
 ## DONE session 3k (grSetupCulling + GR_COMMAND + primitive-type/transform re-pins)
 
 - **grSetupCulling** (31562-31699, asserts grApiFast.inl 108/113/157) ported:

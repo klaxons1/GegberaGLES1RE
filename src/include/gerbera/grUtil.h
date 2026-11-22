@@ -49,4 +49,15 @@ HG_EXTERN_C_END
             grDie(0);                            \
     } while (0)
 
+/* --- fills (grFill.inl, implemented in grFill.c) ---------------------------
+ * grFillNMasked writes `value` through `mask` into N-bit elements;
+ * grFill4xN writes the cyclic pattern a,b,c,d over `size` elements (the
+ * dithered clear uses it with four per-row dithered colors). */
+void grFill8Masked(unsigned char *dst, unsigned int value, unsigned int mask, int size);
+void grFill16Masked(unsigned short *dst, unsigned int value, unsigned int mask, int size);
+void grFill32Masked(unsigned int *dst, unsigned int value, unsigned int mask, int size);
+void grFill4x8(unsigned char *dst, unsigned char a, unsigned char b, unsigned char c, unsigned char d, unsigned int mask, int size);
+void grFill4x16(unsigned short *dst, unsigned short a, unsigned short b, unsigned short c, unsigned short d, unsigned int mask, int size);
+void grFill4x32(unsigned int *dst, unsigned int a, unsigned int b, unsigned int c, unsigned int d, unsigned int mask, int size);
+
 #endif /* GR_UTIL_H */

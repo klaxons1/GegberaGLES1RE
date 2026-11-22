@@ -126,6 +126,7 @@ static void test_update_pipeline(void);
 static void test_transform_vertex(void);
 static void test_light_vertex(void);
 static void test_setup_culling(void);
+static void test_clear(void);
 
 int main(void)
 {
@@ -150,6 +151,7 @@ int main(void)
     test_transform_vertex();
     test_light_vertex();
     test_setup_culling();
+    test_clear();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -1446,4 +1448,163 @@ static void test_setup_culling(void)
     CHECK(st.matrixPalTransform[3].v[0].e == id.v[0].e);
     CHECK(st.normalsToEyePalDirty[3] == 1);
     CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_MATRIXPALETTE0 + 3) == 0);
+}
+
+/* --- clear queue + grr clears ---------------------------------------------- */
+
+static void test_clear(void)
+{
+    Gerbera_s st;
+    static unsigned short color16[24];
+    static unsigned short depth16[16];
+    static unsigned char stencil8[16];
+    unsigned char bytes8[8];
+    unsigned short words16[4];
+    unsigned int dwords32[4];
+    int i;
+
+    /* grClearBuffers queues a record (grApiSmall.inl 388) */
+    memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    grSetRectangle(&st.surfaceScissor, 0, 100, 0, 100);
+    grSetClearColor(&st, 0x12345678);
+    grSetClearDepth(&st, 0x10000000);
+    grSetClearStencil(&st, 0xAB);
+    grClearBuffers(&st, 3);
+    CHECK(st.clearInfoIndex == 1);
+    CHECK(st.clearInfos[0].bufferMask == 3);
+    CHECK(st.clearInfos[0].clearColor == 0x12345678);
+    CHECK(st.clearInfos[0].clearDepth == 0x1FFFFFFF);
+    CHECK(st.clearInfos[0].clearStencil == 0xAB);
+    CHECK(st.clearInfos[0].scissor.x1 == 100);
+    CHECK(st.clearInfos[0].scissor.y0 == 0);
+    CHECK(st.clearInfos[0].colorMask == 0);
+    CHECK(st.clearInfos[0].depthMask == 0);
+
+    /* 4 slots; the 5th grClearBuffers flushes the queue first */
+    grClearBuffers(&st, 3);
+    grClearBuffers(&st, 3);
+    grClearBuffers(&st, 3);
+    CHECK(st.clearInfoIndex == 4);
+    grClearBuffers(&st, 3);
+    CHECK(st.clearInfoIndex == 1);
+    grFlushBufferClears(&st);
+    CHECK(st.clearInfoIndex == 0);
+
+    /* real surface: 4x4 RGB565 + 16-bit depth + 8-bit stencil */
+    memset(&st, 0, sizeof(st));
+    memset(color16, 0x12, sizeof(color16));
+    memset(depth16, 0, sizeof(depth16));
+    memset(stencil8, 0x77, sizeof(stencil8));
+    st.drawSurface.rgbaOffsets[0] = 11; st.drawSurface.rgbaSizes[0] = 5;
+    st.drawSurface.rgbaOffsets[1] = 5;  st.drawSurface.rgbaSizes[1] = 6;
+    st.drawSurface.rgbaOffsets[2] = 0;  st.drawSurface.rgbaSizes[2] = 5;
+    st.drawSurface.rgbaOffsets[3] = 0;  st.drawSurface.rgbaSizes[3] = 0;
+    st.drawSurface.colorMask = 0xF;
+    st.drawSurface.colorBytes = 2;
+    st.drawSurface.depthBytes = 2;
+    st.drawSurface.stencilBytes = 1;
+    st.drawSurface.width = 4;
+    st.drawSurface.height = 4;
+    st.drawSurface.buffers[0].data = color16;
+    st.drawSurface.buffers[0].stride = 8;
+    st.drawSurface.buffers[1].data = depth16;
+    st.drawSurface.buffers[1].stride = 8;
+    st.drawSurface.buffers[2].data = stencil8;
+    st.drawSurface.buffers[2].stride = 4;
+    grSetRectangle(&st.surfaceScissor, 0, 4, 0, 4);
+    st.colorMask = 0xF;
+    st.depthMask = 1;
+    st.stencilWriteMask = 0xFF;
+    grSetClearColor(&st, 0xFFFFFFFF);
+    grSetClearDepth(&st, 0x10000000);
+    grSetClearStencil(&st, 0xAB);
+
+    grClearBuffers(&st, 7);
+    grFlushBufferClears(&st);
+    CHECK(st.clearInfoIndex == 0);
+    for (i = 0; i < 16; ++i)
+    {
+        CHECK(color16[i] == 0xFFFF);
+        CHECK(depth16[i] == 0x7FFF);      /* 0x1FFFFFFF >> (30 - 16) */
+        CHECK(stencil8[i] == 0xAB);
+    }
+
+    /* masked clear: colorMask 0x3 keeps the blue channel bits (565 write
+     * mask = R|G = 0xFFE0; original blue 0x14 survives) */
+    for (i = 0; i < 16; ++i)
+        color16[i] = 0x1234;
+    st.colorMask = 0x3;
+    grClearBuffers(&st, 1);
+    grFlushBufferClears(&st);
+    for (i = 0; i < 16; ++i)
+        CHECK(color16[i] == 0xFFF4);
+
+    /* scissor sub-rect: 6-wide surface, rect cols 2..4 / rows 1..2 */
+    memset(&st.drawSurface.rgbaOffsets, 0, sizeof(st.drawSurface.rgbaOffsets));
+    memset(&st.drawSurface.rgbaSizes, 0, sizeof(st.drawSurface.rgbaSizes));
+    st.drawSurface.rgbaOffsets[0] = 11; st.drawSurface.rgbaSizes[0] = 5;
+    st.drawSurface.rgbaOffsets[1] = 5;  st.drawSurface.rgbaSizes[1] = 6;
+    st.drawSurface.rgbaOffsets[2] = 0;  st.drawSurface.rgbaSizes[2] = 5;
+    st.drawSurface.width = 6;
+    st.drawSurface.buffers[0].stride = 12;
+    st.colorMask = 0xF;
+    grSetClearColor(&st, 0xFFFFFFFF);
+    for (i = 0; i < 24; ++i)
+        color16[i] = 0x5555;
+    grSetRectangle(&st.surfaceScissor, 2, 5, 1, 3);
+    grClearBuffers(&st, 1);
+    grFlushBufferClears(&st);
+    for (i = 0; i < 24; ++i)
+        CHECK(color16[i] == ((i >= 8 && i < 11) || (i >= 14 && i < 17) ? 0xFFFF : 0x5555));
+
+    /* dithered clear: useDithering + nonzero color go through grDitherColor;
+     * clearColor 129/129/129 with kernel bytes FF E6 13 89 -> only the two
+     * pixels over the 0x13 byte drop below the plain 0x8410 packing */
+    st.drawSurface.buffers[0].stride = 12;
+    st.useDithering = 1;
+    grSetClearColor(&st, grSetRGBA(129, 129, 129, 255));
+    for (i = 0; i < 24; ++i)
+        color16[i] = 0x0000;
+    grSetRectangle(&st.surfaceScissor, 0, 6, 0, 4);
+    grClearBuffers(&st, 1);
+    grFlushBufferClears(&st);
+    /* kernel[0] = 0xFF88EE66: every byte leaves 129/129/129 at 0x8410 */
+    CHECK(color16[0] == 0x8410);
+    CHECK(color16[1] == 0x8410);
+    CHECK(color16[2] == 0x8410);
+    CHECK(color16[3] == 0x8410);
+    CHECK(color16[4] == 0x8410);
+    CHECK(color16[5] == 0x8410);
+    /* kernel[1] = 0x440022AA: bytes 44 AA 22 00 -> 7c0f 8410 7bef 7bef */
+    CHECK(color16[6] == 0x7C0F);
+    CHECK(color16[7] == 0x8410);
+    CHECK(color16[8] == 0x7BEF);
+    CHECK(color16[9] == 0x7BEF);
+    CHECK(color16[10] == 0x7C0F);
+    CHECK(color16[11] == 0x8410);
+
+    /* grFill4x8: cyclic pattern + masked keep */
+    memset(bytes8, 0xAB, sizeof(bytes8));
+    grFill4x8(bytes8, 0x10, 0x20, 0x30, 0x40, 0xFF, 8);
+    CHECK(bytes8[0] == 0x10 && bytes8[1] == 0x20 && bytes8[2] == 0x30 && bytes8[3] == 0x40);
+    CHECK(bytes8[4] == 0x10 && bytes8[5] == 0x20 && bytes8[6] == 0x30 && bytes8[7] == 0x40);
+    memset(bytes8, 0xAB, sizeof(bytes8));
+    grFill4x8(bytes8, 0x10, 0x20, 0x30, 0x40, 0xF0, 8);
+    CHECK(bytes8[0] == 0x1B && bytes8[1] == 0x2B && bytes8[2] == 0x3B && bytes8[3] == 0x4B);
+    CHECK(bytes8[4] == 0x1B && bytes8[5] == 0x2B && bytes8[6] == 0x3B && bytes8[7] == 0x4B);
+
+    /* grFill16/32Masked: full mask routes to hgFill, partial keeps bits */
+    memset(words16, 0x87, sizeof(words16));
+    grFill16Masked(words16, 0xBEEF, 0xFFFF, 4);
+    CHECK(words16[0] == 0xBEEF && words16[3] == 0xBEEF);
+    memset(words16, 0x87, sizeof(words16));
+    grFill16Masked(words16, 0x1234, 0xFFF0, 4);
+    CHECK(words16[0] == (0x1230 | 0x0007) && words16[3] == (0x1230 | 0x0007));
+    memset(dwords32, 0x87, sizeof(dwords32));
+    grFill32Masked(dwords32, 0x12345678, 0xFFFFFFFF, 4);
+    CHECK(dwords32[0] == 0x12345678 && dwords32[3] == 0x12345678);
+    memset(dwords32, 0x87, sizeof(dwords32));
+    grFill32Masked(dwords32, 0x12345678, 0xFFFFFF00, 4);
+    CHECK(dwords32[0] == (0x12345600 | 0x87) && dwords32[3] == (0x12345600 | 0x87));
 }

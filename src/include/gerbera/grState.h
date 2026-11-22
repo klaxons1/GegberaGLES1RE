@@ -506,7 +506,8 @@ typedef struct Gerbera_s
     unsigned int clearColor;
     int clearDepth;
     unsigned int clearStencil;
-    int clearInfoIndex;
+    int clearInfoIndex;             /* +7472: queued grClearBuffers records */
+    _grClearInfo clearInfos[GR_CLEAR_BUFFER_SIZE];  /* +7476, 36B each */
 
     /* --- per-pixel fixed-function state ----------------------------------- */
     unsigned int colorMask;
@@ -706,6 +707,28 @@ void grSetBlendFunc(Gerbera_s *state, int srcFactor, int dstFactor);
 void grSetColorMask(Gerbera_s *state, unsigned int mask);
 void grSetDepthMask(Gerbera_s *state, int mask);
 void grSetStencilMask(Gerbera_s *state, unsigned int mask);
+
+/* --- grClearBuffers (grApiSmall.inl 388): queue a clear record ------------- */
+void grClearBuffers(Gerbera_s *state, unsigned int bufferMask);
+
+/* --- grr layer (grrClear.inl + grrRender.inl, implemented in grrRender.c) --
+ * the flush side of the clear queue; the lock/release pair is egl material
+ * (eglSymbian.inl) - stubbed here until the egl module ports. */
+enum GR_SURFACEOP_e
+{
+    GR_SURFACE_DRAW = 0,
+    GR_SURFACE_READ = 1
+};
+
+int  grLockSurface(int op);         /* returns 1 when the heap was locked */
+int  grReleaseSurface(int op);
+
+void grrClearColorBuffer(_grDrawSurface *surface, _grClearInfo *info);
+void grrClearDitheredColorBuffer(_grDrawSurface *surface, _grClearInfo *info, unsigned int fillMask);
+void grrClearDepthBuffer(_grDrawSurface *surface, _grClearInfo *info);
+void grrClearStencilBuffer(_grDrawSurface *surface, _grClearInfo *info);
+void grrClearBuffers(_grDrawSurface *surface, _grClearInfo *info);
+void grFlushBufferClears(Gerbera_s *state);
 
 HG_EXTERN_C_END
 

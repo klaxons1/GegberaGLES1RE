@@ -250,6 +250,28 @@ void grSetClearStencil(Gerbera_s *state, unsigned int s)
     state->clearStencil = s;
 }
 
+/* --- grClearBuffers (grApiSmall.inl 388; DLL 00443AD0) ------------------------ */
+
+void grClearBuffers(Gerbera_s *state, unsigned int bufferMask)
+{
+    _grClearInfo *c;
+
+    if (state->clearInfoIndex == GR_CLEAR_BUFFER_SIZE)
+        grFlushBufferClears(state);
+    GR_API_CHECK(hgInRange32(state->clearInfoIndex, 0, GR_CLEAR_BUFFER_SIZE - 1), 395);
+    c = &state->clearInfos[state->clearInfoIndex++];
+    GR_API_CHECK(state != NULL && bufferMask != 0, 399);
+    c->bufferMask = (unsigned char)bufferMask;
+    c->scissor = state->surfaceScissor;
+    c->colorMask = (unsigned char)state->colorMask;
+    c->depthMask = (unsigned char)state->depthMask;
+    c->stencilWriteMask = (unsigned char)state->stencilWriteMask;
+    c->clearColor = state->clearColor;
+    c->clearDepth = state->clearDepth;
+    c->clearStencil = state->clearStencil;
+    c->useDithering = (unsigned char)state->useDithering;
+}
+
 /* --- cull mode ---------------------------------------------------------------- */
 
 void grSetCullMode(Gerbera_s *state, int frontFace, unsigned int cullMask)
@@ -523,7 +545,7 @@ void grGetDrawBufferDescriptor(Gerbera_s *state, _grSurfaceDescriptor *desc)
     *(int *)desc->rgbaOffsets = *(int *)state->drawSurface.rgbaOffsets;
     *(int *)desc->rgbaSizes = *(int *)state->drawSurface.rgbaSizes;
     *(int *)&desc->colorMask = *(int *)&state->drawSurface.colorMask;
-    *(int *)&desc->pixelFormat = state->drawSurface.pixelFormat;
+    *(int *)&desc->pixelFormat = *(int *)&state->drawSurface.pixelFormat;
 }
 
 void grSetDepthOffset(Gerbera_s *state, int factor, int units)

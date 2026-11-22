@@ -135,3 +135,29 @@ unsigned int grUnpackColor(unsigned int color, _grSurfaceDescriptor *desc)
     }
     return grSetRGBA(comp[0], comp[1], comp[2], comp[3]);
 }
+
+/* --- g_orderedDitherKernel (DLL data, libGLES_CM.dll.c:2389) --------------- */
+int g_orderedDitherKernel[4] = { -7803290, 1140859562, -581579657, 295252923 };
+
+/* --- grDitherColor (grUtilSmall.inl 273; DLL 00439440) --------------------- */
+
+unsigned int grDitherColor(unsigned int color, _grSurfaceDescriptor *desc, int x, int y)
+{
+    int na[9];
+    int k;
+
+    k = (int)((unsigned int)hgRor32(g_orderedDitherKernel[y & 3], 8 * (x & 3)) >> 24);
+    na[7] = grUnpackRGBA(color, GR_COLOR_R);
+    na[6] = grUnpackRGBA(color, GR_COLOR_G);
+    na[5] = grUnpackRGBA(color, GR_COLOR_B);
+    na[4] = grUnpackRGBA(color, GR_COLOR_A);
+    na[3] = desc->rgbaSizes[0];
+    na[2] = desc->rgbaSizes[1];
+    na[1] = desc->rgbaSizes[2];
+    na[0] = desc->rgbaSizes[3];
+    na[7] = na[7] - (na[7] >> na[3]) + (k >> na[3]);
+    na[6] = na[6] - (na[6] >> na[2]) + (k >> na[2]);
+    na[5] = na[5] - (na[5] >> na[1]) + (k >> na[1]);
+    na[4] = na[4] - (na[4] >> na[0]) + (k >> na[0]);
+    return grPackColor(grSetRGBA(na[7], na[6], na[5], na[4]), desc);
+}

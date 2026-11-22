@@ -83,14 +83,16 @@ typedef struct _grSurfaceDescriptor
     unsigned char colorBytes;
     unsigned char depthBytes;
     unsigned char stencilBytes;
-    int pixelFormat;
-    int paletteFormat;
-    unsigned char padding[2];
-} _grSurfaceDescriptor;
+    unsigned char pixelFormat;      /* int 3 byte 12 */
+    unsigned char paletteFormat;    /* int 3 byte 13 */
+    unsigned char padding[2];       /* int 3 bytes 14/15 */
+} _grSurfaceDescriptor;             /* 16 bytes: ints 0..3 */
 
 /* --- draw surface (decompile cv_anon_1686; first 4 ints ARE the descriptor
  * view, then width/height (assert strings name them), then per-buffer
- * {data, stride} records with stride at ints 7/9/11) ---------------------- */
+ * {data, stride} records with stride at ints 7/9/11; 48 bytes total -
+ * grSetSurfaces copies 0x30. grrClear* use this struct AS the descriptor
+ * (grPackColor(&surface->descriptor) over the same 16-byte view). ------- */
 typedef struct _grSurfaceBuffer
 {
     void *data;
@@ -112,7 +114,9 @@ typedef struct _grDrawSurface
     unsigned char colorBytes;
     unsigned char depthBytes;
     unsigned char stencilBytes;
-    int pixelFormat;
+    unsigned char pixelFormat;
+    unsigned char paletteFormat;
+    unsigned char padding[2];
     int width;
     int height;
     _grSurfaceBuffer buffers[3];
@@ -123,6 +127,27 @@ typedef struct _grRect
 {
     int x0, x1, y0, y1;
 } _grRect;
+
+/* --- clear-record queue (grClearBuffers grApiSmall.inl 388 queue side,
+ * grFlushBufferClears grApiFast.inl 26 flush side). EPOC: the queue index
+ * sits at state+7472 and the records at state+7476, 36 bytes (9 dwords)
+ * each - the WINSCW decompile reaches them as clearInfos[9*i]. Field order
+ * from the EPOC stores: the scissor snapshot, the clear values, then the
+ * byte pack bufferMask/colorMask/depthMask/stencilWriteMask/useDithering. */
+#define GR_CLEAR_BUFFER_SIZE 4
+
+typedef struct _grClearInfo
+{
+    _grRect scissor;                /* +0:  surfaceScissor snapshot x0,x1,y0,y1 */
+    unsigned int clearColor;        /* +16 */
+    int clearDepth;                 /* +20 */
+    unsigned int clearStencil;      /* +24 */
+    unsigned char bufferMask;       /* +28: 1=color 2=depth 4=stencil */
+    unsigned char colorMask;        /* +29 */
+    unsigned char depthMask;        /* +30 */
+    unsigned char stencilWriteMask; /* +31 */
+    unsigned char useDithering;     /* +32 */
+} _grClearInfo;
 
 /* --- integer 3-vector (decompile type cv_anon_16FD; accessed via &v->x) --- */
 typedef struct _grVector3i
@@ -170,6 +195,7 @@ unsigned int grPackColor(unsigned int color, _grSurfaceDescriptor *desc);
 int          grMaskedDescriptorsEqual(unsigned int mask, _grSurfaceDescriptor *a, _grSurfaceDescriptor *b);
 unsigned int grGetPackedColorWriteMask(_grSurfaceDescriptor *desc, unsigned int colorMask);
 unsigned int grUnpackColor(unsigned int color, _grSurfaceDescriptor *desc);
+unsigned int grDitherColor(unsigned int color, _grSurfaceDescriptor *desc, int x, int y);
 
 /* --- alignment / bool validation (grSmall.c) ----------------------------- */
 int grIsAligned(void *ptr, int alignment);
