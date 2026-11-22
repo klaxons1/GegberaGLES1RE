@@ -1,23 +1,15 @@
 /* grrStubs.c - scaffolding for the rasterizer-side entry points that
  * grFlushPrimitiveBatch and grClipPrimitive reach.
  *
- * grrDrawClippedTriangle is now a REAL port (it dispatches into
- * grDrawClippedTriangle). Still NOT ports: grInterpolateVertexGradients,
- * grrDrawClippedPoint/Line (rasterizer session) and grTriangleTessellator
- * (tessellator session). grUpdateVertexPipeline is already ported
- * (grVertexPipeline.c). They return silently so the queue/flush machinery
- * stays testable.
+ * grrDrawClippedTriangle and grInterpolateVertexGradients are now REAL
+ * ports. Still NOT ports: grrDrawClippedPoint/Line (rasterizer session)
+ * and grTriangleTessellator (tessellator session). grUpdateVertexPipeline
+ * is already ported (grVertexPipeline.c). They return silently so the
+ * queue/flush machinery stays testable.
  */
 #include "gerbera/grState.h"
 
-void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
-                                  unsigned int origIndices, int side)
-{
-    (void)state;
-    (void)vertex;
-    (void)origIndices;
-    (void)side;
-}
+
 
 void grrDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
 {

@@ -21,6 +21,9 @@
 
 int grSubpixelTrunc(int i);   /* grClipper.c (grUtil.h; DLL 004214A0) */
 
+#define GR_VERTEX_BUFFER(state) \
+    ((_grVertex *)((unsigned char *)(state)->renderStack + 1332))
+
 #define GR_PIXEL_PIPE(state) ((_grPixelPipe *)(state)->pixelPipeline)
 #define GR_VERTEX_BUFFER(state) \
     ((_grVertex *)((unsigned char *)(state)->renderStack + 1332))
@@ -604,4 +607,175 @@ int grScanConvertTriangle(Gerbera_s *state, _grRasterPoint *p0,
         pipe->scanlineInfo = scanInfo;
     }
     return total;
+}
+
+/* --- grInterpolateVertexGradients (grRasterizer.inl 251; DLL 25530-25899) -----
+ * Interpolates the per-vertex attributes of a clip-generated vertex from the
+ * triangle's three source records. The barycentric weights ride in the new
+ * vertex's normal[0..1] (the clipFactor alias; normal[2] is c = 1-a-b, not
+ * stored): g = (a*t0 + b*t1 + c*t2) >> 29 with IUNITSCALAR_ONE weights. The
+ * trivial case (a==1, b==1, or a==b==0) copies the winning record wholesale.
+ * Depth (mask bit 0) is NOT handled here - it is a per-scanline gradient. */
+
+void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
+                                  unsigned int origIndices, int side)
+{
+    _grVertex *v0 = GR_VERTEX_BUFFER(state) + grUnpackIndex(origIndices, 0);
+    _grVertex *v1 = GR_VERTEX_BUFFER(state) + grUnpackIndex(origIndices, 1);
+    _grVertex *v2 = GR_VERTEX_BUFFER(state) + grUnpackIndex(origIndices, 2);
+    unsigned int gradientMask = (unsigned int)state->activeGradientMask;
+    int a = vertex->normal[0];
+    int b = vertex->normal[1];
+
+    if ((state == NULL || vertex == NULL) &&
+        grAssert("state && vertex", "grRasterizer.inl", 251) != 0)
+        grDie(0);
+    if ((vertex->stateMask & 0x40) == 0 &&
+        grAssert("vertex->stateMask & GR_VERTEXMASK_INTERPOLATE_GRADIENTS",
+                 "grRasterizer.inl", 253) != 0)
+        grDie(0);
+    if ((vertex->stateMask & 0xC) == 0 &&
+        grAssert("vertex->stateMask & (GR_VERTEXMASK_TRANSFORMED | GR_VERTEXMASK_VIEWPORT_TRANSFORMED)",
+                 "grRasterizer.inl", 254) != 0)
+        grDie(0);
+    if ((vertex->stateMask & 3) == 0 &&
+        grAssert("vertex->stateMask & (GR_VERTEXMASK_SURVIVED_2D_REJECTION | GR_VERTEXMASK_SURVIVED_3D_REJECTION)",
+                 "grRasterizer.inl", 255) != 0)
+        grDie(0);
+    vertex->stateMask = (unsigned short)((vertex->stateMask & ~0x40u) | 0x20u);
+    if (hgInRange32(a, 0, IUNITSCALAR_ONE) == 0 &&
+        grAssert("hgInRange32(a, 0, IUNITSCALAR_ONE)", "grRasterizer.inl", 259) != 0)
+        grDie(0);
+    if (hgInRange32(b, 0, IUNITSCALAR_ONE) == 0 &&
+        grAssert("hgInRange32(b, 0, IUNITSCALAR_ONE)", "grRasterizer.inl", 260) != 0)
+        grDie(0);
+    if (hgInRange32(a + b, 0, IUNITSCALAR_ONE) == 0 &&
+        grAssert("hgInRange32(a+b, 0, IUNITSCALAR_ONE)", "grRasterizer.inl", 261) != 0)
+        grDie(0);
+    if (((b | a) & 0x1FFFFFFF) != 0)
+    {
+        int c = IUNITSCALAR_ONE - a - b;
+        int u, coord, comp;
+
+        if ((a == IUNITSCALAR_ONE || b == IUNITSCALAR_ONE || (a == 0 && b == 0)) &&
+            grAssert("a!=IUNITSCALAR_ONE && b!=IUNITSCALAR_ONE && (a!=0 || b!=0)",
+                     "grRasterizer.inl", 303) != 0)
+            grDie(0);
+        for (u = 1; u >= 0; --u)
+        {
+            if (((192 << (2 * u)) & gradientMask) != 0)
+            {
+                int *src0 = (int *)((char *)v0 + 56 + 8 * u);
+                int *src1 = (int *)((char *)v1 + 56 + 8 * u);
+                int *src2 = (int *)((char *)v2 + 56 + 8 * u);
+
+                for (coord = 1; coord >= 0; --coord)
+                {
+                    int t0 = src0[coord];
+                    int t1 = src1[coord];
+                    int t2 = src2[coord];
+                    HGint64 sum = hgMadd64(hgMadd64(hgMul64(a, t0), b, t1), c, t2);
+                    int g = (int)imLsl64h_0_31OF(sum, 3);
+
+                    if (hgInRange32(g, hgMin32(hgMin32(t0, t1), t2),
+                                    hgMax32(hgMax32(t0, t1), t2)) == 0 &&
+                        grAssert("hgInRange32(g, hgMin32(hgMin32(t0, t1), t2), hgMax32(hgMax32(t0, t1), t2))",
+                                 "grRasterizer.inl", 332) != 0)
+                        grDie(0);
+                    (&vertex->texCoord[u].x)[coord] = g;
+                }
+            }
+        }
+        if ((gradientMask & 2) != 0)
+        {
+            int t0 = v0->color.final[1][3];
+            int t1 = v1->color.final[1][3];
+            int t2 = v2->color.final[1][3];
+            HGint64 sum = hgMadd64(hgMadd64(hgMul64(a, t0), b, t1), c, t2);
+            int g = (int)imLsl64h_0_31OF(sum, 3);
+            int rangeMin = hgMin32(hgMin32(v0->color.final[1][3], v1->color.final[1][3]),
+                                   v2->color.final[1][3]);
+            int rangeMax = hgMax32(hgMax32(v0->color.final[1][3], v1->color.final[1][3]),
+                                   v2->color.final[1][3]);
+
+            if (hgInRange32(g, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(g, 0, 65535)", "grRasterizer.inl", 341) != 0)
+                grDie(0);
+            if (hgInRange32(g, rangeMin, rangeMax) == 0 &&
+                grAssert("hgInRange32(g, hgMin32(hgMin32(v0->color.final[1][3], v1->color.final[1][3]), v2->color.final[1][3]), hgMax32(hgMax32(v0->color.final[1][3], v1->color.final[1][3]), v2->color.final[1][3]))",
+                         "grRasterizer.inl", 343) != 0)
+                grDie(0);
+            vertex->color.final[1][3] = (unsigned short)g;
+        }
+        if ((gradientMask & 0x1C) != 0)
+        {
+            for (comp = 2; comp >= 0; --comp)
+            {
+                if (((4 << comp) & gradientMask) != 0)
+                {
+                    int t0 = v0->color.final[side][comp];
+                    int t1 = v1->color.final[side][comp];
+                    int t2 = v2->color.final[side][comp];
+                    HGint64 sum = hgMadd64(hgMadd64(hgMul64(a, t0), b, t1), c, t2);
+                    int g = (int)imLsl64h_0_31OF(sum, 3);
+                    int rangeMin = hgMin32(hgMin32(v0->color.final[side][comp],
+                                                   v1->color.final[side][comp]),
+                                           v2->color.final[side][comp]);
+                    int rangeMax = hgMax32(hgMax32(v0->color.final[side][comp],
+                                                   v1->color.final[side][comp]),
+                                           v2->color.final[side][comp]);
+
+                    if (hgInRange32(g, 0, 0xFFFF) == 0 &&
+                        grAssert("hgInRange32(g, 0, 65535)", "grRasterizer.inl", 371) != 0)
+                        grDie(0);
+                    if (hgInRange32(g, rangeMin, rangeMax) == 0 &&
+                        grAssert("hgInRange32(g, hgMin32(hgMin32(g0, g1), g2), hgMax32(hgMax32(g0, g1), g2))",
+                                 "grRasterizer.inl", 373) != 0)
+                        grDie(0);
+                    vertex->color.final[side][comp] = (unsigned short)g;
+                }
+            }
+        }
+        if ((gradientMask & 0x20) != 0)
+        {
+            int t0 = v0->color.final[0][3];
+            int t1 = v1->color.final[0][3];
+            int t2 = v2->color.final[0][3];
+            HGint64 sum = hgMadd64(hgMadd64(hgMul64(a, t0), b, t1), c, t2);
+            int g = (int)imLsl64h_0_31OF(sum, 3);
+            int rangeMin = hgMin32(hgMin32(v0->color.final[0][3], v1->color.final[0][3]),
+                                   v2->color.final[0][3]);
+            int rangeMax = hgMax32(hgMax32(v0->color.final[0][3], v1->color.final[0][3]),
+                                   v2->color.final[0][3]);
+
+            if (hgInRange32(g, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(g, 0, 65535)", "grRasterizer.inl", 384) != 0)
+                grDie(0);
+            if (hgInRange32(g, rangeMin, rangeMax) == 0 &&
+                grAssert("hgInRange32(g, hgMin32(hgMin32(v0->color.final[0][3], v1->color.final[0][3]), v2->color.final[0][3]), hgMax32(hgMax32(v0->color.final[0][3], v1->color.final[0][3]), v2->color.final[0][3]))",
+                         "grRasterizer.inl", 386) != 0)
+                grDie(0);
+            vertex->color.final[0][3] = (unsigned short)g;
+        }
+    }
+    else
+    {
+        _grVertex *rec;
+
+        if (a == IUNITSCALAR_ONE)
+            rec = v0;
+        else if (b == IUNITSCALAR_ONE)
+            rec = v1;
+        else
+            rec = v2;
+        if ((a != IUNITSCALAR_ONE && b != IUNITSCALAR_ONE && (a != 0 || b != 0)) &&
+            grAssert("a==IUNITSCALAR_ONE || b==IUNITSCALAR_ONE || (a==0 && b==0)",
+                     "grRasterizer.inl", 277) != 0)
+            grDie(0);
+        vertex->color = rec->color;
+        vertex->texCoord[0].x = rec->texCoord[0].x;
+        vertex->texCoord[0].y = rec->texCoord[0].y;
+        vertex->texCoord[1].x = rec->texCoord[1].x;
+        vertex->texCoord[1].y = rec->texCoord[1].y;
+    }
 }

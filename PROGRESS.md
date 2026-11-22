@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3r)
+Last updated: 2026-11-22 (session 3s)
 
 ## Legend
 
@@ -109,6 +109,29 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3s (grInterpolateVertexGradients)
+
+- **grRasterizer.c += grInterpolateVertexGradients** (DLL 25530-25899,
+  asserts grRasterizer.inl 251/253/254/255/259/260/261/277/303/332/341/343/
+  371/373/384/386). The clip-generated vertex carries its barycentric
+  weights in normal[0..1] (clipFactor alias; c = IUNITSCALAR_ONE - a - b,
+  not stored); g = (a*t0 + b*t1 + c*t2) >> 29 (imLsl64h_0_31(sum, 3) ==
+  sum>>29 - the weights are IUNIT 1.0 = 2^29). Attribute walk: texcoords
+  (32-bit ints, unit 1..0 outer via mask bits 192<<2u, coord 1..0, record
+  +56+8u+4c), fog (u16 record+54 = final[1][3], mask bit 2, also asserted
+  in [0,65535]), colors (u16 record+40+8*side+2*comp, mask 4<<comp for
+  comp 2..0, asserted in [0,65535] + min/max), alpha (u16 record+46 =
+  final[0][3] ALWAYS the front row regardless of side, mask 0x20). stateMask
+  &= ~0x40 |= 0x20 happens BEFORE the branch, both paths. Trivial case
+  ((b|a) & 0x1FFFFFFF)==0: rec = (a==1) ? rec0 : (b==1) ? rec1 : rec2,
+  wholesale color-struct (16B) + texCoord copy; assert 277 (a==1||b==1||
+  (a==0&&b==0)). Depth (mask bit 0) NOT handled here (per-scanline gradient).
+  grrStubs.c stub REMOVED.
+- **tests/test_core.c test_interpolate (+24)**: exact-weight interpolation
+  (0.5/0.25/0.25 over R/G/B/fog/alpha/texcoords, front+side=1 rows, alpha
+  from front), stateMask 0x4F -> 0x2F flip, mask-gating (no bits -> nothing
+  touched), trivial copies for all three winners.
 
 ## DONE session 3r (scan conversion + real triangle draw dispatch)
 

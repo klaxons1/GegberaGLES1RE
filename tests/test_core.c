@@ -132,6 +132,7 @@ static void test_vertextcache(void);
 static void test_queueprimitive(void);
 static void test_fetchprimitives(void);
 static void test_scanconvert(void);
+static void test_interpolate(void);
 static void test_gradients(void);
 
 int main(void)
@@ -164,6 +165,7 @@ int main(void)
     test_fetchprimitives();
     test_gradients();
     test_scanconvert();
+    test_interpolate();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -2581,4 +2583,117 @@ static void test_scanconvert(void)
     st->renderStackAllocated = 0;
     st->pixelPipeline = NULL;
     st->pixelPipelineCode = NULL;
+}
+
+/* --- test_interpolate: grInterpolateVertexGradients ---------------------------
+ * Weights a=0.5, b=0.25 (c=0.25) against three records with known colors,
+ * fog, texcoords; then the trivial-copy cases and mask gating. */
+static void test_interpolate(void)
+{
+    static unsigned char stack[23860];
+    Gerbera_s stObj;
+    Gerbera_s *st = &stObj;
+    _grVertex *vb;
+    _grVertex *target;
+    int i;
+
+    memset(st, 0, sizeof(*st));
+    st->renderStack = stack;
+    st->renderStackAllocated = 1;
+    memset(stack, 0, sizeof(stack));
+    vb = (_grVertex *)(stack + 1332);
+    memset(&vb[0], 0, 3 * sizeof(vb[0]));
+    for (i = 0; i < 3; ++i)
+    {
+        vb[i].color.final[0][0] = (unsigned short)(100 + 300 * i);
+        vb[i].color.final[0][1] = (unsigned short)(200 + 300 * i);
+        vb[i].color.final[0][2] = (unsigned short)(300 + 300 * i);
+        vb[i].color.final[1][0] = (unsigned short)(10 + 30 * i);
+        vb[i].color.final[1][1] = (unsigned short)(20 + 30 * i);
+        vb[i].color.final[1][2] = (unsigned short)(30 + 30 * i);
+        vb[i].color.final[0][3] = (unsigned short)(111 + 111 * i);
+        vb[i].color.final[1][3] = (unsigned short)(1000 + 1000 * i);
+        vb[i].texCoord[0].x = 10 + 20 * i;
+        vb[i].texCoord[0].y = 20 + 20 * i;
+        vb[i].texCoord[1].x = 100 + 200 * i;
+        vb[i].texCoord[1].y = 200 + 200 * i;
+    }
+    target = &vb[64];
+    memset(target, 0, sizeof(*target));
+
+    /* barycentric: g = (a*t0 + b*t1 + c*t2) >> 29, a=0.5 b=0.25 c=0.25 */
+    target->normal[0] = 0x10000000;
+    target->normal[1] = 0x08000000;
+    target->stateMask = 0x4F;             /* INTERPOLATE|TRANSFORMED|VIEWPORT|
+                                           * SURVIVED_2D|SURVIVED_3D */
+    target->texCoord[0].x = -7;
+    target->texCoord[0].y = -7;
+    st->activeGradientMask = 0x3FF;
+    grInterpolateVertexGradients(st, target, grSetIndices(0, 1, 2), 0);
+    CHECK(target->stateMask == 0x2F);     /* INTERPOLATE -> COLOR_COMPUTED */
+    CHECK(target->color.final[0][0] == 325);
+    CHECK(target->color.final[0][1] == 425);
+    CHECK(target->color.final[0][2] == 525);
+    CHECK(target->color.final[1][3] == 1750);          /* fog */
+    CHECK(target->color.final[0][3] == 194);           /* alpha (floored) */
+    CHECK(target->texCoord[0].x == 25);
+    CHECK(target->texCoord[0].y == 35);
+    CHECK(target->texCoord[1].x == 250);
+    CHECK(target->texCoord[1].y == 350);
+
+    /* side=1 reads the secondary color row; alpha stays on final[0][3] */
+    memset(target, 0, sizeof(*target));
+    target->normal[0] = 0x10000000;
+    target->normal[1] = 0x08000000;
+    target->stateMask = 0x4F;
+    grInterpolateVertexGradients(st, target, grSetIndices(0, 1, 2), 1);
+    CHECK(target->color.final[1][0] == 32);
+    CHECK(target->color.final[1][1] == 42);
+    CHECK(target->color.final[1][2] == 52);
+    CHECK(target->color.final[0][3] == 194);
+
+    /* mask gating: with no gradient bits set nothing is touched, but the
+     * stateMask flip still happens */
+    memset(target, 0, sizeof(*target));
+    target->normal[0] = 0x10000000;
+    target->normal[1] = 0x08000000;
+    target->stateMask = 0x4F;
+    target->color.final[0][0] = 0x5A5A;
+    target->texCoord[1].y = -3;
+    st->activeGradientMask = 0;
+    grInterpolateVertexGradients(st, target, grSetIndices(0, 1, 2), 0);
+    CHECK(target->stateMask == 0x2F);
+    CHECK(target->color.final[0][0] == 0x5A5A);
+    CHECK(target->texCoord[1].y == -3);
+
+    /* trivial weights copy the winning record wholesale (b=1 -> record 1) */
+    st->activeGradientMask = 0x3FF;
+    memset(target, 0, sizeof(*target));
+    target->normal[0] = 0;
+    target->normal[1] = 0x20000000;
+    target->stateMask = 0x4F;
+    grInterpolateVertexGradients(st, target, grSetIndices(0, 1, 2), 0);
+    CHECK(target->color.final[0][0] == 400);
+    CHECK(target->color.final[1][3] == 2000);
+    CHECK(target->texCoord[1].y == 400);
+
+    /* a==b==0 -> record 2 */
+    memset(target, 0, sizeof(*target));
+    target->normal[0] = 0;
+    target->normal[1] = 0;
+    target->stateMask = 0x4F;
+    grInterpolateVertexGradients(st, target, grSetIndices(0, 1, 2), 0);
+    CHECK(target->color.final[0][0] == 700);
+    CHECK(target->texCoord[0].x == 50);
+
+    /* a==1 -> record 0 */
+    memset(target, 0, sizeof(*target));
+    target->normal[0] = 0x20000000;
+    target->normal[1] = 0;
+    target->stateMask = 0x4F;
+    grInterpolateVertexGradients(st, target, grSetIndices(0, 1, 2), 0);
+    CHECK(target->color.final[0][0] == 100);
+    CHECK(target->texCoord[1].x == 100);
+
+    st->renderStackAllocated = 0;
 }

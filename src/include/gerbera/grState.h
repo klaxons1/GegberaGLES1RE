@@ -1000,6 +1000,8 @@ void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
 void grTriangleTessellator(Gerbera_s *state, _grClipTriangle *tri,
                            unsigned int origIndices);
 void grExecutePixelPipeline(Gerbera_s *state);
+void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
+                                  unsigned int origIndices, int side);
 
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);
