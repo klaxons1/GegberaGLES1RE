@@ -220,6 +220,7 @@ void XNormal3_accfv(int *pD, int (*pA)[3], int *pS, int n);
 
 void IFVector3_init100(_IFVector3 *pD);         /* (1, 0, 0)               */
 void IFVector3_setf(_IFVector3 *pD, int i, int x);
+void IFVector3_setfv3(_IFVector3 *pD, int *pS);   /* float-bits triple */
 int  IFVector3_getf(_IFVector3 *pS, int n);
 void IFVector3_copy(_IFVector3 *pD, _IFVector3 *pS);
 int  IFVector3_is100(_IFVector3 *pS);

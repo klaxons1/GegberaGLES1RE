@@ -479,3 +479,21 @@ int IFVector4_getFirstNonZeroSign(_IFVector4 *v)
     }
     return result;
 }
+
+void IFVector3_setfv3(_IFVector3 *pD, int *pS)
+{
+    int i;
+    if (pD == NULL)
+        imAssert("pD", "imApi.inl", 2464);
+    if (pS == NULL)
+        imAssert("pS", "imApi.inl", 2465);
+    if (IScalar_isValid(pS[0]) == 0)
+        imAssert("IScalar_isValid(pS[0])", "imApi.inl", 2466);
+    if (IScalar_isValid(pS[1]) == 0)
+        imAssert("IScalar_isValid(pS[1])", "imApi.inl", 2467);
+    if (IScalar_isValid(pS[2]) == 0)
+        imAssert("IScalar_isValid(pS[2])", "imApi.inl", 2468);
+    pD->e = 0;
+    for (i = 0; i < 3; ++i)
+        IFVector3_setf(pD, i, pS[i]);
+}

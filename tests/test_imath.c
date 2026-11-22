@@ -441,6 +441,17 @@ static void test_ifvector4(void)
     IFVector4_negate(&g, &f);
     CHECK(fabs(IScalar_stof(IFVector4_getf(&g, 0)) + 2.0f) < 1e-6f);
     CHECK_EQ(IFVector4_getFirstNonZeroSign(&g), -1);
+
+    /* IFVector3_setfv3 */
+    {
+        _IFVector3 v3;
+        int src[3];
+        src[0] = FIN(1.0f); src[1] = FIN(-0.5f); src[2] = FIN(0.25f);
+        IFVector3_setfv3(&v3, src);
+        CHECK(fabs(IScalar_stof(IFVector3_getf(&v3, 0)) - 1.0f) < 1e-6f);
+        CHECK(fabs(IScalar_stof(IFVector3_getf(&v3, 1)) + 0.5f) < 1e-6f);
+        CHECK(fabs(IScalar_stof(IFVector3_getf(&v3, 2)) - 0.25f) < 1e-6f);
+    }
 }
 
 static void test_inormal3(void)
