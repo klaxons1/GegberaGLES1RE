@@ -1,10 +1,8 @@
 /* grrStubs.c - scaffolding for the rasterizer-side entry points that
  * grFlushPrimitiveBatch and grClipPrimitive reach.
  *
- * grrDrawClippedTriangle, grInterpolateVertexGradients, grDrawClippedLine
- * and grDrawClippedPoint are now REAL ports. Still NOT a port:
- * grTriangleTessellator (tessellator session). grUpdateVertexPipeline is
- * already ported (grVertexPipeline.c).
+ * All rasterizer-side entry points are now REAL ports; grTriangleTessellator
+ * lives in grTessellator.c and grUpdateVertexPipeline in grVertexPipeline.c.
  */
 #include "gerbera/grState.h"
 
@@ -35,16 +33,7 @@ void grrDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri, unsigned int
         grDrawClippedTriangle(state, tri, origIndices, 8);
 }
 
-/* grTriangleTessellator (grTessellator.inl 557; DLL 27249-27359) is NOT
- * ported yet: perspective-correct subdivision (grClassifyTriangle/
- * grSplitEdge/grTessellateTriangle). Silent stub until the tessellator
- * session; tests keep GR_CAPABILITY_PERSPECTIVE_CORRECTION clear. */
-void grTriangleTessellator(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
-{
-    (void)state;
-    (void)tri;
-    (void)origIndices;
-}
+
 
 /* grSetupTextureUnit (grRasterizer.inl 8-189; DLL 25345-25526) is NOT ported
  * yet: it walks the texture-object/mipmap layout (tex+4, tex+16*level,

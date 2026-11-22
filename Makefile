@@ -25,6 +25,7 @@ LIB_SRC := \
              src/gerbera/grVertexPipeline.c \
              src/gerbera/grRasterizer.c \
              src/gerbera/grPixelPipeline.c \
+             src/gerbera/grTessellator.c \
  src/gerbera/grTransform.c \
  src/gerbera/grFill.c \
  src/gerbera/grrClear.c \

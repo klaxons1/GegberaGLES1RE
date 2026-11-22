@@ -291,6 +291,16 @@ typedef struct _grGradientInfo
     int shift;             /* 31 - reciprocal shift */
 } _grGradientInfo;
 
+/* triangle tessellation status (grClassifyTriangle) */
+enum GR_TRIANGLESTATUS_e
+{
+    GR_TRIANGLESTATUS_AFFINE = 0,       /* draw as-is */
+    GR_TRIANGLESTATUS_PERSPECTIVE = 1,  /* subdivide (flagged guess: the
+                                         * decompile names only AFFINE and
+                                         * DISCARD; 1 is the split verdict) */
+    GR_TRIANGLESTATUS_DISCARD = 2
+};
+
 /* scan-conversion point (cv_anon_16FD: aliases &record->screenPosition[0])
  * and edge pair (cv_anon_1787): [0] = left edge, [1] = right edge, x in
  * 18.14 (pixel<<14), adders per scanline */
@@ -972,6 +982,15 @@ void grDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri,
                        unsigned int origIndices);
 void grDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri,
                         unsigned int origIndices);
+
+/* --- grTessellator.inl: perspective subdivision ------------------------------- */
+int grFracDiv(int a, int b);
+int grLerp(int a, int b, int factor);
+int grClassifyTriangle(Gerbera_s *state, _grVertex *vertexCache,
+                       unsigned int indices);
+int grSplitEdge(_grVertex *dst, _grVertex *v0, _grVertex *v1, int forceSplit);
+void grTriangleTessellator(Gerbera_s *state, _grClipTriangle *tri,
+                           unsigned int origIndices);
 void grCheckPixelPipeStack(Gerbera_s *state);
 void grFetchPrimitives(Gerbera_s *state, int fetchType, int numVertices,
                        int vertexCount, void *srcIndices, int baseIndex);

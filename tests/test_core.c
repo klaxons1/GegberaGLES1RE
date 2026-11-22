@@ -134,6 +134,7 @@ static void test_fetchprimitives(void);
 static void test_scanconvert(void);
 static void test_interpolate(void);
 static void test_linepoint(void);
+static void test_tessellate(void);
 static void test_gradients(void);
 
 int main(void)
@@ -168,6 +169,7 @@ int main(void)
     test_scanconvert();
     test_interpolate();
     test_linepoint();
+    test_tessellate();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -2569,12 +2571,14 @@ static void test_scanconvert(void)
     CHECK(pp->depthRow == depthBuf + 256 * 12);
     CHECK(pp->stencilRow == stencilBuf + 64 * 12);
 
-    /* dispatch: PERSPECTIVE_CORRECTION selects the (stubbed) tessellator,
-     * otherwise the affine path runs */
+    /* dispatch: PERSPECTIVE_CORRECTION selects the real tessellator (the
+     * zero-w test triangle subdivides down to the affine floor and draws
+     * its pieces - the scan state ends on the LAST drawn piece), otherwise
+     * the affine path runs */
     pp->numScanlines = -1;
     grSetCapability(st, GR_CAPABILITY_PERSPECTIVE_CORRECTION, 1);
     grrDrawClippedTriangle(st, &tri, grSetIndices(0, 1, 2));
-    CHECK(pp->numScanlines == -1);
+    CHECK(pp->numScanlines > 0);
     grSetCapability(st, GR_CAPABILITY_PERSPECTIVE_CORRECTION, 0);
     grrDrawClippedTriangle(st, &tri, grSetIndices(0, 1, 2));
     CHECK(pp->numScanlines == 16);
@@ -2847,6 +2851,146 @@ static void test_linepoint(void)
     grSetCapability(st, GR_CAPABILITY_POINT_SPRITE, 0);
     st->textureUnitEnabled[0] = 0;
 
+    st->renderStackAllocated = 0;
+    st->pixelPipeline = NULL;
+    st->pixelPipelineCode = NULL;
+}
+
+/* --- test_tessellate: grFracDiv/grLerp/grClassifyTriangle/grSplitEdge + -------
+ * the grTriangleTessellator recursion. All values hand-checked against the
+ * probe run (the /2 in grFracDiv floors: ONE/2 - 1 for 1/2). */
+static void test_tessellate(void)
+{
+    static unsigned char stack[23860];
+    Gerbera_s stObj;
+    Gerbera_s *st = &stObj;
+    _grPixelPipe *pp;
+    _grVertex *vb;
+    _grClipTriangle tri;
+    unsigned int *words;
+    int i, splitVerts;
+
+#define ONE 0x20000000
+    memset(st, 0, sizeof(*st));
+    st->renderStack = stack;
+    st->renderStackAllocated = 1;
+    st->pixelPipeline = (_grPixelPipe *)(stack + 14644);
+    st->pixelPipelineCode = noopPipeline;
+    pp = st->pixelPipeline;
+    vb = (_grVertex *)(stack + 1332);
+    grSetRectangle(&st->renderScissor, 0, 64, 0, 64);
+    st->activeGradientMask = 0;
+    st->numActiveGradients = 0;
+
+    CHECK(grFracDiv(1, 2) == 268435455);        /* ONE/2 - 1 (floor) */
+    CHECK(grFracDiv(1, 4) == 134217727);        /* ONE/4 - 1 */
+    CHECK(grFracDiv(0, 5) == 0);
+    CHECK(grLerp(100, 200, ONE / 2) == 150);
+    CHECK(grLerp(10, 20, 0) == 10);
+    CHECK(grLerp(0, ONE, ONE) == ONE);
+
+    /* classification */
+    memset(stack, 0, sizeof(stack));
+    vb[0].screenPosition[0] = 10 << 12; vb[0].screenPosition[1] = 10 << 12;
+    vb[1].screenPosition[0] = 12 << 12; vb[1].screenPosition[1] = 11 << 12;
+    vb[2].screenPosition[0] = 11 << 12; vb[2].screenPosition[1] = 13 << 12;
+    CHECK(grClassifyTriangle(st, vb, grSetIndices(0, 1, 2)) ==
+          GR_TRIANGLESTATUS_AFFINE);
+    vb[0].screenPosition[0] = -10 << 12; vb[0].screenPosition[1] = -10 << 12;
+    vb[1].screenPosition[0] = -30 << 12; vb[1].screenPosition[1] = -20 << 12;
+    vb[2].screenPosition[0] = -20 << 12; vb[2].screenPosition[1] = -30 << 12;
+    CHECK(grClassifyTriangle(st, vb, grSetIndices(0, 1, 2)) ==
+          GR_TRIANGLESTATUS_DISCARD);
+    vb[0].screenPosition[0] = 10 << 12; vb[0].screenPosition[1] = 10 << 12;
+    vb[1].screenPosition[0] = 42 << 12; vb[1].screenPosition[1] = 10 << 12;
+    vb[2].screenPosition[0] = 10 << 12; vb[2].screenPosition[1] = 42 << 12;
+    vb[0].normal[2] = ONE; vb[1].normal[2] = ONE; vb[2].normal[2] = ONE;
+    CHECK(grClassifyTriangle(st, vb, grSetIndices(0, 1, 2)) ==
+          GR_TRIANGLESTATUS_AFFINE);
+    vb[0].normal[2] = ONE; vb[1].normal[2] = 2 * ONE; vb[2].normal[2] = 2 * ONE;
+    CHECK(grClassifyTriangle(st, vb, grSetIndices(0, 1, 2)) ==
+          GR_TRIANGLESTATUS_PERSPECTIVE);
+
+    /* grSplitEdge: w-variance edge splits with the harmonic w and the
+     * perspective-biased clip factors; flat and tiny edges do not */
+    memset(&vb[3], 0, sizeof(vb[3]));
+    memset(&vb[4], 0, sizeof(vb[4]));
+    vb[3].screenPosition[0] = 10 << 12;
+    vb[3].screenPosition[1] = 10 << 12;
+    vb[4].screenPosition[0] = 42 << 12;
+    vb[4].screenPosition[1] = 10 << 12;
+    vb[3].normal[0] = ONE; vb[3].normal[1] = 0; vb[3].normal[2] = ONE;
+    vb[4].normal[0] = 0; vb[4].normal[1] = ONE; vb[4].normal[2] = 2 * ONE;
+    CHECK(grSplitEdge(&vb[68], &vb[3], &vb[4], 0) == 1);
+    CHECK(vb[68].screenPosition[0] == 106496);   /* 26 px, 256-aligned */
+    CHECK(vb[68].screenPosition[1] == 40960);    /* 10 px */
+    CHECK(vb[68].normal[2] == 715827883);        /* ~ 2/3 of 2*ONE */
+    CHECK(vb[68].normal[0] == 357913941);        /* 2/3 */
+    CHECK(vb[68].normal[1] == 178956971);        /* 1/3 */
+    vb[4].normal[2] = ONE;
+    CHECK(grSplitEdge(&vb[69], &vb[3], &vb[4], 0) == 0);
+    CHECK(grSplitEdge(&vb[70], &vb[3], &vb[3], 0) == 0);
+    CHECK(grSplitEdge(&vb[70], &vb[3], &vb[3], 1) == 0);  /* forced, unjustified */
+
+    /* end-to-end: perspective triangle (w variance 1:2) subdivides; the
+     * pieces' union scans; 6 split records created */
+    memset(stack, 0xCC, sizeof(stack));
+    memset(&vb[0], 0, sizeof(vb[0]));
+    memset(&vb[1], 0, sizeof(vb[1]));
+    memset(&vb[2], 0, sizeof(vb[2]));
+    vb[0].screenPosition[0] = 10 << 12; vb[0].screenPosition[1] = 10 << 12;
+    vb[1].screenPosition[0] = 42 << 12; vb[1].screenPosition[1] = 10 << 12;
+    vb[2].screenPosition[0] = 10 << 12; vb[2].screenPosition[1] = 42 << 12;
+    vb[0].clipPosition.m[3] = ONE; vb[0].clipPosition.e = 0;
+    vb[1].clipPosition.m[3] = 2 * ONE; vb[1].clipPosition.e = 0;
+    vb[2].clipPosition.m[3] = 2 * ONE; vb[2].clipPosition.e = 0;
+    vb[0].color.final[0][0] = 50; vb[1].color.final[0][0] = 100;
+    vb[2].color.final[0][0] = 150;
+    vb[0].stateMask = 0x2C; vb[1].stateMask = 0x2C; vb[2].stateMask = 0x2C;
+    tri.indices = grSetIndices(0, 1, 2);
+    tri.area = 0;
+    tri.side = 0;
+    grTriangleTessellator(st, &tri, grSetIndices(0, 1, 2));
+    CHECK(vb[0].normal[2] == 268435456);         /* wNorm: ONE >> 1 */
+    CHECK(vb[1].normal[2] == ONE);
+    CHECK(vb[2].normal[2] == ONE);
+    splitVerts = 0;
+    for (i = 68; i < 92; ++i)
+    {
+        if (vb[i].index == -1)
+        {
+            ++splitVerts;
+            CHECK((vb[i].screenPosition[0] & 0xFF) == 0);
+            CHECK((vb[i].screenPosition[1] & 0xFF) == 0);
+            CHECK(vb[i].stateMask == 0x2F);      /* 79 post-interpolate */
+        }
+    }
+    CHECK(splitVerts == 6);
+    CHECK(pp->yStart == 10);
+    CHECK(pp->numScanlines == 7);                /* last drawn piece */
+    words = pp->scanlineInfo;
+    CHECK(words[0] == 26 | (7 << 16));
+    CHECK(words[1] == 26 | (6 << 16));
+    CHECK(words[4] == 26 | (3 << 16));
+
+    /* equal-w big triangle: affine at level 0, single draw, no split records */
+    vb[1].clipPosition.m[3] = ONE;
+    vb[2].clipPosition.m[3] = ONE;
+    splitVerts = 0;
+    for (i = 68; i < 92; ++i)
+        vb[i].index = 0;
+    grTriangleTessellator(st, &tri, grSetIndices(0, 1, 2));
+    splitVerts = 0;
+    for (i = 68; i < 92; ++i)
+    {
+        if (vb[i].index == -1)
+            ++splitVerts;
+    }
+    CHECK(splitVerts == 0);
+    CHECK(pp->yStart == 10);
+    CHECK(pp->numScanlines == 31);
+
+#undef ONE
     st->renderStackAllocated = 0;
     st->pixelPipeline = NULL;
     st->pixelPipelineCode = NULL;

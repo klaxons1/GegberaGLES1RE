@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3t)
+Last updated: 2026-11-22 (session 3u)
 
 ## Legend
 
@@ -109,6 +109,67 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3u (grTessellator.c: perspective subdivision)
+
+- **grTessellator.c (new, Makefile += )**: grFracDiv (DLL 26703-26725, asserts
+  grTessellator.inl 49/50): a/b as an IUNIT fraction via imRcpu(b) + hgMulu64 +
+  hgToSigned64 + hgLsl64h(s, shift) / 2 - the /2 FLOORS (grFracDiv(1,2) =
+  ONE/2 - 1; inherited from the DLL). grLerp (DLL 26728-26742, assert 70):
+  ((ONE - f)*a + f*b) >> 29. grClassifyTriangle (DLL 26745-26841, assert 92):
+  extent = max bbox span (20.12); < 4px -> AFFINE(0); pixel-rounded bbox
+  missing the scissor -> DISCARD(2); else w test on normal[2] (the THIRD
+  clip-factor slot = per-vertex clip w): PERSPECTIVE(1) iff maxW'*(4096-ext)^2
+  >= minW*(4096+ext)^2 with maxW' = max(maxW, minW + minW>>4) (1/16 w
+  tolerance; equal w -> AFFINE). GR_TRIANGLESTATUS_e added to grState.h
+  (PERSPECTIVE = 1 flagged guess - the decompile names only AFFINE/DISCARD).
+- **grSplitEdge** (DLL 26844-26944, asserts 195/198): extent from hgDiff32
+  (abs diffs); tiny edge or affine-safe w -> return 0 (unless forceSplit);
+  swaps v0/v1 so w0 >= w1; w0' = max(w0, w1 + w1>>4); sub-pixel position
+  fdw = grFracDiv(w0'-w1, w0'+w1), dist = min(fdw*extent >> 29, 0x2000) (2px
+  cap), t17 = low32(dist << 16), factor1 = max(2*t17 - ONE, 0); fdw2 =
+  grFracDiv(w0large, w0large+w1small) in [0.5, 1]; split factor t =
+  IUnitScalar_lerp(ONE/2, fdw2, factor1) in [0.5, 1]; dst->normal[2] =
+  grLerp(w0large, w1small, fdw2) (= 2*w0*w1/(w0+w1) harmonic mean - the
+  perspective-correct w at the biased midpoint); grLerpClipFactor on the
+  normal[0..1] clip-factor views by t; screen = midpoint & 0xFFFFFF00
+  (256-aligned), z = average. Note: when dist caps at 0x2000 the factor
+  saturates to fdw2 (the whole edge is perspective-critical).
+- **grTessellateTriangle (static)** (DLL 26947-27246, asserts 283/336/337/350/
+  499/376 canaries): classify; DISCARD -> return; PERSPECTIVE -> split edges
+  j = 2..0 into slots 68 + 3*level + j (forceSplit escalates after the first
+  split; alignment asserts with emptyBits = 7 - level are vacuous-true given
+  the &~0xFF store but kept verbatim; dst->index = -1, stateMask = 79,
+  grInterpolateVertexGradients per split); numSplits 3/2/1 -> recurse via the
+  split tables, else draw (level != 0 recomputes + roundTriangls the area,
+  level 0 keeps the caller's area; zero-area pieces skipped).
+- **SPLIT TABLES DECODED** (data.fragments.c 68-78): the DLL's three "arrays"
+  (splitIndexTable@S, byte_4751D0@S+1, byte_4751D1@S+2) are three overlapping
+  stride-3 views of ONE triple array starting at S: child i = (A, B, C) =
+  (S+3i, S+3i+1, S+3i+2). Full bytes: {00 04 06 | 04 05 06 | 04 01 05 |
+  05 02 06 | 00} = children (v0, m01, m20), (m01, m12, m20), (m01, v1, m12),
+  (m12, v2, m20) - bit 2 set = split vertex relative to base 68+3*level,
+  else original vertex slot; all four CCW-consistent. nextLut = {1, 2, 0}.
+- **grTriangleTessellator** (DLL 27249-27359, asserts 512/547/549-552/555/556):
+  IVector4_wNorm seeds the per-vertex w into normal[2] (wNorm normalizes the
+  three clip w's to a common exponent: equal-e test data gives w = m[3]>>1);
+  origIndices == tri->indices -> seeds weights (1,0)/(0,1)/(0,0); else
+  verifies the caller's weight invariants (orig0 = (1,0), orig1 = (0,1),
+  orig2 = (0,0) when distinct - set by the clipper/line/point paths); then
+  grTessellateTriangle(state, tri, origIndices, 0). grrStubs.c tessellator
+  stub REMOVED.
+- **Vertex budget confirmed**: split slots 68..91 (68+3*7+2 = 91) = the top 24
+  slots of the 28-slot temp region (64..91); clipper temps start at 92 -
+  disjoint ✓.
+- **tests/test_core.c test_tessellate (+49)**: grFracDiv floors (1/2, 1/4, 0),
+  grLerp exact, classify (AFFINE small/equal-w, DISCARD outside, PERSPECTIVE
+  var-w), grSplitEdge (split: mid 26px/10px, w 715827883, factors 2/3-1/3;
+  flat -> 0; tiny -> 0; forced-but-unjustified -> 0), e2e perspective
+  recursion (wNorm w's, 6 split records all 256-aligned with stateMask 0x2F,
+  last piece scans 7 rows from y=10 with words 26|7...26|2), e2e affine
+  (equal w: no splits, single draw, 31 rows). The dispatch test in
+  test_scanconvert updated: the PERSPECTIVE_CORRECTION path now runs the REAL
+  tessellator (numScanlines > 0 instead of the stub's no-op).
 
 ## DONE session 3t (grDrawClippedLine + grDrawClippedPoint)
 
