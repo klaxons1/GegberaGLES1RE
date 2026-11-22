@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3p)
+Last updated: 2026-11-22 (session 3q)
 
 ## Legend
 
@@ -109,6 +109,70 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3q (gradient setup: grSetupGradient/grComputeDeltas/grSetupTriangleGradients)
+
+- **grRasterizer.c (new, Makefile += )**: grSetupGradient (asserts imAssert
+  style, grRasterizer.inl 500/501; xAdd from SY deltas, yAdd from SX deltas,
+  reference -= hgLsl64h_0_31(sum,20) with sum = full-precision adder products
+  x v0sx/v0sy - note hgLsl64h_0_31(sum,20) == sum >> 12), grComputeDeltas
+  (asserts 550/551; same plane solve, adders keep full precision for the
+  mip-level estimate; the >=32/<32 shift split is VALUE-EQUAL to grSetup-
+  Gradient's adders - tested), grSetupTriangleGradients (asserts 603/606/
+  628/641/749; imRcpu(abs(area)) low word = shift, high = mantissa;
+  signedRecip = hgCopySign32(mant, -area); PerArea = hgMul64h(16*screenDelta,
+  signedRecip); texcoord walk texIndex 1..0 x coord 1..0 (T then S),
+  gradient = coord + 2*texIndex + 6, per-coord clz normalization
+  (clamp 11, <<clamped >>1, preShift = clamped-1, baseValue = shifted v0)
+  feeding grSetupTextureUnit; depth via grSetupGradient + optional
+  grComputeDepthOffset; fog = final[1][3] (record +54) <<8 base +128;
+  colors smooth = final[side][comp]<<8 base +0x8000 (alpha ALWAYS front
+  final[0][3]), flat = direct writes reference[xAdder/yAdder] = constant/0
+  from the flatShadeIndex record).
+- **_grPixelPipe layout pinned** (grState.h): texture units at +0/+64 (64B
+  each: +4 pixels, +8 palette, +12 linear, +16 sMask, +20 tMask, +24
+  rShift[2], +32 log2DimS - grSetupTextureUnit raw offsets), the 9
+  grCheckPixelPipeStack fields moved into a `.checked` block at +128
+  (STILL assert-order; grSetupRendering pins), reference[10]@+192,
+  xAdder[10]@+232, yAdder[10]@+272 (flat-shade raw offsets), tail to 9216
+  total (record = renderStack+14644..23860, pinned by grExecutePixel-
+  Pipeline's &renderStack[1830].whichPool). grCheckPixelPipeStack now reads
+  pixelPipe->checked.*. GR_GRADIENT_e DEPTH=0/FOG=1/COLOR_R..A=2..5/TEX0_S..=
+  6..9 (MAX 10). GR_NUM_RASTERIZER_CACHE_VERTICES stays 28 (clipper temp
+  base 92 literal) BUT grSetupTriangleGradients' flatShadeIndex bound is the
+  literal 67 (= 64+4-1, rasterizer TU's header scope differs from the
+  clipper TU in the original - value wins, string verbatim).
+- **grSmall.c += grComputeGradientReference** (DLL 25334-25342, 5-line
+  helper) **+ grComputeDepthOffset** (DLL 25902-25940: ref = units +
+  reference[0]; switch on drawSurface byte +10 = depthBytes: 1 -> units<<8,
+  2 -> units, 4 -> units>>16; factor: += hgLsl64h(factor*max(|xAdd|,|yAdd|),
+  16) = factor*max >> 16).
+- **grIsDepthOffsetEnabled already existed** (grApiSmall.c, GR_API_CHECK
+  148) - duplicate removed from grUtil.c. Caps 12..15 = primitiveType + 11
+  (TRIANGLE 3 -> POLYGON_OFFSET_FILL 14).
+- **grSetupTextureUnit STUBBED** (grrStubs.c silent): needs the texture-
+  object/mipmap layout (tex+4, tex+16*level, tex+176/+180/+183/+204/+206) -
+  port with the texture block. Tests keep the tex gradient mask bits
+  (0xC0/0x300) clear.
+- **hgMul64x32 CARRY BUG FIXED** (hgInt32.c): lowP was declared HGuint32,
+  truncating hgMulu64's 64-bit product and losing the partial-product carry
+  (decompile DLL 22624 keeps `unsigned __int64 v3`). Only grSetupGradient
+  consumes it today but it silently corrupted any 64x32 product whose low
+  word overflowed. +8 hg tests (carry cases).
+- **imRcpu precision is INHERENT**: mantissa = ~2^62/(area<<clz) with ~2.6e-4
+  relative error (8-bit LUT seed + 2 NR steps) - the vertex-fit tolerance in
+  tests is +-2048 (fog) / +-0x20000 (colors), while depth stays tight
+  (small attribute deltas). The exact-at-v0 identity IS exact: reference
+  subtracts the same floor term GRAD_VALUE recomputes.
+- **tests/test_core.c test_gradients (+37)**: mask-0 poison, depth exact@
+  v0 + plane fits, fog (final[1][3], +128 base), smooth R/G/B/A exact@v0 +
+  fit, side=1 (back colors, front alpha), flat constants from
+  flatShadeIndex=1 (side 0 and 1, zero adders), depth-offset matrix
+  (depthBytes 1/2/4 x units, factor term), grIsDepthOffsetEnabled on/off,
+  grSetupGradient-vs-grComputeDeltas adder equality at shift 0 and 20,
+  reference identity. Screen records in real format: x/y = pixel<<8
+  (IVector4_viewportTransform <<8 pad), area = grRoundTriangleArea
+  (area64 >> 23) of grComputeTriangleArea.
 
 ## DONE session 3p (grFetchPrimitives + grRenderElements/grRenderArrays + grCheckPixelPipeStack)
 
