@@ -114,6 +114,7 @@ static void test_util_helpers(void);
 static void test_state_cull(void);
 static void test_state_viewport(void);
 static void test_state_pixel(void);
+static void test_state_material(void);
 
 int main(void)
 {
@@ -128,6 +129,7 @@ int main(void)
     test_state_cull();
     test_state_viewport();
     test_state_pixel();
+    test_state_material();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -510,4 +512,30 @@ static void test_state_pixel(void)
     st.drawSurface.colorMask = 0xC;         /* bits 2,3: G (bit 1) not written */
     grUpdateDither(&st);
     CHECK(st.useDithering == 0);
+}
+
+static void test_state_material(void)
+{
+    Gerbera_s st;
+    _XColor3 c1, c2;
+    memset(&st, 0, sizeof(st));
+
+    XColor3_setx(&c1, 100, 200, 300);
+    grSetMaterialColor(&st, 0, &c1);
+    CHECK(st.material.colors[0].r == c1.r && st.material.colors[0].b == c1.b);
+    CHECK(st.baseColorDirty == 1);          /* AMBIENT slot */
+    st.baseColorDirty = 0;
+    grSetMaterialColor(&st, 0, &c1);        /* same: no dirty */
+    CHECK(st.baseColorDirty == 0);
+    XColor3_setx(&c2, 9, 9, 9);
+    grSetMaterialColor(&st, 3, &c2);        /* EMISSION slot */
+    CHECK(st.baseColorDirty == 1);
+    st.baseColorDirty = 0;
+    grSetMaterialColor(&st, 1, &c2);
+    CHECK(st.lightColorDirtyMask == 0xFFu && st.baseColorDirty == 0);
+
+    grSetMaterialAlpha(&st, 0xBEEFu);
+    CHECK(st.material.alpha == 0xBEEFu);
+    grSetMaterialShininess(&st, FIN(0.25f));
+    CHECK((HGuint32)grGetMaterialShininess(&st) == (HGuint32)FIN(0.25f));
 }

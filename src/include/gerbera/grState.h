@@ -113,6 +113,25 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_MAX_VALUE = 54
 };
 
+/* material color slots (grSetMaterialColor; 0..3 valid, GR_MATERIALCOLOR_MAX=4).
+ * AMBIENT and EMISSION are named in the decompile; numeric order unpinned. */
+enum GR_MATERIALCOLOR_e
+{
+    GR_MATERIALCOLOR_AMBIENT = 0,     /* value not pinned yet */
+    GR_MATERIALCOLOR_EMISSION = 3,    /* value not pinned yet */
+    GR_MATERIALCOLOR_MAX = 4
+};
+
+/* material state (decompile cv_anon_174D, reconstructed from byte offsets:
+ * colors[4] _XColor3 at ints 0..11, XScalar shininess at int 12, alpha
+ * unsigned short at byte 52) */
+typedef struct _grMaterial
+{
+    _XColor3 colors[4];
+    int shininess;                /* XScalar */
+    unsigned short alpha;
+} _grMaterial;
+
 /* scissor / viewport rectangles; the pipeline consumes these as scale/offset
  * triplets (the decompile's union member normal[3]) */
 typedef struct _grViewportParams
@@ -200,6 +219,10 @@ typedef struct Gerbera_s
     /* --- global ambient -------------------------------------------------------- */
     _XColor3 ambientColor;
     int ambientLightSumDirty;
+
+    /* --- material ---------------------------------------------------------------- */
+    _grMaterial material;
+    int baseColorDirty;
 } Gerbera_s;
 
 /* --- capabilities (grUtil.h) --------------------------------------------- */
@@ -232,6 +255,10 @@ void grSetFogDensity(Gerbera_s *state, int density);
 void grSetFogRange(Gerbera_s *state, int fogStart, int fogEnd);
 void grSetFogColor(Gerbera_s *state, unsigned int fogColor);
 void grSetRectGradients(Gerbera_s *state, int gradients);
+void grSetMaterialColor(Gerbera_s *state, int component, _XColor3 *color);
+void grSetMaterialAlpha(Gerbera_s *state, unsigned short alpha);
+void grSetMaterialShininess(Gerbera_s *state, int shininess);
+int  grGetMaterialShininess(Gerbera_s *state);
 void grSetGlobalAmbient(Gerbera_s *state, _XColor3 *ambient);
 void grSetAlphaFunc(Gerbera_s *state, int func, int ref);
 void grSetStencilFunc(Gerbera_s *state, int func, unsigned int ref, unsigned int mask);

@@ -52,10 +52,11 @@ per-translation-unit inline clones that were deduped).
 - Pin GR_IMAGEFORMAT_6 / GR_PIXELFORMAT_MAX / GR_PALETTEFORMAT_MAX /
   GR_DATATYPE / GR_CAPABILITY member values from ogl mapping tables
   (oglMapCapability binary-searches keys/values tables in .data).
-- Material/lights/user-clip-plane setters (grSetMaterialColor, grSetLight*,
-  grSetUserClipPlane) need the lights (state->lights[4*ndx] records),
-  material (state->material + colorsx[4]) and texCoordTransform/normalsToEyePal
-  layouts - deferred until grVertexPipeline pins them.
+- Lights (state->lights[4*ndx] 64-byte records: lightMask int @+20, colors
+  _XColor3 @+24, orgPosition/orgDirection slots) and user clip planes
+  (normalsToEyePal[17][0].originalVertex area + texCoordTransform[8] stride-80)
+  need grVertexPipeline/grPrecalcLightColor to pin - deferred.
+- grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.
 - grClearBuffers needs grFlushBufferClears -> grr rasterizer layer.
 - Then grApiFast/grVertexPipeline -> pixel pipeline -> rasterizer.
 
@@ -98,7 +99,11 @@ per-translation-unit inline clones that were deduped).
    scissor = surface ∩ viewport, zeroed when empty; grSetClearDepth stores
    hgMulu64h(2*depth, 0xFFFFFFFF) (0.5 -> 0x7FFFFFFF); grUpdateDither needs a
    masked-in channel with size 1..7; XColor3_setx scales components x32.
-6. **tests/test_core.c**: +76 checks. Totals: 288 + 311 + 188 = 787 green.
+6. **Material setters**: _grMaterial reconstructed from byte offsets
+   (colors[4] _XColor3, XScalar shininess @int 12, alpha @byte 52);
+   grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
+   GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
+7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
 
 ## DONE session 3c (core: color + texture utilities)
 

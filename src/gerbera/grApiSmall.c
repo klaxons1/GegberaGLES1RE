@@ -336,6 +336,48 @@ void grSetGlobalAmbient(Gerbera_s *state, _XColor3 *ambient)
     }
 }
 
+/* --- material ------------------------------------------------------------------------ */
+
+void grSetMaterialColor(Gerbera_s *state, int component, _XColor3 *color)
+{
+    GR_API_CHECK(state != NULL, 658);
+    GR_API_CHECK(hgInRange32(component, 0, GR_MATERIALCOLOR_MAX - 1), 659);
+    if (color->r != state->material.colors[component].r ||
+        color->g != state->material.colors[component].g ||
+        color->b != state->material.colors[component].b)
+    {
+        state->material.colors[component] = *color;
+        if (component == GR_MATERIALCOLOR_EMISSION)
+            state->baseColorDirty = 1;
+        else
+        {
+            state->lightColorDirtyMask = 0xFF;
+            if (component == GR_MATERIALCOLOR_AMBIENT)
+                state->baseColorDirty = 1;
+        }
+    }
+}
+
+void grSetMaterialAlpha(Gerbera_s *state, unsigned short alpha)
+{
+    GR_API_CHECK(state != NULL, 708);
+    GR_API_CHECK(hgInRange32(alpha, 0, 0xFFFF), 709);
+    state->material.alpha = alpha;
+}
+
+void grSetMaterialShininess(Gerbera_s *state, int shininess)
+{
+    GR_API_CHECK(state != NULL, 740);
+    GR_API_CHECK(IScalar_testge(shininess) != 0, 742);
+    state->material.shininess = IScalar_toXScalar(shininess);
+}
+
+int grGetMaterialShininess(Gerbera_s *state)
+{
+    GR_API_CHECK(state != NULL, 752);
+    return XScalar_toIScalar(state->material.shininess);
+}
+
 /* --- alpha / stencil / depth / blend / masks ---------------------------------------- */
 
 void grSetAlphaFunc(Gerbera_s *state, int func, int ref)
