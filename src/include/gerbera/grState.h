@@ -101,6 +101,20 @@ enum GR_POSITION_e
 #define GR_VERTEXMASK_VIEWPORT_TRANSFORMED 0x8u
 #define GR_VERTEXMASK_INTERPOLATE_GRADIENTS 0x40u
 
+/* clip mask (vertex->clipMask, u16): bits 0..5 = guardband planes 0..5
+ * (IVector4_clip), bits 6..9 = guardband w tests, bits 10..15 = user clip
+ * planes 0..5. GR_CLIPMASK_CLIPPING_PLANES selects the bits grClipper acts
+ * on (grClipper.inl 396). */
+#define GR_CLIPMASK_CLIPPING_PLANES 0xFC3Fu
+
+/* renderStack vertex buffer regions (records at renderStack+1332, 128B):
+ * 0..63 the vertex cache (grVertexCacheGet), 64..91 the rasterizer cache,
+ * 92..107 the clipper temp vertices (grVertexCacheGetTemp: index+92). */
+#define GR_VERTEX_CACHE_SIZE 64
+#define GR_NUM_RASTERIZER_CACHE_VERTICES 28
+#define GR_MAX_CLIPPER_GENERATED_VERTICES 12
+#define GR_MAX_CLIPPER_VERTICES 15
+
 /* winding (grSetCullMode) */
 enum GR_WINDING_e
 {
@@ -314,14 +328,10 @@ typedef struct _grVertexArray
 } _grVertexArray;
 
 /* the fetch-stage vertex record (cv_anon_1712, 128 bytes; lives in the
- * renderStack vertex buffer at renderStack[166].whichPool = base+1332,
- * 4 vertices/512B stride... one record per vertex index, << 7 addressing).
- * Pinned offsets (EPOC + WINSCW agree): index@0, color@40 (union, 16B),
- * texCoord[2]@56/64 (int x,y per unit), nc.normal@92 (3 ints = XNormal3),
- * pointSize@104 (16.16). The position/clipPosition/stateMask/clipMask/
- * weights/weightIndices fields are written by grTransformVertex - their
- * offsets live in 4..39 / 72..91 / 108..127, pinned when that function is
- * ported (only the field SET is needed by-name in C). */
+ * renderStack vertex buffer at (char*)renderStack + 1332, one record per
+ * vertex index, << 7 addressing). Layout fully pinned from the EPOC
+ * grTransformVertex + the WINSCW grClipper raw accesses - see the note
+ * after the struct definition. */
 typedef union _grVertexColor
 {                                     /* cv_anon_1703 (fetch view, 16 bytes) */
     unsigned short final[2][4];       /* u16 RGBA rows: [0] lit color,
@@ -348,24 +358,36 @@ typedef union _grVertexPosition
 typedef struct _grVertex
 {
     int index;                                        /* +0   */
-    _grVertexPosition position;                       /* +4   */
-    int weights[4];                                   /* +24: filled by the queue
-                                                       * stage (grFetchWeightAnd-
-                                                       * Index), read by grTransfor-
-                                                       * mVertex/grLightVertex */
+    unsigned short stateMask;                         /* +4: bits 0..13 flags
+                                                       * (GR_VERTEXMASK_*), 14..15
+                                                       * = position state */
+    unsigned short clipMask;                          /* +6  */
+    _IVector4 clipPosition;                           /* +8  (20B) */
+    int screenPosition[3];                            /* +28: viewport-transform
+                                                       * output x,y,z (grViewport-
+                                                       * TransformVertex) */
     _grVertexColor color;                             /* +40  */
     struct { int x, y; } texCoord[2];                 /* +56  */
-    _IVector4 clipPosition;                           /* +72 (offset guess:
-                                                       * 20-byte gap; grTransfor-
-                                                       * mVertex writes it) */
-    int normal[3];                                    /* +92 (nc.normal) */
+    _grVertexPosition position;                       /* +72  */
+    int normal[3];                                    /* +92: object-space normal;
+                                                       * the clipper's clipFactor
+                                                       * [2] aliases normal[0..1]
+                                                       * (written after lighting
+                                                       * consumed the normal) */
     int pointSize;                                    /* +104 */
-    unsigned int clipMask;                            /* +108 (offset guess) */
-    unsigned int weightIndices;                       /* +112 (offset guess) */
-    unsigned short stateMask;                         /* bits 14..15 = position
-                                                       * state; offset guess */
-    unsigned char unpinned2[10];                      /* pad to 128 */
-} _grVertex;
+    int weights[4];                                   /* +108 */
+    unsigned int weightIndices;                       /* +124 */
+} _grVertex;                                          /* 128 bytes */
+
+/* EPOC grTransformVertex (epoc.c 22105-22280) pins the record: index@0,
+ * stateMask u16@4 (& 0x3FFF | state<<14), clipMask u16@6, clipPosition@8
+ * (sub_2EB08 pool+8, 20B), screenPosition@28 (IVector4_viewportTransform
+ * writes 3 ints), color@40 (final[0] u16 @40..46, final[1] @48..54),
+ * texCoord[2]@56/64 (sub_2E270 record+8*u+56), position@72 (fixed 4x i32
+ * LABEL_39 / float sub_32BF0), weights@108 + weightIndices@124 (sub_17890),
+ * and the clipper (libGLES_CM.dll.c 30967+) reads clipPosition@+8, writes
+ * clip factors @+92/+96 and stateMask short@+4 - all consistent with this
+ * layout. grClipper's clipFactor aliases normal[0..1] on purpose. */
 
 /* function-pointer types for the vertex pipeline stage selectors */
 typedef void (*grFetchColorFn)(Gerbera_s *state, unsigned char *vertexList);
@@ -635,6 +657,35 @@ unsigned int grFetchWeightAndIndex(Gerbera_s *state, int *weights, int vertexInd
 void grTransformVertex(Gerbera_s *state, _grVertex *vertex);
 unsigned int grComputeVertexClipCodes(Gerbera_s *state, _grVertex *vertex);
 int  grIsOutsideUserClipPlane(_IFVector4 *plane, _IVector4 *clipPos);
+
+/* --- clipper (grClipper.inl, implemented in grClipper.c) -------------------
+ * _grClipVertex is the clip polygon entry (cv_anon_17F5): barycentric clip
+ * factors a/b (IUnitScalar, a+b <= ONE, the third weight = ONE-a-b), the
+ * source vertex record (NULL for intersections) and the fan edge flag
+ * (the source vertex's cache index). The clip factors alias the vertex
+ * record's normal[0..1] while the polygon lives (decompile +92/+96). */
+typedef struct _grClipVertex
+{
+    int clipFactor[2];
+    _grVertex *originalVertex;
+    unsigned char edgeFlag;
+} _grClipVertex;
+
+int  grIsInsideClipPlane(int distance);
+int  grIsOutsideClipPlane(int distance);
+int  grIsOnPlane(int distance);
+int  grSubpixelTrunc(int i);
+int  grGetFrontFace(Gerbera_s *state);
+void grClipFactorSet(_grClipVertex *v, int ndx, int val);
+void grClipFactorInit(_grClipVertex *v, int ndx);
+void grLerpClipFactor(_grClipVertex *dst, _grClipVertex *s0, _grClipVertex *s1, int factor);
+int  grVertexCacheGetTemp(Gerbera_s *state, int index);
+int  grClipInterpolate(int d0, int d1);
+int  grComputeDistanceToGuardbandPlane(int plane, _IVector4 *position, int shift);
+int  grComputeDistanceToUserClipPlane(Gerbera_s *state, int plane, _IVector4 *position, int planeSign);
+int  grClipConvexPolygon(_grClipVertex *clipped, int numVertices, _grClipVertex *inPoly,
+                         int *distances, int swapDirection);
+int  grClipper(Gerbera_s *state, unsigned char *outputFan, unsigned int indices);
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);
 void grApplyLighting(Gerbera_s *state, unsigned char *vertexList);

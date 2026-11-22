@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3)
+Last updated: 2026-11-22 (session 3m)
 
 ## Legend
 
@@ -14,7 +14,7 @@ Last updated: 2026-11-22 (session 3)
 |---|---|---|---|
 | hg | renderer/libs/hg | 105 | **DONE** (session 1) |
 | imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar + vector/matrix layers done (sessions 2-3) |
-| gerbera/core | .../gerbera/core/implementation | 318 | **IN PROGRESS** - grDefs.h foundational layer done (session 3) |
+| gerbera/core | .../gerbera/core/implementation | 318 | **IN PROGRESS** - foundations + vertex pipeline + clears + culling + clipper done (sessions 3-3m) |
 | gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | SCAFFOLDED |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
 | gerbera/hc | .../gerbera/hc | 296 | SCAFFOLDED |
@@ -109,6 +109,83 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3m (grClipper + vertex-cache/clip helpers + _grVertex layout pin)
+
+- **_grVertex layout CORRECTED** (grState.h) - the old layout was a guess that
+  happened to be self-consistent; the clipper's raw offsets prove the real
+  one. Pinned from EPOC grTransformVertex (epoc.c 22050-22280) + WINSCW
+  grClipper accesses (dll.c 30967+): index@0 (i32), stateMask u16@4 (bits
+  0..13 GR_VERTEXMASK_*, 14..15 position state), clipMask u16@6 (written by
+  grComputeVertexClipCodes: EPOC (v13+4) & 0x3FFF | 0x4000), clipPosition
+  _IVector4@8 (20B; EPOC pool+8/sub_2EB08 = modelview path, +2064 = objectTo-
+  Clip projection path, +1864 = matrixPal; guardband codes built at 22257),
+  screenPosition[3]@28 (IVector4_viewportTransform output, 3 ints), color@40
+  (final[0] u16 @40..46, final[1] @48..54 - EPOC sub_2E270 blends @40+8u),
+  texCoord[2]@56/64 (sub_2E270 record+8u+56, barycentric blend >> 29),
+  position@72 (fixed LABEL_39 4x i32 / float sub_32BF0), normal@92
+  (XNormal3), pointSize@104, weights[4]@108 (sub_315B4 dst v65 = record+108),
+  weightIndices@124 (sub_17890). grLightVertex/grApplyLighting/grApplyFog/
+  grGetFogZ/grFetchWeightAndIndex/grTransformVertex needed no code change
+  (they use field names); grVertexPipeline.c comment on the buffer updated.
+- **grClipper.c** (new; grClipper.inl 30654-31488 + grUtil.h helpers):
+  grIsInsideClipPlane/Outside/OnPlane (IScalar_testge/testle/testeq),
+  grSubpixelTrunc (>>12), grGetFrontFace, grClipFactorSet/Init/Lerp
+  (grUtil.h 298-332; cv_anon_170C = int pair), grVertexCacheGetTemp (assert
+  40; temps at vertexBuffer[92+i], index=-1, stateMask=0, returns 92+i),
+  grClipInterpolate (asserts 121/129; negate-both when d0>=0, t = toUnit-
+  Scalar(mul(rcp(d0-d1), d0))), grComputeDistanceToGuardbandPlane (dll
+  23728: axis (plane>>1)+2 -> >=3 wraps to (plane>>1)-1; shift 0 for
+  plane&6==0 else the caller's 2; c+w / w-c by plane&1; e==254 clamps to
+  0x3FFFFFFF via hgCopySign32; zero-normalized-but-nonzero -> sign
+  IScalar_set(1, 0x20000000 copySign)), grComputeDistanceToUserClipPlane
+  (asserts 164/183; eq copied/negated by planeSign, IScalar dot over the 4
+  clipPosition components, negate when planeSign<0), grClipConvexPolygon
+  (asserts 259/269; per edge: both-inside or on-plane->outside copies the
+  source, crossings copy the inside source first (edgeFlag 0) + the lerp
+  temp (swapDirection swaps the pair before grLerpClipFactor); post-pass
+  drops reflex vertices via imDet2_64 < 0 over the (a,b) factor pairs),
+  grClipper (asserts 396/489/584/645; mask = OR of orig clipMask u16 & 0xFC3F
+  (GR_CLIPMASK_CLIPPING_PLANES); per plane: distances for the 3 ORIGINAL
+  vertices, barycentric weights (a,b,ONE-a-b) x IVector3_clipperDot, all-
+  outside -> 0, sign-change asserts, grClipConvexPolygon + buffer swap
+  (user planes swap direction by getFirstNonZeroSign >= 0); fan emit:
+  originals keep edgeFlag = cache index (assert 645: mask clean), temps get
+  stateMask 69 (0x1|0x4|0x40), index -1, clipMask 0, factors stored to
+  normal[0..1] (+92/+96 deliberate alias), clip position = sum of orig
+  clipPosition x IUnitScalar_tos(factor & ~0x3F) via IVector4_smul/add,
+  normalized by IVector4_fixClipSpacePosition(2)).
+- **Constants pinned** (grState.h): GR_CLIPMASK_CLIPPING_PLANES 0xFC3F,
+  GR_VERTEX_CACHE_SIZE 64, GR_NUM_RASTERIZER_CACHE_VERTICES 28 (temp base
+  92 = EPOC renderStack[1638].whichPool), GR_MAX_CLIPPER_GENERATED_VERTICES
+  12, GR_MAX_CLIPPER_VERTICES 15 (decompile stack size).
+- **Clip factors alias normal[0..1]**: the clip polygon stores (a,b) in the
+  vertex records' normal slots (dll.c 30993: *(int*)(vtx+92) = factor.a,
+  +96 = factor.b) - lighting is done by the time the clipper runs. Tests
+  pin this (vb[0].normal == (ONE,0) etc. after grClipper).
+- **Unit-scalar conversion verified**: IUnitScalar_tos(x) returns an IScalar
+  (unit 0.5 -> 0x3F000000); IUnitScalar_lerp(ONE,0,t) with t=0.5-unit gives
+  0x10000010 (unit domain, not scalar). grClipInterpolate returns a UNIT
+  scalar (t=1/2 == 0x10000000) while grClipFactorSet validates against
+  IUNITSCALAR_ONE 0x20000000 = 1.0.
+- **tests/test_core.c**: test_clipper (+24): grClipFactorInit slots, grClip-
+  Interpolate symmetric t, grVertexCacheGetTemp slots (92/103, index/state-
+  Mask), guardband straddle (fan 0,1,92,93; temp factors (0, 0x06666660)
+  from lerp(ONE,0,0.8); temp clipPosition e=127 w=0x20000000 z=0xE0000000 =
+  w1.0/z-0.5 by hand), all-outside -> 0, factors stored in vb[0]/vb[1].normal.
+  IVector4 mantissas are 6.26 IScalar-domain (bit 29 set) - invalid probe
+  mantissas die in IVector4_isValid (bsum IMath.c 158), not a clipper bug.
+- **Deferred to the rasterizer session**: grClipPrimitive (31235-31488) -
+  fully decoded (scissor-mask recheck per fan vertex with GR_SCISSORMASK
+  asserts 730-738, stack-magic checks 745/833, triangle fan path: area sum
+  via grComputeTriangleArea -> front face = grGetFrontFace ^ hgGet64h>>
+  31, per-fan-triangle cull test (sign ^ cullNegative) & CULL_FACE cap,
+  nonzero-area gate, grInterpolateVertexGradients on stateMask&0x40
+  vertices, assert triSide 813, grRoundTriangleArea, grrDrawClippedTriangle;
+  line path: degenerate grSetIndices(i0,i0,i0) + grrDrawClippedLine) - needs
+  grrDrawClipped* + gradients. grComputeTriangleArea (dll 25943) + grRound-
+  TriangleArea (00424970) decoded: area = madd64(dy01, x2-x0, x1-x0, y2-y0)
+  over screenPosition x/y (subpixel), round = neg<<9/h signed variant.
 
 ## DONE session 3l (grFlushBufferClears + grr clear family + grFill + grDitherColor + grClearBuffers)
 

@@ -26,6 +26,7 @@ LIB_SRC := \
  src/gerbera/grTransform.c \
  src/gerbera/grFill.c \
  src/gerbera/grrClear.c \
+ src/gerbera/grClipper.c \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
     src/imath/IUnitScalar.c \

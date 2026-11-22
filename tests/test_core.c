@@ -127,6 +127,7 @@ static void test_transform_vertex(void);
 static void test_light_vertex(void);
 static void test_setup_culling(void);
 static void test_clear(void);
+static void test_clipper(void);
 
 int main(void)
 {
@@ -152,6 +153,7 @@ int main(void)
     test_light_vertex();
     test_setup_culling();
     test_clear();
+    test_clipper();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -1607,4 +1609,86 @@ static void test_clear(void)
     memset(dwords32, 0x87, sizeof(dwords32));
     grFill32Masked(dwords32, 0x12345678, 0xFFFFFF00, 4);
     CHECK(dwords32[0] == (0x12345600 | 0x87) && dwords32[3] == (0x12345600 | 0x87));
+}
+
+/* --- grClipper.inl ---------------------------------------------------------- */
+
+static void test_clipper(void)
+{
+    Gerbera_s st;
+    static unsigned char stack[23860];
+    _grVertex *vb;
+    unsigned char fan[16];
+    unsigned int indices;
+    int n, d;
+
+    memset(&st, 0, sizeof(st));
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    memset(stack, 0, sizeof(stack));
+    st.renderStack = stack;
+
+    /* grClipFactorInit: vertex ndx gets ONE in its slot */
+    {
+        _grClipVertex cv;
+
+        grClipFactorInit(&cv, 0);
+        CHECK(cv.clipFactor[0] == 0x20000000 && cv.clipFactor[1] == 0);
+        grClipFactorInit(&cv, 1);
+        CHECK(cv.clipFactor[0] == 0 && cv.clipFactor[1] == 0x20000000);
+        grClipFactorInit(&cv, 2);
+        CHECK(cv.clipFactor[0] == 0 && cv.clipFactor[1] == 0);
+    }
+
+    /* grClipInterpolate: symmetric distances cross at t = 1/2 (unit) */
+    d = IScalar_set(3, 0x20000000);                 /* +0.5 */
+    CHECK(grClipInterpolate(d, IScalar_negate(d)) == 0x10000000);
+    CHECK(grClipInterpolate(IScalar_negate(d), d) == 0x10000000);
+
+    /* grVertexCacheGetTemp: slots 92.. at renderStack+1332+128*idx */
+    n = grVertexCacheGetTemp(&st, 0);
+    CHECK(n == 92);
+    vb = (_grVertex *)(stack + 1332);
+    CHECK(vb[92].index == -1 && vb[92].stateMask == 0);
+    CHECK(grVertexCacheGetTemp(&st, 11) == 103);
+
+    /* grClipper: triangle straddling guardband plane 0 (z+w, shift 0):
+     * v0/v1 inside (dist +), v2 outside (dist -) -> the outside vertex is
+     * replaced by two intersection temps (fan 0,1,92,93); clip factors are
+     * the barycentric unit pairs (1,0)/(0,1)/(0,0); temps carry mask 69. */
+    vb[0].clipPosition.e = 127;
+    vb[0].clipPosition.m[0] = 0;
+    vb[0].clipPosition.m[1] = 0;
+    vb[0].clipPosition.m[2] = 0x20000000;
+    vb[0].clipPosition.m[3] = 0x20000000;
+    vb[1] = vb[0];
+    vb[2] = vb[0];
+    vb[2].clipPosition.m[2] = (int)0xD0000000;      /* -0.75: z+w < 0 */
+    vb[2].clipMask = 1;                              /* outside flag */
+    indices = grSetIndices(0, 1, 2);
+    n = grClipper(&st, fan, indices);
+    CHECK(n == 4);
+    CHECK(fan[0] == 0 && fan[1] == 1 && fan[2] == 92 && fan[3] == 93);
+    CHECK(vb[92].stateMask == 69);
+    CHECK(vb[92].index == -1 && vb[92].clipMask == 0);
+    CHECK(vb[92].normal[0] == 0);
+    CHECK(vb[92].normal[1] == 0x06666660);           /* lerp(ONE,0,0.8) */
+    CHECK(vb[93].normal[0] == 0x06666660);
+    CHECK(vb[93].normal[1] == 0);
+    CHECK(vb[92].clipPosition.e == 127);
+    CHECK(vb[92].clipPosition.m[3] == 0x20000000);   /* w = 1.0 */
+    CHECK(vb[92].clipPosition.m[2] == (int)0xE0000000); /* z = -0.5 */
+    CHECK(vb[0].normal[0] == 0x20000000);            /* clip factors stored */
+    CHECK(vb[0].normal[1] == 0);
+    CHECK(vb[1].normal[0] == 0);
+    CHECK(vb[1].normal[1] == 0x20000000);
+
+    /* fully outside plane 0 -> rejected (mask need only be nonzero) */
+    vb[0].clipPosition.m[2] = (int)0xD0000000;
+    vb[1].clipPosition.m[2] = (int)0xD0000000;
+    n = grClipper(&st, fan, indices);
+    CHECK(n == 0);
+
+    /* a triangle with no clip bit in any vertex dies at the grClipper.inl
+     * 396 assert (the queue stage only calls grClipper when the packed
+     * vertex clipMask has a clipping bit) - dead-end, not exercised */
 }
