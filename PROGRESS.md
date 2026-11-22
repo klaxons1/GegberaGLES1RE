@@ -110,6 +110,79 @@ per-translation-unit inline clones that were deduped).
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
 
+## DONE session 3j (light + grLightVertex + grApplyLighting)
+
+- **_grLight record layout fully decoded** (WINSCW overlay-type math, all
+  cross-checked): positionXYZ {_IVector3 e,m[3]}@0, spotCutoff@16 (raw
+  IScalar degrees), lightMask@20, orgPosition@24 (16B), orgSpotDirection@40,
+  spotDirectionNegated@60, colorsx[3]@72/84/96 (= my colors[] ambient/
+  diffuse/specular), exponent@108, attenuation@112, cosSpotCutoff@128,
+  premul_colors[3]@132/144/156, halfway@168, nVP@180, positional@192,
+  xAtten@196, ndotL@200, specDot@204; stride 208 (EPOC grUpdateLights steps
+  lights by 208). My struct field order differs but is field-based + 208B
+  stride, so it is behaviorally identical - no re-layout done. The three
+  per-vertex scratch fields (xAtten/ndotL/specDot) were ADDED to _grLight;
+  grState.h now declares them + light()/grLightVertex/grApplyLighting
+  prototypes; _grVertex gained weightIndices@112 (offset guess, read at
+  28734, written by grQueuePrimitive 32194).
+- **light()** (28554-28693) ported: bDirectional jumps straight to the color
+  stage (xAtten untouched for directional lights!); positional: xAtten=0
+  first, mask&0xE gate, lvec = IVector3_normsub(nVP, positionXYZ, pos) (L =
+  normalize(lightPos - vertexPos)); spot (mask&0x10): spot =
+  min(dot(nVP, spotDirectionNegated), 1.0), outside cone (spot < cosSpot-
+  Cutoff) -> continue (vertex skipped); attenuation (mask&0x20):
+  IScalar_attenuateRcp(lvec, attenuation); spot exponent pow + atten =
+  spot*atten, atten==0 -> continue; assert sites 774/781/799/807 kept.
+  Color stage: mask&0xC -> ndotL = dot(nVP, eyeNormal); signBit gate with
+  two-sided bypass; mask&4 && !bDirectional -> ndotL = mul_sat(atten, ndotL);
+  mask&8 -> halfway (positional only: nVP[2] += 1.0 then normalize halfway;
+  directional reuses grUpdateLight's precomputed halfway), spec only when
+  signBit(halfDot) == signBit(ndotL); shininess != 0 -> specDot =
+  |halfDot| (pow shininess, mulu_sat atten if positional) else specDot =
+  atten (not atten-scaled in that branch!).
+- **grLightVertex** (28696-29135) ported: nSides = (lightingSideMask & 2);
+  normal -> palette path (per-weight XNormalTransform_mulNormal + accfv +
+  normalize, count = min(wt.size, idx.size, 4), indices byte per slot) else
+  single mulNormal(normalsToEyeTransform, RESCALE_NORMAL cap); light() over
+  l_directional (bDirectional=1) then l_positional (asserts 956/960);
+  color accumulation in FOUR exact variants:
+  * CM two-sided: acc = ambientLightSum; directional: NL>0 -> accF += colors[1]*NL
+    (RAW light diffuse), spec>0 -> accFSpec += colors[2]*spec; NL<0 -> accB +=
+    colors[1]*|NL| + spec; positional: premul[0]*xAtten into BOTH accs, then
+    colors[1]*NL front / |NL| back, spec -> premul[2]*spec (front+backSpec);
+    epilogue scaleColor(acc, cmColor) + addColor(material.colors[3]) +
+    addAcc(spec) + toRGB per side.
+  * CM single-sided: directional gated NL>=0 (diffuse raw + spec premul[2]);
+    positional: accF += colors[0]*xAtten (RAW light ambient, direct madd)
+    then NL>=0 gate; same epilogue + the b=r quirk (input.rgb[0].b =
+    input.rgb[0].r clobbers final[0][2..3]; final[1][2] = final[0][2]).
+  * base two-sided: acc = baseColor; everything premul: NL>0 -> accF +=
+    premul[1]*NL + premul[2]*spec (same acc), NL<0 -> accB += premul[1]*|NL|
+    + premul[2]*spec; positional premul[0]*xAtten into both; toRGB both rows.
+  * base single-sided: NL>=0 gates, positional premul[0]*xAtten direct madd;
+    toRGB front only + b=r quirk. Alpha: CM = final[1][2]&0xFF00 (== the
+    fetcher's alpha), base = material.alpha&0xFF00 (EPOC material+52).
+- **grApplyLighting** (29139-29223) ported: transformVE != 0 -> per-vertex
+  state<2 raised to EYE_SPACE via mulxv4s/mulfv4s(modelview) (assert 1286),
+  then EYE_SPACE -> EYE_SPACE_CARTESIAN (tmp copy, w slot = fog z via
+  IFVector4_getf(tmp,2), IFVector4_tov3), grLightVertex, walk list until
+  0xFF byte; transformVE == 0 -> lights in place (assert 1311 GR_FETCH_CHECK).
+- **XColor3Acc accumulators are HGint64[3] (r,g,b arrays), NOT scalars** -
+  scalars made madd clobber neighboring locals (caught by the two-sided
+  probe: accFront read back as the accBack product). All acc args pass the
+  array (no &).
+- Probe-pinned outputs (tests/test_light_vertex, +35 checks = 399 core,
+  998 total): directional front -> final ff00 x3 (b=r quirk gives sec =
+  ff00 ff00 ff00 via the u16/int view packing, alpha 0000); two-sided back
+  -> front 0000 / back ff00 x3, ndotL = -2^21; positional + transformVE ->
+  state 3, ndotL = xAtten = 2^21, final white, lightMask 0x4 (atten
+  (1,0,0), spotCutoff 180); CM half-intensity color -> 8000 x3, alpha
+  ff00. Probe gotchas: grSetLightAttenuation needs NORMALIZED IScalars
+  (IScalar_ftos - raw 0x200000 asserts IScalar_getMantissa==0), an unset
+  attenuation (0,0,0) drives atten to INT_MAX via rcp(0) (faithful);
+  printf args evaluate before the called function again (grUpdateLights
+  results printed stale - call into a variable first).
+
 ## DONE session 3i (grTransformVertex + matrix palette skinning + clip codes)
 
 - **grTransformVertex** (27926-28117) ported with all 11 assert sites:

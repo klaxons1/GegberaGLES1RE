@@ -270,6 +270,12 @@ typedef struct _grLight
     _IFVector3 attenuation;       /* constant, linear, quadratic (floats) */
     int cosSpotCutoff;            /* XScalar: max(cos(radians(cutoff)), 0) */
     int spotCutoff;               /* original cutoff (IScalar, degrees) */
+    /* per-vertex scratch written by light() (EPOC +196/+200/+204): the
+     * attenuation factor, the N*L dot and the specular dot^shininess
+     * factor; read back by grLightVertex's color accumulation */
+    int xAtten;
+    int ndotL;
+    int specDot;
 } _grLight;
 
 /* client vertex array record (grGetVertexArrayPointer/Binding/Reset +
@@ -328,7 +334,10 @@ typedef struct _grVertex
 {
     int index;                                        /* +0   */
     _grVertexPosition position;                       /* +4   */
-    unsigned char unpinned1[16];                      /* +24  */
+    int weights[4];                                   /* +24: filled by the queue
+                                                       * stage (grFetchWeightAnd-
+                                                       * Index), read by grTransfor-
+                                                       * mVertex/grLightVertex */
     _grVertexColor color;                             /* +40  */
     struct { int x, y; } texCoord[2];                 /* +56  */
     _IVector4 clipPosition;                           /* +72 (offset guess:
@@ -337,9 +346,10 @@ typedef struct _grVertex
     int normal[3];                                    /* +92 (nc.normal) */
     int pointSize;                                    /* +104 */
     unsigned int clipMask;                            /* +108 (offset guess) */
+    unsigned int weightIndices;                       /* +112 (offset guess) */
     unsigned short stateMask;                         /* bits 14..15 = position
                                                        * state; offset guess */
-    unsigned char unpinned2[14];                      /* pad to 128 */
+    unsigned char unpinned2[10];                      /* pad to 128 */
 } _grVertex;
 
 /* function-pointer types for the vertex pipeline stage selectors */
@@ -608,6 +618,9 @@ unsigned int grFetchWeightAndIndex(Gerbera_s *state, int *weights, int vertexInd
 void grTransformVertex(Gerbera_s *state, _grVertex *vertex);
 unsigned int grComputeVertexClipCodes(Gerbera_s *state, _grVertex *vertex);
 int  grIsOutsideUserClipPlane(_IFVector4 *plane, _IVector4 *clipPos);
+void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
+void grLightVertex(Gerbera_s *state, _grVertex *v);
+void grApplyLighting(Gerbera_s *state, unsigned char *vertexList);
 
 /* --- grUtil.h: primitive helper --------------------------------------------- */
 int  grGetPrimitiveVertices(int primitiveType);

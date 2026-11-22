@@ -124,6 +124,7 @@ static void test_itc_transform(void);
 static void test_fetch_stages(void);
 static void test_update_pipeline(void);
 static void test_transform_vertex(void);
+static void test_light_vertex(void);
 
 int main(void)
 {
@@ -146,6 +147,7 @@ int main(void)
     test_fetch_stages();
     test_update_pipeline();
     test_transform_vertex();
+    test_light_vertex();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -1140,4 +1142,181 @@ static void test_state_lights(void)
     /* cutoff 180 -> cos = -1 clamped to 0 */
     grSetLightSpotCutoff(&st, 0, FIN(180.0f));
     CHECK(st.lights[0].cosSpotCutoff == 0);
+}
+
+/* --- light / grLightVertex / grApplyLighting --------------------------------- */
+#include "gerbera/grState.h"
+
+static void test_light_vertex(void)
+{
+    Gerbera_s st;
+    _IMatrix4x4 id;
+    _IFVector4 pos;
+    _XColor3 c, black, one;
+    unsigned char *pool = malloc(4096);
+    _grVertex *vb;
+    unsigned char colors[4] = {255, 255, 255, 255};
+    unsigned char list[2] = {0, 0xFF};
+    int z;
+
+    IMatrix4x4_identity(&id);
+    XColor3_setx(&black, 0, 0, 0);
+    XColor3_setx(&one, 65536, 65536, 65536);
+    XColor3_setx(&c, 65536, 65536, 65536);
+
+    /* directional light (0,0,1,0), white diffuse, vertex at the origin with
+     * normal (0,0,1): fully lit, single-sided */
+    memset(pool, 0, 4096);
+    memset(&st, 0, sizeof(st));
+    IVertexTransform_copy(&st.modelviewTransform, &id);
+    st.renderStack = pool;
+    vb = (_grVertex *)(pool + 1332);
+    st.vertexArray[2].data = colors;
+    st.vertexArray[2].stride = 4;
+    st.vertexArray[2].type = GR_DATATYPE_UINT8;
+    vb[0].index = 0;
+    grFetchVertexColorUINT8(&st, list);
+    IFVector4_set(&pos, FIN(0.0f), FIN(0.0f), FIN(1.0f), FIN(0.0f));
+    grSetLightPosition(&st, 0, &pos);
+    grSetLightSpotCutoff(&st, 0, FIN(180.0f));
+    grSetLightColor(&st, 0, 0, &black);
+    grSetLightColor(&st, 0, 1, &c);
+    grSetLightColor(&st, 0, 2, &black);
+    grSetMaterialColor(&st, 0, &one);
+    grSetMaterialColor(&st, 1, &one);
+    grSetMaterialColor(&st, 3, &black);
+    grSetCapability(&st, GR_CAPABILITY_LIGHT0, 1);
+    z = grUpdateLights(&st);
+    CHECK(z == 0);                                  /* no positional light  */
+    CHECK((st.lightDirectionalMask & 1u) != 0);
+    CHECK(st.lights[0].lightMask == 0x44);          /* directional+diffuse  */
+    CHECK(st.l_directional[0] == &st.lights[0]);
+    CHECK(st.baseColor.r == 0);                     /* emission+global amb  */
+    CHECK(st.lights[0].premul_colors[1].r == 2097152);
+    XNormal3_setx(vb[0].normal, 0, 0, 65536);
+    IMatrix4x4_inversetranspose(&st.normalsToEyeTransform, &id, 0);
+    grApplyLighting(&st, list);
+    CHECK(st.lights[0].ndotL == 2097152);
+    CHECK(st.lights[0].specDot == 0);
+    CHECK(st.lights[0].xAtten == 0);                /* directional: untouched */
+    CHECK(vb[0].color.final[0][0] == 0xFF00);
+    CHECK(vb[0].color.final[0][1] == 0xFF00);
+    CHECK(vb[0].color.final[0][2] == 0xFF00);
+    CHECK(vb[0].color.final[0][3] == 0x0000);       /* b=r quirk clears alpha */
+    CHECK(vb[0].color.final[1][0] == 0xFF00);       /* b=r int-view packing  */
+    CHECK(vb[0].color.final[1][1] == 0xFF00);
+    CHECK(vb[0].color.final[1][2] == 0xFF00);
+
+    /* same light from behind, two-sided: front unlit, back fully lit */
+    memset(pool, 0, 4096);
+    memset(&st, 0, sizeof(st));
+    IVertexTransform_copy(&st.modelviewTransform, &id);
+    st.renderStack = pool;
+    vb = (_grVertex *)(pool + 1332);
+    st.vertexArray[2].data = colors;
+    st.vertexArray[2].stride = 4;
+    st.vertexArray[2].type = GR_DATATYPE_UINT8;
+    vb[0].index = 0;
+    grFetchVertexColorUINT8(&st, list);
+    IFVector4_set(&pos, FIN(0.0f), FIN(0.0f), FIN(-1.0f), FIN(0.0f));
+    grSetLightPosition(&st, 0, &pos);
+    grSetLightSpotCutoff(&st, 0, FIN(180.0f));
+    grSetLightColor(&st, 0, 0, &black);
+    grSetLightColor(&st, 0, 1, &c);
+    grSetLightColor(&st, 0, 2, &black);
+    grSetMaterialColor(&st, 0, &one);
+    grSetMaterialColor(&st, 1, &one);
+    grSetMaterialColor(&st, 3, &black);
+    grSetCapability(&st, GR_CAPABILITY_LIGHT0, 1);
+    grUpdateLights(&st);
+    st.lightingSideMask = 2;
+    XNormal3_setx(vb[0].normal, 0, 0, 65536);
+    IMatrix4x4_inversetranspose(&st.normalsToEyeTransform, &id, 0);
+    grApplyLighting(&st, list);
+    CHECK(st.lights[0].ndotL == -2097152);
+    CHECK(vb[0].color.final[0][0] == 0 && vb[0].color.final[0][1] == 0 &&
+          vb[0].color.final[0][2] == 0);
+    CHECK(vb[0].color.final[1][0] == 0xFF00);
+    CHECK(vb[0].color.final[1][1] == 0xFF00);
+    CHECK(vb[0].color.final[1][2] == 0xFF00);
+
+    /* positional light at (0,0,1,1) + transformVE: the vertex is brought to
+     * eye space (state 3) and lit; attenuation (1,0,0) keeps xAtten at 1.0 */
+    memset(pool, 0, 4096);
+    memset(&st, 0, sizeof(st));
+    IVertexTransform_copy(&st.modelviewTransform, &id);
+    st.renderStack = pool;
+    vb = (_grVertex *)(pool + 1332);
+    {
+        static float vpos[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+
+        st.vertexArray[0].data = vpos;
+        st.vertexArray[0].stride = 16;
+        st.vertexArray[0].size = 4;
+        st.vertexArray[0].type = GR_DATATYPE_FLOAT;
+        st.vertexArray[2].data = colors;
+        st.vertexArray[2].stride = 4;
+        st.vertexArray[2].type = GR_DATATYPE_UINT8;
+    }
+    vb[0].index = 0;
+    grFetchVertexColorUINT8(&st, list);
+    IFVector4_set(&pos, FIN(0.0f), FIN(0.0f), FIN(1.0f), FIN(1.0f));
+    grSetLightPosition(&st, 0, &pos);
+    grSetLightSpotCutoff(&st, 0, FIN(180.0f));
+    grSetLightAttenuation(&st, 0, 0, IScalar_ftos(1.0f));
+    grSetLightAttenuation(&st, 0, 1, IScalar_ftos(0.0f));
+    grSetLightAttenuation(&st, 0, 2, IScalar_ftos(0.0f));
+    grSetLightColor(&st, 0, 0, &black);
+    grSetLightColor(&st, 0, 1, &c);
+    grSetLightColor(&st, 0, 2, &black);
+    grSetMaterialColor(&st, 0, &one);
+    grSetMaterialColor(&st, 1, &one);
+    grSetMaterialColor(&st, 3, &black);
+    grSetCapability(&st, GR_CAPABILITY_LIGHT0, 1);
+    z = grUpdateLights(&st);
+    CHECK(z == 1);                                  /* positional light on  */
+    CHECK(st.l_positional[0] == &st.lights[0]);
+    CHECK(st.l_directional[0] == NULL);
+    CHECK((st.lights[0].lightMask & 0x40) == 0);
+    st.transformVE = z;
+    XNormal3_setx(vb[0].normal, 0, 0, 65536);
+    IMatrix4x4_inversetranspose(&st.normalsToEyeTransform, &id, 0);
+    grApplyLighting(&st, list);
+    CHECK(grGetVertexPositionState(&vb[0]) == GR_POSITION_EYE_SPACE_CARTESIAN);
+    CHECK(st.lights[0].ndotL == 2097152);
+    CHECK(st.lights[0].xAtten == 2097152);
+    CHECK(vb[0].color.final[0][0] == 0xFF00);
+    CHECK(vb[0].color.final[0][1] == 0xFF00);
+    CHECK(vb[0].color.final[0][2] == 0xFF00);
+
+    /* color material: diffuse scales with the per-vertex color */
+    memset(pool, 0, 4096);
+    memset(&st, 0, sizeof(st));
+    IVertexTransform_copy(&st.modelviewTransform, &id);
+    st.renderStack = pool;
+    vb = (_grVertex *)(pool + 1332);
+    colors[0] = 128; colors[1] = 128; colors[2] = 128;
+    st.vertexArray[2].data = colors;
+    st.vertexArray[2].stride = 4;
+    st.vertexArray[2].type = GR_DATATYPE_UINT8;
+    vb[0].index = 0;
+    grFetchVertexColorUINT8(&st, list);
+    IFVector4_set(&pos, FIN(0.0f), FIN(0.0f), FIN(1.0f), FIN(0.0f));
+    grSetLightPosition(&st, 0, &pos);
+    grSetLightSpotCutoff(&st, 0, FIN(180.0f));
+    grSetLightColor(&st, 0, 0, &black);
+    grSetLightColor(&st, 0, 1, &c);
+    grSetLightColor(&st, 0, 2, &black);
+    grSetCapability(&st, GR_CAPABILITY_LIGHT0, 1);
+    grSetCapability(&st, GR_CAPABILITY_COLOR_MATERIAL, 1);
+    grUpdateLights(&st);
+    XNormal3_setx(vb[0].normal, 0, 0, 65536);
+    IMatrix4x4_inversetranspose(&st.normalsToEyeTransform, &id, 0);
+    grApplyLighting(&st, list);
+    CHECK(vb[0].color.final[0][0] == 0x8000);
+    CHECK(vb[0].color.final[0][1] == 0x8000);
+    CHECK(vb[0].color.final[0][2] == 0x8000);
+    CHECK(vb[0].color.final[0][3] == 0xFF00);       /* alpha = fetched &FF00 */
+    colors[0] = 255; colors[1] = 255; colors[2] = 255;
+    free(pool);
 }

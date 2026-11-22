@@ -1491,3 +1491,444 @@ void grTransformVertex(Gerbera_s *state, _grVertex *vertex)
     }
     grComputeVertexClipCodes(state, vertex);
 }
+
+/* --- light (decompile 28554-28693; assert lines 774/781/799/807) -------------
+ * Per-vertex per-light lighting: computes L (positional), the spot factor,
+ * the attenuation and the diffuse/specular dots, storing the results into
+ * the light record's per-vertex scratch (xAtten/ndotL/specDot) for the
+ * color accumulation in grLightVertex. Mutates nVP for positional lights
+ * (it doubles as the per-vertex L vector) and halfway (specular). */
+
+void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional)
+{
+    for (; *lights != NULL; ++lights)
+    {
+        _grLight *l = *lights;
+        unsigned int mask = (unsigned int)l->lightMask;
+        int atten = 0x200000;
+        int spot = 0;
+        int ndotL = 0;
+        int specDot = 0;
+        int lvec;
+        int signDiffuse;
+
+        if (bDirectional != 0)
+            goto colorStage;
+        l->xAtten = 0;
+        if ((mask & 0xE) == 0)
+            continue;
+        lvec = IVector3_normsub(l->nVP, ( _IVector3 *)&l->positionXYZ, pos);
+        if ((mask & 0x10) != 0)
+        {
+            if ((l->cosSpotCutoff < 0) && grAssert("light->cosSpotCutoff >= 0", "grVertexPipeline.inl", 774) != 0)
+                grDie(0);
+            spot = XScalar_min(XNormal3_dot(l->nVP, l->spotDirectionNegated), 0x200000);
+            if (XScalar_cmplt(spot, l->cosSpotCutoff) == 0)
+            {
+                /* inside the spot cone */
+                {
+                    int ok = 1;
+                    int cond = (XScalar_zcmpge(spot) != 0) && (XScalar_cmple(spot, 0x200000) != 0);
+
+                    if (!cond && grAssert("XScalar_zcmpge(spot) && XScalar_cmple(spot,IM_XSCALAR_ONE)",
+                                          "grVertexPipeline.inl", 781) != 0)
+                        ok = 0;
+                    if (ok == 0)
+                        grDie(0);
+                }
+                goto attenStage;
+            }
+            /* outside the cone: no contribution at all */
+            continue;
+        }
+    attenStage:
+        if ((mask & 0x20) == 0 ||
+            (atten = IScalar_attenuateRcp(lvec, &l->attenuation), XScalar_zcmpeq(atten) == 0))
+        {
+            if ((mask & 0x10) != 0)
+            {
+                if (XScalar_cmpne(l->exponent, 0x200000) != 0)
+                    spot = XScalar_pow(spot, l->exponent);
+                {
+                    int ok = 1;
+                    int cond = (XScalar_zcmpge(spot) != 0) && (XScalar_cmple(spot, 0x200000) != 0);
+
+                    if (!cond && grAssert("XScalar_zcmpge(spot) && XScalar_cmple(spot,IM_XSCALAR_ONE)",
+                                          "grVertexPipeline.inl", 799) != 0)
+                        ok = 0;
+                    if (ok == 0)
+                        grDie(0);
+                }
+                atten = XScalar_mul(spot, atten);
+                if (XScalar_zcmpeq(atten) != 0)
+                    continue;   /* zero total attenuation: no contribution */
+            }
+            {
+                if ((atten < 0) && grAssert("xAtten >= 0", "grVertexPipeline.inl", 807) != 0)
+                    grDie(0);
+                l->xAtten = atten;
+            }
+        colorStage:
+            if ((mask & 0xC) != 0)
+            {
+                ndotL = XNormal3_dot(l->nVP, eyeNormal);
+                signDiffuse = XScalar_signBit(ndotL);
+                if (signDiffuse == 0 || nSides != 0)
+                {
+                    if ((mask & 4) != 0 && bDirectional == 0)
+                        ndotL = XScalar_mul_sat(atten, ndotL);
+                    if ((mask & 8) != 0)
+                    {
+                        if (bDirectional == 0)
+                        {
+                            /* halfway = normalize(L + view(0,0,1)): the view
+                             * offset is folded into nVP[2] itself */
+                            l->nVP[2] = XScalar_add(l->nVP[2], 0x200000);
+                            XNormal3_normalize(l->halfway, l->nVP);
+                        }
+                        {
+                            int halfDot = XNormal3_dot(l->halfway, eyeNormal);
+
+                            if (XScalar_signBit(halfDot) == signDiffuse)
+                            {
+                                if (XScalar_zcmpne(shininess) != 0)
+                                {
+                                    specDot = XScalar_abs(halfDot);
+                                    if (XScalar_cmpne(shininess, 0x200000) != 0)
+                                        specDot = XScalar_pow(specDot, shininess);
+                                    if (bDirectional == 0)
+                                        specDot = XScalar_mulu_sat(atten, specDot);
+                                }
+                                else
+                                {
+                                    specDot = atten;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            l->ndotL = ndotL;
+            l->specDot = specDot;
+        }
+    }
+}
+
+/* --- grLightVertex (decompile 28696-29135; asserts grVertexPipeline.inl
+ * 887/956/960; the __assert(file,line,expr) sites keep their strings) -------
+ * Transforms the normal to eye space (palette-weighted when skinning),
+ * runs light() over the directional and positional lists and accumulates
+ * the lit color into the vertex record's u16 color rows. */
+
+void grLightVertex(Gerbera_s *state, _grVertex *v)
+{
+    int nSides;
+    int eyeNormal[3];
+    int normals[4][3];
+    int shininess;
+    HGint64 accFront[3];          /* 3x64-bit accumulators (r, g, b) */
+    HGint64 accFrontSpec[3];
+    HGint64 accBack[3];
+    HGint64 accBackSpec[3];
+    HGint64 tmpAcc[3];
+    _XColor3 cmColor;
+    _grLight **iter;
+    _grLight *l;
+    int i;
+
+    if (!(state != NULL && v != NULL) && grAssert("state && v", "grVertexPipeline.inl", 887) != 0)
+        grDie(0);
+    nSides = (state->lightingSideMask & 2) != 0;
+    XNormal3_copy(eyeNormal, v->normal);
+    if (grTestCapability(state, GR_CAPABILITY_MATRIX_PALETTE) != 0 &&
+        grTestCapability(state, GR_CAPABILITY_MATRIX_INDEX_ARRAY) != 0 &&
+        grTestCapability(state, GR_CAPABILITY_WEIGHT_ARRAY) != 0 &&
+        state->vertexArray[3].data != NULL &&
+        state->vertexArray[4].data != NULL)
+    {
+        unsigned int indices = v->weightIndices;
+        int count = hgMin32(state->vertexArray[3].size, state->vertexArray[4].size);
+
+        count = hgMin32(count, 4);
+        for (i = 0; i < count; ++i)
+        {
+            XNormalTransform_mulNormal(&normals[i][0], &state->normalsToEyePal[indices & 0xFF], eyeNormal, 0);
+            indices >>= 8;
+        }
+        XNormal3_accfv(eyeNormal, normals, v->weights, count);
+        XNormal3_normalize(eyeNormal, eyeNormal);
+    }
+    else
+    {
+        int rescale = grTestCapability(state, GR_CAPABILITY_RESCALE_NORMAL);
+
+        XNormalTransform_mulNormal(eyeNormal, &state->normalsToEyeTransform, eyeNormal, rescale);
+    }
+    shininess = state->material.shininess;
+    light(state->l_directional, shininess, NULL, eyeNormal, nSides, 1);
+    if (grGetVertexPositionState(v) == GR_POSITION_EYE_SPACE_CARTESIAN)
+    {
+        if (state->l_positional[0] == NULL)
+            /* original: __assert("grVertexPipeline.inl", 956, "state->l_positional[0]") */
+            imAssert("state->l_positional[0]", "grVertexPipeline.inl", 956);
+    }
+    else if (state->l_positional[0] != NULL)
+    {
+        /* original: __assert("grVertexPipeline.inl", 960, "!state->l_positional[0]") */
+        imAssert("!state->l_positional[0]", "grVertexPipeline.inl", 960);
+    }
+    light(state->l_positional, shininess, (_IVector3 *)&v->position, eyeNormal, nSides, 0);
+    if (grTestCapability(state, GR_CAPABILITY_COLOR_MATERIAL) != 0)
+    {
+        /* CM path: ambient + diffuse terms accumulate raw light colors and
+         * get scaled by the per-vertex color material color at the end;
+         * specular uses the material-premultiplied slot. */
+        XColor3Acc_set(accFront, &state->ambientLightSum);
+        XColor3Acc_setZero(accFrontSpec);
+        cmColor = v->color.input.rgb[0];
+        v->color.final[0][3] = (unsigned short)(v->color.input.alpha & 0xFF00u);
+        if (nSides != 0)
+        {
+            XColor3Acc_set(accBack, &state->ambientLightSum);
+            XColor3Acc_setZero(accBackSpec);
+            for (iter = state->l_directional; *iter != NULL; ++iter)
+            {
+                l = *iter;
+                if (XScalar_zcmpgt(l->ndotL) != 0)
+                {
+                    XColor3Acc_madd(accFront, accFront, &l->colors[1], l->ndotL);
+                    if (XScalar_zcmpgt(l->specDot) != 0)
+                        XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->colors[2], l->specDot);
+                }
+                else if (XScalar_zcmplt(l->ndotL) != 0)
+                {
+                    int adot = XScalar_abs(l->ndotL);
+
+                    XColor3Acc_madd(accBack, accBack, &l->colors[1], adot);
+                    if (XScalar_zcmpgt(l->specDot) != 0)
+                        XColor3Acc_madd(accBackSpec, accBackSpec, &l->colors[2], l->specDot);
+                }
+            }
+            for (iter = state->l_positional; *iter != NULL; ++iter)
+            {
+                l = *iter;
+                if (XScalar_zcmpeq(l->xAtten) == 0)
+                {
+                    XColor3Acc_muls(tmpAcc, &l->premul_colors[0], l->xAtten);
+                    XColor3Acc_addAcc(accFront, accFront, tmpAcc);
+                    XColor3Acc_addAcc(accBack, accBack, tmpAcc);
+                    if (XScalar_zcmpgt(l->ndotL) != 0)
+                    {
+                        XColor3Acc_madd(accFront, accFront, &l->colors[1], l->ndotL);
+                        if (XScalar_zcmpgt(l->specDot) != 0)
+                            XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->premul_colors[2], l->specDot);
+                    }
+                    else if (XScalar_zcmplt(l->ndotL) != 0)
+                    {
+                        int adot = XScalar_abs(l->ndotL);
+
+                        XColor3Acc_madd(accBack, accBack, &l->colors[1], adot);
+                        if (XScalar_zcmpgt(l->specDot) != 0)
+                            XColor3Acc_madd(accBackSpec, accBackSpec, &l->premul_colors[2], l->specDot);
+                    }
+                }
+            }
+            XColor3Acc_scaleColor(accFront, accFront, &cmColor);
+            XColor3Acc_addColor(accFront, accFront, &state->material.colors[3]);
+            XColor3Acc_addAcc(accFront, accFront, accFrontSpec);
+            XColor3Acc_toRGB(&v->color.final[0][0], accFront);
+            XColor3Acc_scaleColor(accBack, accBack, &cmColor);
+            XColor3Acc_addColor(accBack, accBack, &state->material.colors[3]);
+            XColor3Acc_addAcc(accBack, accBack, accBackSpec);
+            XColor3Acc_toRGB(&v->color.final[1][0], accBack);
+        }
+        else
+        {
+            for (iter = state->l_directional; *iter != NULL; ++iter)
+            {
+                l = *iter;
+                if (XScalar_zcmplt(l->ndotL) == 0)
+                {
+                    if (XScalar_zcmpgt(l->ndotL) != 0)
+                        XColor3Acc_madd(accFront, accFront, &l->colors[1], l->ndotL);
+                    if (XScalar_zcmpgt(l->specDot) != 0)
+                        XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->premul_colors[2], l->specDot);
+                }
+            }
+            for (iter = state->l_positional; *iter != NULL; ++iter)
+            {
+                l = *iter;
+                if (XScalar_zcmpeq(l->xAtten) == 0)
+                {
+                    XColor3Acc_madd(accFront, accFront, &l->colors[0], l->xAtten);
+                    if (XScalar_zcmplt(l->ndotL) == 0)
+                    {
+                        if (XScalar_zcmpgt(l->ndotL) != 0)
+                            XColor3Acc_madd(accFront, accFront, &l->colors[1], l->ndotL);
+                        if (XScalar_zcmpgt(l->specDot) != 0)
+                            XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->premul_colors[2], l->specDot);
+                    }
+                }
+            }
+            XColor3Acc_scaleColor(accFront, accFront, &cmColor);
+            XColor3Acc_addColor(accFront, accFront, &state->material.colors[3]);
+            XColor3Acc_addAcc(accFront, accFront, accFrontSpec);
+            XColor3Acc_toRGB(&v->color.final[0][0], accFront);
+            v->color.input.rgb[0].b = v->color.input.rgb[0].r;
+            v->color.final[1][2] = v->color.final[0][2];
+        }
+    }
+    else
+    {
+        /* base color path: everything accumulates material-premultiplied
+         * light colors on top of baseColor (emission + global ambient). */
+        XColor3Acc_set(accFront, &state->baseColor);
+        v->color.final[0][3] = (unsigned short)(state->material.alpha & 0xFF00u);
+        if (nSides != 0)
+        {
+            XColor3Acc_set(accBack, &state->baseColor);
+            for (iter = state->l_directional; *iter != NULL; ++iter)
+            {
+                l = *iter;
+                if (XScalar_zcmpgt(l->ndotL) != 0)
+                {
+                    XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ndotL);
+                    if (XScalar_zcmpgt(l->specDot) != 0)
+                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->specDot);
+                }
+                else if (XScalar_zcmplt(l->ndotL) != 0)
+                {
+                    int adot = XScalar_abs(l->ndotL);
+
+                    XColor3Acc_madd(accBack, accBack, &l->premul_colors[1], adot);
+                    if (XScalar_zcmpgt(l->specDot) != 0)
+                        XColor3Acc_madd(accBack, accBack, &l->premul_colors[2], l->specDot);
+                }
+            }
+            for (iter = state->l_positional; *iter != NULL; ++iter)
+            {
+                l = *iter;
+                if (XScalar_zcmpeq(l->xAtten) == 0)
+                {
+                    XColor3Acc_muls(tmpAcc, &l->premul_colors[0], l->xAtten);
+                    XColor3Acc_addAcc(accFront, accFront, tmpAcc);
+                    XColor3Acc_addAcc(accBack, accBack, tmpAcc);
+                    if (XScalar_zcmpgt(l->ndotL) != 0)
+                    {
+                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ndotL);
+                        if (XScalar_zcmpgt(l->specDot) != 0)
+                            XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->specDot);
+                    }
+                    else if (XScalar_zcmplt(l->ndotL) != 0)
+                    {
+                        int adot = XScalar_abs(l->ndotL);
+
+                        XColor3Acc_madd(accBack, accBack, &l->premul_colors[1], adot);
+                        if (XScalar_zcmpgt(l->specDot) != 0)
+                            XColor3Acc_madd(accBack, accBack, &l->premul_colors[2], l->specDot);
+                    }
+                }
+            }
+            XColor3Acc_toRGB(&v->color.final[0][0], accFront);
+            XColor3Acc_toRGB(&v->color.final[1][0], accBack);
+        }
+        else
+        {
+            for (iter = state->l_directional; *iter != NULL; ++iter)
+            {
+                l = *iter;
+                if (XScalar_zcmplt(l->ndotL) == 0)
+                {
+                    if (XScalar_zcmpgt(l->ndotL) != 0)
+                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ndotL);
+                    if (XScalar_zcmpgt(l->specDot) != 0)
+                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->specDot);
+                }
+            }
+            for (iter = state->l_positional; *iter != NULL; ++iter)
+            {
+                l = *iter;
+                if (XScalar_zcmpeq(l->xAtten) == 0)
+                {
+                    XColor3Acc_madd(accFront, accFront, &l->premul_colors[0], l->xAtten);
+                    if (XScalar_zcmplt(l->ndotL) == 0)
+                    {
+                        if (XScalar_zcmpgt(l->ndotL) != 0)
+                            XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ndotL);
+                        if (XScalar_zcmpgt(l->specDot) != 0)
+                            XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->specDot);
+                    }
+                }
+            }
+            XColor3Acc_toRGB(&v->color.final[0][0], accFront);
+            v->color.input.rgb[0].b = v->color.input.rgb[0].r;
+            v->color.final[1][2] = v->color.final[0][2];
+        }
+    }
+}
+
+/* --- grApplyLighting (decompile 29139-29223; asserts grVertexPipeline.inl
+ * 1275/1286/1311) ------------------------------------------------------------
+ * Brings every listed vertex to eye space (state >= 2; cartesian state 3
+ * stores the fog Z in the position's w slot) and lights it. With no
+ * positional lights (transformVE == 0) the object-space position suffices. */
+
+void grApplyLighting(Gerbera_s *state, unsigned char *vertexList)
+{
+    _grVertex *vertexBuffer;
+    _grVertex *vertex;
+    unsigned char *lista;
+
+    if (state->transformVE != 0)
+    {
+        GR_FETCH_CHECK(vertexList, 1275);
+        vertexBuffer = GR_VERTEX_BUFFER(state);
+        lista = vertexList + 1;
+        vertex = &vertexBuffer[*vertexList];
+        do
+        {
+            if (grGetVertexPositionState(vertex) < GR_POSITION_EYE_SPACE)
+            {
+                if (grGetVertexPositionState(vertex) != GR_POSITION_OBJECT_SPACE_FLOAT)
+                {
+                    if (grGetVertexPositionState(vertex) != GR_POSITION_OBJECT_SPACE_FIXED)
+                        imAssert("grGetVertexPositionState( v ) == GR_POSITION_OBJECT_SPACE_FIXED",
+                                 "grVertexPipeline.inl", 1286);
+                    IVertexTransform_mulxv4s(vertex->position.objectSpaceFloat,
+                                             &state->modelviewTransform,
+                                             (int *)&vertex->position);
+                }
+                else
+                {
+                    IVertexTransform_mulfv4s(vertex->position.objectSpaceFloat,
+                                             &state->modelviewTransform,
+                                             vertex->position.objectSpaceFloat);
+                }
+                grSetVertexPositionState(vertex, GR_POSITION_EYE_SPACE);
+            }
+            if (grGetVertexPositionState(vertex) == GR_POSITION_EYE_SPACE)
+            {
+                _IFVector4 tmp;
+
+                grSetVertexPositionState(vertex, GR_POSITION_EYE_SPACE_CARTESIAN);
+                IFVector4_copy(&tmp, vertex->position.objectSpaceFloat);
+                vertex->position.objectSpaceFloat[0].m[3] = IFVector4_getf(&tmp, 2);
+                IFVector4_tov3((_IVector3 *)&vertex->position, &tmp);
+            }
+            grLightVertex(state, vertex);
+            vertex = &vertexBuffer[*lista];
+        } while (*lista++ != 0xFF);
+    }
+    else
+    {
+        GR_FETCH_CHECK(vertexList, 1311);
+        vertexBuffer = GR_VERTEX_BUFFER(state);
+        lista = vertexList + 1;
+        vertex = &vertexBuffer[*vertexList];
+        do
+        {
+            grLightVertex(state, vertex);
+            vertex = &vertexBuffer[*lista];
+        } while (*lista++ != 0xFF);
+    }
+}
