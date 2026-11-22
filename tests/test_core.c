@@ -131,6 +131,7 @@ static void test_clipper(void);
 static void test_vertextcache(void);
 static void test_queueprimitive(void);
 static void test_fetchprimitives(void);
+static void test_scanconvert(void);
 static void test_gradients(void);
 
 int main(void)
@@ -162,6 +163,7 @@ int main(void)
     test_queueprimitive();
     test_fetchprimitives();
     test_gradients();
+    test_scanconvert();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -1980,6 +1982,27 @@ static void test_queueprimitive(void)
 
 /* --- grApiFast.inl: grFetchPrimitives + grRenderElements/grRenderArrays ----- */
 
+/* test fixtures for the real draw dispatch: the color-fetch stage marks the
+ * fetched records COLOR_COMPUTED (the real stage does this after fetching),
+ * and the compiled pixel pipeline is a no-op until the hc interpreter lands. */
+static void noopPipeline(void *pipe)
+{
+    (void)pipe;
+}
+
+static void fetchVertexColorStage(Gerbera_s *state, unsigned char *vertexList)
+{
+    _grVertex *vertexBuffer = (_grVertex *)((unsigned char *)state->renderStack + 1332);
+    unsigned char *lista = vertexList + 1;
+    _grVertex *vertex = &vertexBuffer[vertexList[0]];
+
+    do
+    {
+        vertex->stateMask |= GR_VERTEXMASK_COLOR_COMPUTED;
+        vertex = &vertexBuffer[*lista];
+    } while (*lista++ != 0xFF);
+}
+
 static int listlen(const unsigned char *p)
 {
     int n = 0;
@@ -2022,6 +2045,8 @@ static void test_fetchprimitives(void)
     st.renderStackAllocated = 1;
     st.vertexCache = stack;
     st.pixelPipeline = &pp;
+    st.pixelPipelineCode = noopPipeline;
+    st.fetchVertexColor = fetchVertexColorStage;
     st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     grSetMatrix(&st, GR_MATRIXMODE_MODELVIEW, &id);
     grSetMatrix(&st, GR_MATRIXMODE_PROJECTION, &id);
@@ -2398,4 +2423,162 @@ static void test_gradients(void)
     CHECK(pp->yAdder[GR_GRADIENT_TEX1_T] == pp->yAdder[GR_GRADIENT_TEX1_S]);
 
 #undef GRAD_VALUE
+}
+
+/* --- test_scanconvert: grDivsu + scan conversion + the real triangle draw ----
+ * Geometry (pixels, 20.12 screen coords): v0=(10,12), v1=(30,20), v2=(18,28),
+ * scissor {0,64,0,64}. Hand-derived scanline words (left | numPixels<<16). */
+static void test_scanconvert(void)
+{
+    static unsigned char stack[23860];
+    static unsigned char colorBuf[64 * 64 * 2];
+    static unsigned char depthBuf[64 * 64 * 4];
+    static unsigned char stencilBuf[64 * 64];
+    Gerbera_s stObj;
+    Gerbera_s *st = &stObj;
+    _grPixelPipe *pp;
+    _grVertex *vb;
+    _grClipTriangle tri;
+    _grEdgePair pairs[2];
+    unsigned int *words;
+    int i;
+
+    memset(st, 0, sizeof(*st));
+    CHECK(grDivsu(100, 7) == 14);
+    CHECK(grDivsu(0, 5) == 0);
+
+    /* direct scanline emission without X scissoring */
+    memset(pairs, 0, sizeof(pairs));
+    pairs[0].xStart[0] = 100 << 14;
+    pairs[0].xStart[1] = 200 << 14;
+    pairs[1].xStart[0] = 50 << 14;
+    pairs[1].xStart[1] = 250 << 14;
+    memset(stack, 0, sizeof(stack));
+    grScanConvertWithoutXScissoring(pairs, (unsigned int *)stack, 3, 2);
+    words = (unsigned int *)stack;
+    CHECK(words[0] == 100 | (100 << 16));
+    CHECK(words[2] == 100 | (100 << 16));
+    CHECK(words[3] == 50 | (200 << 16));
+    CHECK(words[4] == 50 | (200 << 16));
+
+    /* ... and with X scissoring clamping to {150..180} */
+    grSetRectangle(&st->renderScissor, 150, 180, 0, 64);
+    grScanConvertWithXScissoring(pairs, (unsigned int *)stack, &st->renderScissor, 3, 2);
+    CHECK(words[0] == 150 | (30 << 16));
+    CHECK(words[3] == 150 | (30 << 16));
+    grSetRectangle(&st->renderScissor, 0, 64, 0, 64);
+
+    /* full grScanConvertTriangle: the hand-worked triangle. The vertex
+     * records are shuffled so the y-sort inside grDrawClippedTriangle is
+     * exercised in the end-to-end case below. */
+    st->renderStack = stack;
+    st->renderStackAllocated = 1;
+    st->pixelPipeline = (_grPixelPipe *)(stack + 14644);
+    pp = st->pixelPipeline;
+    vb = (_grVertex *)(stack + 1332);
+    memset(stack, 0xCC, sizeof(stack));
+    memset(&vb[0], 0, sizeof(vb[0]));
+    memset(&vb[1], 0, sizeof(vb[1]));
+    memset(&vb[2], 0, sizeof(vb[2]));
+    vb[0].screenPosition[0] = 30 << 12;
+    vb[0].screenPosition[1] = 20 << 12;
+    vb[1].screenPosition[0] = 18 << 12;
+    vb[1].screenPosition[1] = 28 << 12;
+    vb[2].screenPosition[0] = 10 << 12;
+    vb[2].screenPosition[1] = 12 << 12;
+
+    /* inside the scissor on X: the plain path (16 rows, none trimmed:
+     * the last row still covers one pixel) */
+    CHECK(grScanConvertTriangle(st,
+             (_grRasterPoint *)&vb[2].screenPosition[0],
+             (_grRasterPoint *)&vb[0].screenPosition[0],
+             (_grRasterPoint *)&vb[1].screenPosition[0], 8) == 16);
+    CHECK(pp->yStart == 12);
+    CHECK(pp->numScanlines == 16);
+    CHECK(pp->scanlineInfo == (unsigned int *)(stack + 15668));
+    words = pp->scanlineInfo;
+    CHECK(words[0] == 10 | (2 << 16));
+    CHECK(words[1] == 10 | (4 << 16));
+    CHECK(words[7] == 13 | (16 << 16));
+    CHECK(words[8] == 14 | (14 << 16));
+    CHECK(words[14] == 17 | (2 << 16));
+    CHECK(words[15] == 17 | (1 << 16));
+
+    /* X scissoring to {13..17}: front row (13|0) and the two zero-pixel
+     * bottom rows trim away -> 13 rows starting at y=13 */
+    grSetRectangle(&st->renderScissor, 13, 17, 0, 64);
+    CHECK(grScanConvertTriangle(st,
+             (_grRasterPoint *)&vb[2].screenPosition[0],
+             (_grRasterPoint *)&vb[0].screenPosition[0],
+             (_grRasterPoint *)&vb[1].screenPosition[0], 8) == 13);
+    CHECK(pp->yStart == 13);
+    words = pp->scanlineInfo;
+    CHECK(words[0] == 13 | (1 << 16));
+    CHECK(words[1] == 13 | (4 << 16));
+    CHECK(words[12] == 16 | (1 << 16));
+
+    /* Y clip: scissor y0=16 cuts 4 rows off the top half (the long and
+     * short edges advance, the bottom half keeps its own rows); the last
+     * zero-pixel row trims -> 11 rows from y=16 */
+    grSetRectangle(&st->renderScissor, 0, 64, 16, 64);
+    CHECK(grScanConvertTriangle(st,
+             (_grRasterPoint *)&vb[2].screenPosition[0],
+             (_grRasterPoint *)&vb[0].screenPosition[0],
+             (_grRasterPoint *)&vb[1].screenPosition[0], 8) == 12);
+    CHECK(pp->yStart == 16);
+    words = pp->scanlineInfo;
+    CHECK(words[0] == 12 | (10 << 16));
+    CHECK(words[3] == 13 | (16 << 16));
+    CHECK(words[10] == 17 | (2 << 16));
+    CHECK(words[11] == 17 | (1 << 16));
+    grSetRectangle(&st->renderScissor, 0, 64, 0, 64);
+
+    /* end-to-end grDrawClippedTriangle through the y-sort: rows, row
+     * pointers, gradient pre-advance and the mutable-parameter poison */
+    st->pixelPipelineCode = noopPipeline;
+    st->numActiveGradients = 0;
+    st->activeGradientMask = 0;
+    st->drawSurface.buffers[0].data = colorBuf;
+    st->drawSurface.buffers[0].stride = 64 * 2;
+    st->drawSurface.buffers[1].data = depthBuf;
+    st->drawSurface.buffers[1].stride = 64 * 4;
+    st->drawSurface.buffers[2].data = stencilBuf;
+    st->drawSurface.buffers[2].stride = 64;
+    for (i = 0; i < 3; ++i)
+        vb[i].stateMask = 0x2C;   /* TRANSFORMED | VIEWPORT | COLOR_COMPUTED */
+    tri.indices = grSetIndices(0, 1, 2);
+    tri.area = 512;
+    tri.side = 0;
+    pp->mutableParams[0] = 123;
+    pp->mutableParams[32] = 123;
+    pp->mutableParams[40] = 123;
+    pp->mutableParams[42] = 123;
+    grDrawClippedTriangle(st, &tri, grSetIndices(0, 1, 2), 8);
+    CHECK(pp->yStart == 12);
+    CHECK(pp->numScanlines == 16);
+    CHECK(pp->mutableParams[1] == -623195394);
+    CHECK(pp->mutableParams[0] == 123);             /* mask bit 0 clear */
+    CHECK(pp->mutableParams[32] == 123);            /* mask byte 4 == 0 */
+    CHECK(pp->mutableParams[40] == 123);            /* byte 5 bit 0 clear */
+    CHECK(pp->mutableParams[42] == -623195394);
+    CHECK(pp->colorRow == colorBuf + 128 * 12);
+    CHECK(pp->depthRow == depthBuf + 256 * 12);
+    CHECK(pp->stencilRow == stencilBuf + 64 * 12);
+
+    /* dispatch: PERSPECTIVE_CORRECTION selects the (stubbed) tessellator,
+     * otherwise the affine path runs */
+    pp->numScanlines = -1;
+    grSetCapability(st, GR_CAPABILITY_PERSPECTIVE_CORRECTION, 1);
+    grrDrawClippedTriangle(st, &tri, grSetIndices(0, 1, 2));
+    CHECK(pp->numScanlines == -1);
+    grSetCapability(st, GR_CAPABILITY_PERSPECTIVE_CORRECTION, 0);
+    grrDrawClippedTriangle(st, &tri, grSetIndices(0, 1, 2));
+    CHECK(pp->numScanlines == 16);
+    grSetCapability(st, GR_CAPABILITY_UNUSED, 1);
+    CHECK(grTestCapability(st, GR_CAPABILITY_UNUSED) == 1);
+    grSetCapability(st, GR_CAPABILITY_UNUSED, 0);
+
+    st->renderStackAllocated = 0;
+    st->pixelPipeline = NULL;
+    st->pixelPipelineCode = NULL;
 }

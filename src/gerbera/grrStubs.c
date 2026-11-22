@@ -1,10 +1,12 @@
 /* grrStubs.c - scaffolding for the rasterizer-side entry points that
  * grFlushPrimitiveBatch and grClipPrimitive reach.
  *
- * These are NOT ports: the real implementations land with the rasterizer
- * session (grrDrawClippedPoint/Line/Triangle + grInterpolateVertex-
- * Gradients). grUpdateVertexPipeline is already ported (grVertexPipeline.c).
- * They return silently so the queue/flush machinery stays testable.
+ * grrDrawClippedTriangle is now a REAL port (it dispatches into
+ * grDrawClippedTriangle). Still NOT ports: grInterpolateVertexGradients,
+ * grrDrawClippedPoint/Line (rasterizer session) and grTriangleTessellator
+ * (tessellator session). grUpdateVertexPipeline is already ported
+ * (grVertexPipeline.c). They return silently so the queue/flush machinery
+ * stays testable.
  */
 #include "gerbera/grState.h"
 
@@ -31,7 +33,22 @@ void grrDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri, unsigned int ori
     (void)origIndices;
 }
 
+/* grrDrawClippedTriangle (grSmall.c; DLL 27381-27390) - ported: affine path
+ * (emptyBits 8) vs the perspective tessellator; grTriangleTessellator is
+ * still a stub below (tessellator session). */
 void grrDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
+{
+    if (grTestCapability(state, GR_CAPABILITY_PERSPECTIVE_CORRECTION) != 0)
+        grTriangleTessellator(state, tri, origIndices);
+    else
+        grDrawClippedTriangle(state, tri, origIndices, 8);
+}
+
+/* grTriangleTessellator (grTessellator.inl 557; DLL 27249-27359) is NOT
+ * ported yet: perspective-correct subdivision (grClassifyTriangle/
+ * grSplitEdge/grTessellateTriangle). Silent stub until the tessellator
+ * session; tests keep GR_CAPABILITY_PERSPECTIVE_CORRECTION clear. */
+void grTriangleTessellator(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
 {
     (void)state;
     (void)tri;

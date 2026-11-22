@@ -109,7 +109,9 @@ enum GR_POSITION_e
 #define GR_VERTEXMASK_SURVIVED_3D_REJECTION 0x2u
 #define GR_VERTEXMASK_TRANSFORMED 0x4u
 #define GR_VERTEXMASK_VIEWPORT_TRANSFORMED 0x8u
+#define GR_VERTEXMASK_COLOR_COMPUTED 0x20u
 #define GR_VERTEXMASK_INTERPOLATE_GRADIENTS 0x40u
+#define GR_VERTEXMASK_FORCE_CULL 0x80u
 
 /* clip mask (vertex->clipMask, u16): bits 0..5 = guardband planes 0..5
  * (IVector4_clip), bits 6..9 = guardband w tests, bits 10..15 = user clip
@@ -250,11 +252,25 @@ typedef struct _grPixelPipe
         unsigned char stencilReferenceMasked;
         unsigned int stencilTestMask;
         unsigned int stencilWriteMask;
-    } checked;
+    } checked;                                /* 36 bytes, +128..163 */
+    unsigned char padToRows[4];               /* +164..167 */
+    void *colorRow;                           /* +168 drawSurface buffers[0]
+                                               * .data + stride*yStart */
+    void *depthRow;                           /* +172 buffers[1] */
+    void *stencilRow;                         /* +176 buffers[2] */
+    int numScanlines;                         /* +180 (grScanConvertTriangle) */
+    unsigned int *scanlineInfo;               /* +184 renderStack+15668 */
+    int yStart;                               /* +188 */
+    int pipeTailPad[3];                       /* +192 sentinel pad (reference
+                                               * must start here) */
     int reference[GR_GRADIENT_MAX];           /* +192 */
     int xAdder[GR_GRADIENT_MAX];              /* +232 */
     int yAdder[GR_GRADIENT_MAX];              /* +272 */
-    unsigned char tail[8904];                 /* +312..9215: pinned by the
+    int mutableParams[78];                    /* +312: cv_anon_1722.m[0][]
+                                               * poison target (offset
+                                               * UNPINNED until the inter-
+                                               * preter session pins m) */
+    unsigned char tail[8028];                 /* +624..9215: pinned by the
                                                * pixel-pipeline/interpreter
                                                * sessions */
 } _grPixelPipe;                               /* 9216 bytes */
@@ -275,6 +291,25 @@ typedef struct _grGradientInfo
     int shift;             /* 31 - reciprocal shift */
 } _grGradientInfo;
 
+/* scan-conversion point (cv_anon_16FD: aliases &record->screenPosition[0])
+ * and edge pair (cv_anon_1787): [0] = left edge, [1] = right edge, x in
+ * 18.14 (pixel<<14), adders per scanline */
+typedef struct _grRasterPoint
+{
+    int x;
+    int y;
+} _grRasterPoint;
+
+typedef struct _grEdgePair
+{
+    int xStart[2];
+    int xAdder[2];
+} _grEdgePair;
+
+/* compiled pixel-pipeline program (state->pixelPipelineCode, set by the
+ * hc compiler; grExecutePixelPipeline calls it with the pipe record) */
+typedef void (*grPixelPipelineCode_fn)(void *pipe);
+
 /* the queued-primitive record handed to the rasterizer draws
  * (cv_anon_17A7): packed cache indices (+ flags: bit 24 = triangle side,
  * bit 28 = needs clipping), the rounded screen area, the side */
@@ -290,6 +325,11 @@ typedef struct _grClipTriangle
  * counter at +1192 counting DWORDS), +1196/+1264 fetch lists, +1332 vertex
  * buffer, 23860 bytes total (grApiFast.inl 381). */
 #define GR_RENDER_STACK_COMMAND_QUEUE_INDEX 1192
+#define GR_RENDER_STACK_SCANLINE_INFO 15668  /* &renderStack[1958].whichPool;
+                                              * u32 left|numPixels<<16 per
+                                              * scanline, up to 2048 entries
+                                              * (grScanConvertTriangle); ends
+                                              * exactly at the stack end */
 #define GR_RENDER_STACK_SIZE 23860
 
 /* winding (grSetCullMode) */
@@ -423,6 +463,14 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_SMOOTH_SHADING = 9,     /* internal cap (EPOC glShadeModel
                                            * sub_22018(caps, 9, ...); GL_FLAT
                                            * clears it, GL_SMOOTH sets it) */
+    GR_CAPABILITY_PERSPECTIVE_CORRECTION = 8, /* flagged guess: unpinned gap;
+                                               * glHint(GL_PERSPECTIVE_CORRECTION_
+                                               * HINT, GL_NICEST) sets it and
+                                               * grrDrawClippedTriangle picks the
+                                               * tessellator path when set */
+    GR_CAPABILITY_UNUSED = 17,            /* flagged guess: unpinned gap;
+                                           * scratch slot (grDrawClippedLine
+                                           * clears it after its quad draws) */
     GR_CAPABILITY_POLYGON_OFFSET_FILL = 14,
     GR_CAPABILITY_SCISSOR_TEST = 15,
     GR_CAPABILITY_CULL_FACE = 16,
@@ -690,6 +738,13 @@ typedef struct Gerbera_s
                                                        * 2 fog, 0x3C colors,
                                                        * 0x40/0x80 tex0 s/t,
                                                        * 0x100/0x200 tex1) */
+    int numActiveGradients;                           /* entries in active-
+                                                       * GradientIndex (grDraw-
+                                                       * ClippedTriangle pre-
+                                                       * advances them) */
+    int activeGradientIndex[GR_GRADIENT_MAX];
+    grPixelPipelineCode_fn pixelPipelineCode;         /* compiled program
+                                                       * (hc compiler) */
     unsigned char textureUnitEnabled[2];              /* +48/49: per-unit texcoord
                                                        * stage active (set by the
                                                        * ogl texture-enable path) */
@@ -925,6 +980,26 @@ void grComputeDepthOffset(Gerbera_s *state);
 
 /* --- grUtil.h: polygon offset ------------------------------------------------ */
 int grIsDepthOffsetEnabled(Gerbera_s *state, int primitiveType);
+
+/* --- grScanConvert.inl: scan conversion -------------------------------------- */
+int grDivsu(int a, int b);
+void grScanConvertWithXScissoring(_grEdgePair *edgePairs,
+                                  unsigned int *scanlineInfo,
+                                  _grRect *scissor, int topHeight,
+                                  int btmHeight);
+void grScanConvertWithoutXScissoring(_grEdgePair *edgePairs,
+                                     unsigned int *scanlineInfo,
+                                     int topHeight, int btmHeight);
+int grScanConvertTriangle(Gerbera_s *state, _grRasterPoint *p0,
+                          _grRasterPoint *p1, _grRasterPoint *p2,
+                          int emptyBits);
+
+/* --- grSmall.c / grPixelPipeline.h: triangle fill ---------------------------- */
+void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
+                           unsigned int origIndices, int emptyBits);
+void grTriangleTessellator(Gerbera_s *state, _grClipTriangle *tri,
+                           unsigned int origIndices);
+void grExecutePixelPipeline(Gerbera_s *state);
 
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);

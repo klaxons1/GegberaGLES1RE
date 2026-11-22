@@ -65,3 +65,108 @@ void grComputeDepthOffset(Gerbera_s *state)
     }
     pixelPipeline->reference[0] = ref;
 }
+
+/* --- g_mutableParamsMask (data.fragments.c 33) -------------------------------
+ * Bitmap over the 78 mutable pixel-pipe parameters: the draw poison loop
+ * clobbers every mutable slot between draws so stale state cannot leak. */
+
+const unsigned char g_mutableParamsMask[12] =
+{
+    0xFE, 0xFF, 0xFE, 0xFF, 0x00, 0xFC, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00
+};
+
+/* --- grDrawClippedTriangle (grSmall.c 254; DLL 26251-26388) ------------------
+ * y-sorts the triangle's three vertex records, scan-converts them, then per
+ * draw: sets the color/depth/stencil row pointers for the first scanline,
+ * pre-advances the active gradients to yStart and runs the compiled pixel
+ * pipeline over the scanlines. emptyBits = the number of LOW ZERO bits in
+ * the 20.12 screen coordinates (8 from grrDrawClippedTriangle's affine
+ * path: the viewport transform leaves 8 pad bits). */
+
+#define GR_STACK_CHECK_MAGIC0 (-559038737)
+#define GR_STACK_CHECK_MAGIC1 (-1073628482)
+#define GR_MUTABLE_PARAM_COUNT 78
+
+void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
+                           unsigned int origIndices, int emptyBits)
+{
+    _grVertex *vertexBuffer = (_grVertex *)((unsigned char *)state->renderStack + 1332);
+    _grVertex *sorted[3];
+    _grVertex *swap;
+    unsigned int magic0 = GR_STACK_CHECK_MAGIC0;
+    unsigned int magic1 = GR_STACK_CHECK_MAGIC1;
+    unsigned int activeGradientMask;
+    int flatShadeIndex = (int)(grUnpackIndex(origIndices, 0));
+    int i;
+
+    (void)magic0;
+    (void)magic1;
+    sorted[0] = vertexBuffer + grUnpackIndex(tri->indices, 0);
+    sorted[1] = vertexBuffer + grUnpackIndex(tri->indices, 1);
+    sorted[2] = vertexBuffer + grUnpackIndex(tri->indices, 2);
+    /* y-sort (record +32 = screenPosition[1]); stable 3-sort keeping the
+     * original order for equal y */
+    swap = sorted[0];
+    if (sorted[1]->screenPosition[1] < sorted[0]->screenPosition[1])
+        sorted[0] = sorted[1];
+    if (sorted[2]->screenPosition[1] < sorted[0]->screenPosition[1])
+    {
+        sorted[0] = sorted[2];
+        sorted[2] = swap;
+    }
+    if (sorted[0] == sorted[1])
+        sorted[1] = swap;
+    if (sorted[2]->screenPosition[1] < sorted[1]->screenPosition[1])
+    {
+        swap = sorted[1];
+        sorted[1] = sorted[2];
+        sorted[2] = swap;
+    }
+
+    if (grScanConvertTriangle(state, (_grRasterPoint *)&sorted[0]->screenPosition[0],
+                              (_grRasterPoint *)&sorted[1]->screenPosition[0],
+                              (_grRasterPoint *)&sorted[2]->screenPosition[0],
+                              emptyBits) != 0)
+    {
+        _grPixelPipe *pixelPipe = state->pixelPipeline;
+        int yStart = pixelPipe->yStart;
+
+        activeGradientMask = (unsigned int)state->activeGradientMask;
+        grSetupTriangleGradients(state, tri, flatShadeIndex, activeGradientMask);
+        for (i = 0; i < 3; ++i)
+        {
+            unsigned short stateMask =
+                vertexBuffer[grUnpackIndex(tri->indices, i)].stateMask;
+
+            if ((stateMask & 0x2C) == 0 &&
+                grAssert("stateMask & (GR_VERTEXMASK_TRANSFORMED | GR_VERTEXMASK_VIEWPORT_TRANSFORMED | GR_VERTEXMASK_COLOR_COMPUTED)",
+                         "grRasterizer.inl", 853) != 0)
+                grDie(0);
+            if ((stateMask & 0xC0) != 0 &&
+                grAssert("!(stateMask & (GR_VERTEXMASK_INTERPOLATE_GRADIENTS | GR_VERTEXMASK_FORCE_CULL))",
+                         "grRasterizer.inl", 854) != 0)
+                grDie(0);
+        }
+        pixelPipe->colorRow = (void *)((char *)state->drawSurface.buffers[0].data +
+                                       state->drawSurface.buffers[0].stride * yStart);
+        pixelPipe->depthRow = (void *)((char *)state->drawSurface.buffers[1].data +
+                                       state->drawSurface.buffers[1].stride * yStart);
+        pixelPipe->stencilRow = (void *)((char *)state->drawSurface.buffers[2].data +
+                                         state->drawSurface.buffers[2].stride * yStart);
+        for (i = state->numActiveGradients - 1; i >= 0; --i)
+        {
+            int g = state->activeGradientIndex[i];
+
+            pixelPipe->reference[g] += pixelPipe->yAdder[g] * yStart;
+        }
+        grExecutePixelPipeline(state);
+        for (i = 0; i < GR_MUTABLE_PARAM_COUNT; ++i)
+        {
+            if ((g_mutableParamsMask[i >> 3] & (1 << (i & 7))) != 0)
+                pixelPipe->mutableParams[i] = -623195394;
+        }
+        /* the decompile checks __grMemoryCheck[] canaries on the C stack
+         * here (grRasterizer.inl 906); hosted builds have no smashed-stack
+         * window to re-check - magic0/magic1 keep the locals alive */
+    }
+}

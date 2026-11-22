@@ -17,6 +17,9 @@
 #include "gerbera/grDefs.h"
 #include "imath/imApi.h"
 #include "hg/hgInt32.h"
+#include <string.h>
+
+int grSubpixelTrunc(int i);   /* grClipper.c (grUtil.h; DLL 004214A0) */
 
 #define GR_PIXEL_PIPE(state) ((_grPixelPipe *)(state)->pixelPipeline)
 #define GR_VERTEX_BUFFER(state) \
@@ -293,4 +296,312 @@ void grSetupTriangleGradients(Gerbera_s *state, _grClipTriangle *tri,
             }
         }
     }
+}
+
+/* --- grDivsu (grScanConvert.inl 29; DLL 24922-24932) ------------------------- */
+
+int grDivsu(int a, int b)
+{
+    if (b <= 0 && grAssert("b > 0", "grScanConvert.inl", 29) != 0)
+        grDie(0);
+    return a / b;
+}
+
+/* --- grScanConvertWithXScissoring (grScanConvert.inl 55; DLL 24935-25025) -----
+ * Emits one u32 per scanline (left | numPixels << 16) for the top half and
+ * then the bottom half, clamping the span to the scissor X range. The edge
+ * x values are 18.14 (pixel << 14); the left edge is xStart[0], the right
+ * edge xStart[1]. */
+
+void grScanConvertWithXScissoring(_grEdgePair *edgePairs,
+                                  unsigned int *scanlineInfo,
+                                  _grRect *scissor, int topHeight,
+                                  int btmHeight)
+{
+    int ok = (edgePairs != NULL && scanlineInfo != NULL && scissor != NULL);
+    int x0 = scissor->x0;
+    int x1 = scissor->x1;
+
+    if (ok == 0 &&
+        grAssert("edgePairs && scanlineInfo && scissor", "grScanConvert.inl", 55) != 0)
+        grDie(0);
+    if (topHeight != 0)
+    {
+        int leftX = edgePairs[0].xStart[0];
+        int leftAdder = edgePairs[0].xAdder[0];
+        int rightX = edgePairs[0].xStart[1];
+        int rightAdder = edgePairs[0].xAdder[1];
+
+        do
+        {
+            int left = hgMax32(leftX >> 14, x0);
+            int right = hgMin32(rightX >> 14, x1);
+            int numPixels = hgMaxZero32(right - left);
+
+            *scanlineInfo++ = left + (numPixels << 16);
+            if (hgInRange32(left, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(left, 0, 0xFFFF)", "grScanConvert.inl", 72) != 0)
+                grDie(0);
+            if (hgInRange32(numPixels, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(numPixels, 0, 0xFFFF)", "grScanConvert.inl", 73) != 0)
+                grDie(0);
+            leftX += leftAdder;
+            rightX += rightAdder;
+            --topHeight;
+        }
+        while (topHeight != 0);
+    }
+    if (btmHeight != 0)
+    {
+        int leftX = edgePairs[1].xStart[0];
+        int leftAdder = edgePairs[1].xAdder[0];
+        int rightX = edgePairs[1].xStart[1];
+        int rightAdder = edgePairs[1].xAdder[1];
+
+        do
+        {
+            int left = hgMax32(leftX >> 14, x0);
+            int right = hgMin32(rightX >> 14, x1);
+            int numPixels = hgMaxZero32(right - left);
+
+            *scanlineInfo++ = left + (numPixels << 16);
+            if (hgInRange32(left, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(left, 0, 0xFFFF)", "grScanConvert.inl", 95) != 0)
+                grDie(0);
+            if (hgInRange32(numPixels, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(numPixels, 0, 0xFFFF)", "grScanConvert.inl", 96) != 0)
+                grDie(0);
+            leftX += leftAdder;
+            rightX += rightAdder;
+            --btmHeight;
+        }
+        while (btmHeight != 0);
+    }
+}
+
+/* --- grScanConvertWithoutXScissoring (grScanConvert.inl 118; DLL 25028-25111) - */
+
+void grScanConvertWithoutXScissoring(_grEdgePair *edgePairs,
+                                     unsigned int *scanlineInfo,
+                                     int topHeight, int btmHeight)
+{
+    int ok = 1;
+
+    if ((edgePairs == NULL || scanlineInfo == NULL) &&
+        grAssert("edgePairs && scanlineInfo", "grScanConvert.inl", 118) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (topHeight != 0)
+    {
+        int leftX = edgePairs[0].xStart[0];
+        int leftAdder = edgePairs[0].xAdder[0];
+        int rightX = edgePairs[0].xStart[1];
+        int rightAdder = edgePairs[0].xAdder[1];
+
+        do
+        {
+            int left = leftX >> 14;
+            int right = rightX >> 14;
+            int numPixels = hgMaxZero32(right - left);
+
+            *scanlineInfo++ = left + (numPixels << 16);
+            if (hgInRange32(left, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(left, 0, 0xFFFF)", "grScanConvert.inl", 135) != 0)
+                grDie(0);
+            if (hgInRange32(numPixels, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(numPixels, 0, 0xFFFF)", "grScanConvert.inl", 136) != 0)
+                grDie(0);
+            leftX += leftAdder;
+            rightX += rightAdder;
+            --topHeight;
+        }
+        while (topHeight != 0);
+    }
+    if (btmHeight != 0)
+    {
+        int leftX = edgePairs[1].xStart[0];
+        int leftAdder = edgePairs[1].xAdder[0];
+        int rightX = edgePairs[1].xStart[1];
+        int rightAdder = edgePairs[1].xAdder[1];
+
+        do
+        {
+            int left = leftX >> 14;
+            int right = rightX >> 14;
+            int numPixels = hgMaxZero32(right - left);
+
+            *scanlineInfo++ = left + (numPixels << 16);
+            if (hgInRange32(left, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(left, 0, 0xFFFF)", "grScanConvert.inl", 158) != 0)
+                grDie(0);
+            if (hgInRange32(numPixels, 0, 0xFFFF) == 0 &&
+                grAssert("hgInRange32(numPixels, 0, 0xFFFF)", "grScanConvert.inl", 159) != 0)
+                grDie(0);
+            leftX += leftAdder;
+            rightX += rightAdder;
+            --btmHeight;
+        }
+        while (btmHeight != 0);
+    }
+}
+
+/* --- grScanConvertTriangle (grScanConvert.inl 249; DLL 25114-25331) -----------
+ * p0/p1/p2 are y-sorted screen positions (20.12: pixel<<12, low emptyBits
+ * bits zero). Splits the triangle at the middle vertex into a top half
+ * (topHeight scanlines) and a bottom half (btmHeight), builds per-half
+ * {left, right} edge pairs from the long edge (p0->p2) plus the two short
+ * edges, y-clamps against the scissor, emits scanline words into the render
+ * stack buffer at +15668, trims empty rows top/bottom and stores
+ * {yStart, numScanlines, scanlineInfo} into the pixel pipe (+188/+180/+184).
+ * Returns the final scanline count (0 when the triangle degenerates). */
+
+int grScanConvertTriangle(Gerbera_s *state, _grRasterPoint *p0,
+                          _grRasterPoint *p1, _grRasterPoint *p2,
+                          int emptyBits)
+{
+    _grRect *scissor = &state->renderScissor;
+    int d10x = (p1->x - p0->x) >> emptyBits;   /* 12.4 pixel deltas */
+    int d10y = (p1->y - p0->y) >> emptyBits;
+    int d20x = (p2->x - p0->x) >> emptyBits;
+    int d20y = (p2->y - p0->y) >> emptyBits;
+    int d21x = (p2->x - p1->x) >> emptyBits;
+    int d21y = (p2->y - p1->y) >> emptyBits;
+    int v0xT = grSubpixelTrunc(p0->x);         /* pixel-rounded vertices */
+    int v0yT = grSubpixelTrunc(p0->y);
+    int v1xT = grSubpixelTrunc(p1->x);
+    int v1yT = grSubpixelTrunc(p1->y);
+    int v2xT = grSubpixelTrunc(p2->x);
+    int v2yT = grSubpixelTrunc(p2->y);
+    int v0yTop = hgMin32(v0yT, scissor->y1);
+    int v1yTop = hgMin32(v1yT, scissor->y1);
+    int v2yTop = hgMin32(v2yT, scissor->y1);
+    int v0yBottom = hgMax32(v0yT, scissor->y0);
+    int topHeight = v1yTop - v0yTop;           /* scanlines above the middle */
+    int btmHeight = v2yTop - v1yTop;           /* scanlines below the middle */
+    int minX = hgMin32(hgMin32(v0xT, v1xT), v2xT);
+    int maxX = hgMax32(hgMax32(v0xT, v1xT), v2xT);
+    int needsXScissoring = minX < scissor->x0 || maxX > scissor->x1;
+    int fracV0y = 4095 - (p0->y & 0xFFF);      /* distance to the next
+                                                * scanline (0.12, -1 LSB) */
+    int fracV1y = 4095 - (p1->y & 0xFFF);
+    int slope02 = grDivsu(imLsl32OF(d20x, 14), d20y);  /* long-edge slope,
+                                                * 2.14 per scanline */
+    int longAtV0 = 4 * p0->x + (int)(((long long)fracV0y * slope02) >> 12);
+    int longAtV1 = longAtV0 + slope02 * (v1yT - v0yT);  /* UNCLAMPED middle
+                                                * delta (decompile p4.xAdder[1]
+                                                * uses the raw truncs) */
+    int longMid = longAtV1 - (((long long)fracV1y * slope02) >> 12);
+    int side = (unsigned int)(4 * p1->x - longMid) >> 31;
+    _grEdgePair edges[2];
+    int yStart = v0yBottom;
+    int total = btmHeight + topHeight;
+    unsigned int *scanInfo;
+
+    if (!(p0->y <= p1->y && p1->y <= p2->y) &&
+        grAssert("v0sy <= v1sy && v1sy <= v2sy", "grScanConvert.inl", 249) != 0)
+        grDie(0);
+    if ((topHeight < 0 || btmHeight < 0) &&
+        grAssert("topHeight >= 0 && btmHeight >= 0", "grScanConvert.inl", 250) != 0)
+        grDie(0);
+    if (((1 << emptyBits) - 1) & p0->x &&
+        grAssert("!(v0sx & ((1<<emptyBits)-1))", "grScanConvert.inl", 252) != 0)
+        grDie(0);
+    if (((1 << emptyBits) - 1) & p0->y &&
+        grAssert("!(v0sy & ((1<<emptyBits)-1))", "grScanConvert.inl", 253) != 0)
+        grDie(0);
+    if (((1 << emptyBits) - 1) & p1->x &&
+        grAssert("!(v1sx & ((1<<emptyBits)-1))", "grScanConvert.inl", 254) != 0)
+        grDie(0);
+    if (((1 << emptyBits) - 1) & p1->y &&
+        grAssert("!(v1sy & ((1<<emptyBits)-1))", "grScanConvert.inl", 255) != 0)
+        grDie(0);
+    if (((1 << emptyBits) - 1) & p2->x &&
+        grAssert("!(v2sx & ((1<<emptyBits)-1))", "grScanConvert.inl", 256) != 0)
+        grDie(0);
+    if (((1 << emptyBits) - 1) & p2->y &&
+        grAssert("!(v2sy & ((1<<emptyBits)-1))", "grScanConvert.inl", 257) != 0)
+        grDie(0);
+
+    memset(edges, 0xCC, sizeof(edges));
+    edges[0].xStart[side] = (int)longAtV0;     /* long edge, top half */
+    edges[0].xAdder[side] = slope02;
+    edges[1].xStart[side] = longAtV1;          /* long edge, bottom half
+                                                * (continues at v1) */
+    edges[1].xAdder[side] = slope02;
+    side ^= 1;
+    if (topHeight > 0)
+    {
+        int slope01 = grDivsu(imLsl32OF(d10x, 14), d10y);
+
+        edges[0].xStart[side] =
+            4 * p0->x + (int)(((long long)fracV0y * slope01) >> 12);
+        edges[0].xAdder[side] = slope01;
+    }
+    if (btmHeight > 0)
+    {
+        int slope12 = grDivsu(imLsl32OF(d21x, 14), d21y);
+
+        edges[1].xStart[side] =
+            4 * p1->x + (int)(((long long)fracV1y * slope12) >> 12);
+        edges[1].xAdder[side] = slope12;
+    }
+
+    /* the top vertex above the scissor: advance both top edges and shrink
+     * the top half; the middle vertex above it: advance both bottom edges */
+    if (v0yTop < scissor->y0)
+    {
+        int advance = scissor->y0 - v0yTop;
+
+        topHeight = hgMaxZero32(topHeight - advance);
+        edges[0].xStart[0] += edges[0].xAdder[0] * advance;
+        edges[0].xStart[1] += edges[0].xAdder[1] * advance;
+        if (v1yTop < scissor->y0)
+        {
+            int advanceMid = scissor->y0 - v1yTop;
+
+            btmHeight = hgMaxZero32(btmHeight - advanceMid);
+            edges[1].xStart[0] += edges[1].xAdder[0] * advanceMid;
+            edges[1].xStart[1] += edges[1].xAdder[1] * advanceMid;
+        }
+    }
+    total = btmHeight + topHeight;
+    if (total != 0)
+    {
+        scanInfo = (unsigned int *)((unsigned char *)state->renderStack +
+                                    GR_RENDER_STACK_SCANLINE_INFO);
+        if (needsXScissoring)
+            grScanConvertWithXScissoring(edges, scanInfo, scissor,
+                                         topHeight, btmHeight);
+        else
+            grScanConvertWithoutXScissoring(edges, scanInfo,
+                                            topHeight, btmHeight);
+        while (total != 0 &&
+               (int)(scanInfo[total - 1] >> 16) == 0)
+            --total;
+        while (total != 0 && (int)(*scanInfo >> 16) == 0)
+        {
+            --total;
+            ++scanInfo;
+            ++yStart;
+        }
+        if (yStart + total > scissor->y1 &&
+            grAssert("yStart + numScanlines <= scissor->y1",
+                     "grScanConvert.inl", 359) != 0)
+            grDie(0);
+        if (hgInRange32(yStart, scissor->y0, scissor->y1) == 0 &&
+            grAssert("hgInRange32(yStart, scissor->y0, scissor->y1)",
+                     "grScanConvert.inl", 360) != 0)
+            grDie(0);
+        if (hgInRange32(total, 0, GR_MAX_DISPLAY_DIMENSION) == 0 &&
+            grAssert("hgInRange32(numScanlines, 0, GR_MAX_DISPLAY_DIMENSION)",
+                     "grScanConvert.inl", 361) != 0)
+            grDie(0);
+        _grPixelPipe *pipe = (_grPixelPipe *)state->pixelPipeline;
+
+        pipe->yStart = yStart;
+        pipe->numScanlines = total;
+        pipe->scanlineInfo = scanInfo;
+    }
+    return total;
 }

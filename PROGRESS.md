@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3q)
+Last updated: 2026-11-22 (session 3r)
 
 ## Legend
 
@@ -110,6 +110,84 @@ per-translation-unit inline clones that were deduped).
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
 
+## DONE session 3r (scan conversion + real triangle draw dispatch)
+
+- **grRasterizer.c += grDivsu / grScanConvertWithXScissoring / grScan-
+  ConvertWithoutXScissoring / grScanConvertTriangle** (DLL 24922-25331,
+  asserts grScanConvert.inl 29/55/72/73/95/96/118/135/136/158/159/249/250/
+  252-257/359/360/361). POINT FORMAT PIN: cv_anon_16FD = &screenPosition[0],
+  .x = screenPosition[0] (X pixel), .y = screenPosition[1] (Y pixel);
+  screen coords are 20.12 = pixel<<12 with the low emptyBits(=8) bits zero
+  (viewportOffset = pixel<<4 (16*x0+8*w+8), scale = w<<6, hgMul64h -> pixel<<4,
+  <<xyShift(8) -> pixel<<12; CONFIRMS 4096 = 1px and grSubpixelTrunc = >>12;
+  the 3q note "pixel<<8" was wrong, fixed above). cv_anon_1787 = {xStart[2],
+  xAdder[2]} pair: slot0 = LEFT edge, slot1 = RIGHT edge.
+- grScanConvertTriangle algorithm (all integer-exact, verified by hand-run
+  probe): deltas d10/d20/d21 = (vJ-vI)>>emptyBits (12.4 pixels); heights
+  topHeight = min(v1y,y1)-min(v0y,y1), btmHeight = min(v2y,y1)-min(v1y,y1)
+  (y-clamped against scissor y1 only); longEdgeAtV0 = 4*v0x + (fracV0y*
+  slope02 >> 12) where fracVy = 4095-(vy&0xFFF), slope02 = grDivsu(d20x<<14,
+  d20y) (2.14 px/row); longEdgeAtV1 uses the RAW delta (v1y-v0y) NOT top-
+  Height; longMid = longAtV1 - (fracV1y*slope02>>12) = long-edge x at v1;
+  side = sign(4*v1x - longMid) (1 = v1 left of long edge -> long edge is
+  the RIGHT edge); per-half short edges only when that half's height > 0
+  (this is division-safety: horizontal short edge <=> zero height, no
+  grDivsu(b<=0) assert); y0-clip advances BOTH edge pairs of a half and
+  shrinks its height when the half starts above scissor y0 (nested: bottom
+  half advance only inside the top-half block); emit loop writes left |
+  numPixels<<16 per row; empty rows trimmed from the END then the FRONT
+  (yStart++ per front row); stores yStart(+188)/numScanlines(+180)/
+  scanlineInfo(+184) into the pixel pipe. SCANLINE BUFFER = renderStack+
+  15668 (&renderStack[1958].whichPool), up to 2048 words, ends at 23860.
+- **_grPixelPipe +180/+184/+188 PINNED** (numScanlines/scanlineInfo/yStart;
+  +168/+172/+176 = color/depth/stencil ROW BASES = drawSurface buffers[0/1/2]
+  .data + stride*yStart - drawSurface bytes 24/28, 32/36, 40/44 = the three
+  _grSurfaceBuffer records after width/height). mutableParams[78] placed at
+  +312 (UNPINNED guess until the interpreter session pins cv_anon_1722.m).
+- **grPixelPipeline.c (new, Makefile +=)**: grExecutePixelPipeline (DLL
+  24757-24775, asserts grPixelPipeline.h 153/154) calls state->
+  pixelPipelineCode(pipe) - the hc-compiled program (typedef
+  grPixelPipelineCode_fn in grState.h). NULL program = die; tests install a
+  noop. The interpreter itself is a later session.
+- **grSmall.c += g_mutableParamsMask[12] + grDrawClippedTriangle** (DLL
+  26251-26388, asserts grRasterizer.inl 853/854; the __grMemoryCheck stack
+  canaries at 906/839 have no hosted equivalent - locals kept alive instead):
+  y-sorts the 3 vertex records (stable, record+32 = screenPosition[1]),
+  grScanConvertTriangle, on != 0: grSetupTriangleGradients(state, tri,
+  unpackIndex(origIndices,0), state->activeGradientMask), per-vertex
+  stateMask asserts, row bases, per-active-gradient reference +=
+  yAdder*yStart (walks state->activeGradientIndex backwards), grExecute-
+  PixelPipeline, then poisons every set bit of g_mutableParamsMask (96
+  params?? NO - 78 = GR_MUTABLE_PARAM_COUNT, bytes FE FF FE FF 00 FC FF FF
+  FF FF 00 00 = 68 bits set) with -623195394 (0xDAFFFFFE).
+- **grrStubs.c: grrDrawClippedTriangle is now a REAL port** (DLL 27381-
+  27390): grTestCapability(GR_CAPABILITY_PERSPECTIVE_CORRECTION) ?
+  grTriangleTessellator (STUB until the tessellator session) :
+  grDrawClippedTriangle(state, tri, origIndices, 8). grTriangleTessellator
+  added as silent stub.
+- **grState.h**: GR_CAPABILITY_PERSPECTIVE_CORRECTION = 8 (flagged guess;
+  glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST) -> grSetCapability(cap,
+  mode==GL_NICEST) DLL 17549-17590) and GR_CAPABILITY_UNUSED = 17 (flagged
+  guess; scratch slot grDrawClippedLine clears); GR_VERTEXMASK_COLOR_COMPUTED
+  = 0x20 and GR_VERTEXMASK_FORCE_CULL = 0x80 (from the 853/854 masks
+  0x2C/0xC0); GR_RENDER_STACK_SCANLINE_INFO 15668; _grRasterPoint/_grEdgePair
+  types; state->numActiveGradients/activeGradientIndex[10]/pixelPipelineCode.
+- **tests/test_core.c test_scanconvert (+42)**: grDivsu, both scanline
+  emitters direct, grScanConvertTriangle hand-worked triangle (v0=(10,12)
+  v1=(30,20) v2=(18,28) px, 20.12): plain = 16 rows from y=12 (left/num
+  words spot-checked rows 0/1/7/8/9/14/15), x-scissor {13,17} = 13 rows from
+  y=13 (front 13|0 + two zero-pixel bottom rows trimmed), y0=16 clip = 12
+  rows from y=16 (top half advanced 4 rows, edges advanced, bottom intact);
+  end-to-end grDrawClippedTriangle through the y-sort (shuffled records):
+  scan state + row pointers + mutableParams poison pattern (params 0/32/40
+  NOT poisoned - mask bits clear - params 1/42 poisoned); dispatch test
+  (PERSPECTIVE_CORRECTION -> tessellator stub -> no scan state change;
+  cleared -> affine path runs); UNUSED cap roundtrip.
+- **Hand-arithmetic traps**: 4095*8192>>12 = 8190 EXACT (not 8191); the
+  bottom short edge x = 466950 = 28.5004px (not 28.4998) - recompute rather
+  than eyeball; CHECK_U/CHECK_P macros do not exist in test_core.c (plain
+  CHECK only); mutableParams[i] masks byte i>>3 (param 34 = byte 4 = 0x00).
+
 ## DONE session 3q (gradient setup: grSetupGradient/grComputeDeltas/grSetupTriangleGradients)
 
 - **grRasterizer.c (new, Makefile += )**: grSetupGradient (asserts imAssert
@@ -170,7 +248,7 @@ per-translation-unit inline clones that were deduped).
   flatShadeIndex=1 (side 0 and 1, zero adders), depth-offset matrix
   (depthBytes 1/2/4 x units, factor term), grIsDepthOffsetEnabled on/off,
   grSetupGradient-vs-grComputeDeltas adder equality at shift 0 and 20,
-  reference identity. Screen records in real format: x/y = pixel<<8
+  reference identity. Screen records in real format: x/y = pixel<<12 (corrected in 3r: 20.12)
   (IVector4_viewportTransform <<8 pad), area = grRoundTriangleArea
   (area64 >> 23) of grComputeTriangleArea.
 
