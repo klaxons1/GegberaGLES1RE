@@ -1171,3 +1171,278 @@ void grSetupTextureRectGradients(Gerbera_s *state, _grTRGradSetupInfo *info)
             grComputeDepthOffset(state);
     }
 }
+
+/* --- grRenderTextureRect (grApiFast.inl 1831; DLL 33175-33511) --------------
+ * Draws a texture-mapped rectangle: clips the rect to the viewport
+ * (GR_MAX_VIEWPORT_DIMENSION = 2048), computes the per-unit texture
+ * coordinates, sets up the pixel-pipe gradients and executes the pipeline.
+ * The rect is in IScalar (float-as-bits) coordinates. */
+
+void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z)
+{
+    int x1, y1;
+    int i;
+    int txMin[2], tyMin[2], txMax[2], tyMax[2];
+    int fx0, fy0, fx1, fy1;
+    _grPixelPipe *pixelPipe;
+    _grTRGradSetupInfo info;
+    int sx0, sx1, sy0, sy1;
+    int rx0, rx1, ry0, ry1;
+    int rw, rh;
+
+    if (state == NULL && grAssert("state", "grApiFast.inl", 1831) != 0)
+        grDie(0);
+    if (IScalar_testgt(w) == 0 || IScalar_testgt(h) == 0)
+    {
+        if (grAssert("IScalar_testgt(w) && IScalar_testgt(h)", "grApiFast.inl", 1832) != 0)
+            grDie(0);
+    }
+    x1 = IScalar_add(x0, w);
+    y1 = IScalar_add(y0, h);
+
+    if (state->compilationFailed == 0 &&
+        IScalar_cmpeq(x0, x1) == 0 && IScalar_cmpeq(y0, y1) == 0)
+    {
+        int ok;
+
+        ok = 1;
+        if (IScalar_cmplt(x0, x1) == 0)
+            ok = grAssert("IScalar_cmplt(x0, x1)", "grApiFast.inl", 1864) == 0;
+        if (!ok)
+            grDie(0);
+        ok = 1;
+        if (IScalar_cmplt(y0, y1) == 0)
+            ok = grAssert("IScalar_cmplt(y0, y1)", "grApiFast.inl", 1865) == 0;
+        if (!ok)
+            grDie(0);
+
+        /* per-unit texture coordinate ranges from the crop rect */
+        for (i = 1; i >= 0; --i)
+        {
+            if (state->useTexUnit[i] != 0)
+            {
+                _grTexture *tex = (_grTexture *)state->textureUnit[2 * i].texture;
+                int shiftS = 21 - *(short *)((char *)tex + 4);
+                int shiftT = 21 - *(short *)((char *)tex + 6);
+
+                txMin[i] = *(int *)((char *)tex + 188) << shiftS;
+                txMax[i] = *(int *)((char *)tex + 192) << shiftS;
+                tyMin[i] = *(int *)((char *)tex + 196) << shiftT;
+                tyMax[i] = *(int *)((char *)tex + 200) << shiftT;
+            }
+        }
+
+        /* clip to the viewport: GR_MAX_VIEWPORT_DIMENSION = 2048 */
+        {
+            int maxDim = IScalar_fixedToScalar(4096, 0);
+            int minDim = IScalar_negate(maxDim);
+            int clip = 0;
+
+            if (IScalar_cmpge(IScalar_abs(x0), maxDim) != 0)
+            {
+                if (IScalar_testgt(x0) != 0)
+                    return;
+                ok = 1;
+                if (IScalar_stof(x0) < -2048.0)
+                    ok = grAssert("IScalar_stof(x0) < -GR_MAX_VIEWPORT_DIMENSION",
+                                  "grApiFast.inl", 1925) == 0;
+                if (!ok)
+                    grDie(0);
+                ok = 1;
+                if (IScalar_cmplt(x0, minDim) == 0)
+                    ok = grAssert("IScalar_cmplt(x0, xMin)", "grApiFast.inl", 1926) == 0;
+                if (!ok)
+                    grDie(0);
+                clip |= 0x40;
+            }
+            if (IScalar_cmpge(IScalar_abs(y0), maxDim) != 0)
+            {
+                if (IScalar_testgt(y0) != 0)
+                    return;
+                ok = 1;
+                if (IScalar_stof(y0) < -2048.0)
+                    ok = grAssert("IScalar_stof(y0) < -GR_MAX_VIEWPORT_DIMENSION",
+                                  "grApiFast.inl", 1934) == 0;
+                if (!ok)
+                    grDie(0);
+                ok = 1;
+                if (IScalar_cmplt(y0, minDim) == 0)
+                    ok = grAssert("IScalar_cmplt(y0, yMin)", "grApiFast.inl", 1935) == 0;
+                if (!ok)
+                    grDie(0);
+                clip |= 0x200;
+            }
+            if (IScalar_cmpge(IScalar_abs(x1), maxDim) != 0)
+            {
+                if (IScalar_testlt(x1) != 0)
+                    return;
+                ok = 1;
+                if (IScalar_stof(x1) <= 2048.0)
+                    ok = grAssert("IScalar_stof(x1) > GR_MAX_VIEWPORT_DIMENSION",
+                                  "grApiFast.inl", 1943) == 0;
+                if (!ok)
+                    grDie(0);
+                ok = 1;
+                if (IScalar_cmpgt(x1, maxDim) == 0)
+                    ok = grAssert("IScalar_cmpgt(x1, xMax)", "grApiFast.inl", 1944) == 0;
+                if (!ok)
+                    grDie(0);
+                clip |= 0x80;
+            }
+            if (IScalar_cmpge(IScalar_abs(y1), maxDim) != 0)
+            {
+                if (IScalar_testlt(y1) != 0)
+                    return;
+                ok = 1;
+                if (IScalar_stof(y1) <= 2048.0)
+                    ok = grAssert("IScalar_stof(y1) > GR_MAX_VIEWPORT_DIMENSION",
+                                  "grApiFast.inl", 1952) == 0;
+                if (!ok)
+                    grDie(0);
+                ok = 1;
+                if (IScalar_cmpgt(y1, maxDim) == 0)
+                    ok = grAssert("IScalar_cmpgt(y1, yMax)", "grApiFast.inl", 1953) == 0;
+                if (!ok)
+                    grDie(0);
+                clip |= 0x100;
+            }
+
+            /* adjust clipped edges and interpolate texture coords */
+            if ((clip & 0x40) != 0)
+            {
+                int t = IScalar_clampUnit(IScalar_mul(
+                    IScalar_sub(minDim, x0), IScalar_rcp(IScalar_sub(x1, x0))));
+
+                x0 = minDim;
+                for (i = 1; i >= 0; --i)
+                {
+                    if (state->useTexUnit[i] != 0)
+                    {
+                        int s0 = IScalar_intToScalar(txMin[i]);
+                        int s1 = IScalar_intToScalar(txMax[i]);
+
+                        txMin[i] = IScalar_scalarToFixed(
+                            IScalar_add(s0, IScalar_mul(t, IScalar_sub(s1, s0))), 0);
+                    }
+                }
+            }
+            if ((clip & 0x80) != 0)
+            {
+                int t = IScalar_clampUnit(IScalar_mul(
+                    IScalar_sub(x1, maxDim), IScalar_rcp(IScalar_sub(x1, x0))));
+
+                x1 = maxDim;
+                for (i = 1; i >= 0; --i)
+                {
+                    if (state->useTexUnit[i] != 0)
+                    {
+                        int s0 = IScalar_intToScalar(txMin[i]);
+                        int s1 = IScalar_intToScalar(txMax[i]);
+
+                        txMax[i] = IScalar_scalarToFixed(
+                            IScalar_sub(s1, IScalar_mul(t, IScalar_sub(s1, s0))), 0);
+                    }
+                }
+            }
+            if ((clip & 0x200) != 0)
+            {
+                int t = IScalar_clampUnit(IScalar_mul(
+                    IScalar_sub(minDim, y0), IScalar_rcp(IScalar_sub(y1, y0))));
+
+                y0 = minDim;
+                for (i = 1; i >= 0; --i)
+                {
+                    if (state->useTexUnit[i] != 0)
+                    {
+                        int t0 = IScalar_intToScalar(tyMin[i]);
+                        int t1 = IScalar_intToScalar(tyMax[i]);
+
+                        tyMin[i] = IScalar_scalarToFixed(
+                            IScalar_add(t0, IScalar_mul(t, IScalar_sub(t1, t0))), 0);
+                    }
+                }
+            }
+            if ((clip & 0x100) != 0)
+            {
+                int t = IScalar_clampUnit(IScalar_mul(
+                    IScalar_sub(y1, maxDim), IScalar_rcp(IScalar_sub(y1, y0))));
+
+                y1 = maxDim;
+                for (i = 1; i >= 0; --i)
+                {
+                    if (state->useTexUnit[i] != 0)
+                    {
+                        int t0 = IScalar_intToScalar(tyMin[i]);
+                        int t1 = IScalar_intToScalar(tyMax[i]);
+
+                        tyMax[i] = IScalar_scalarToFixed(
+                            IScalar_sub(t1, IScalar_mul(t, IScalar_sub(t1, t0))), 0);
+                    }
+                }
+            }
+        }
+
+        /* convert to 12.12 fixed-point screen coords (y flipped) */
+        fx0 = IScalar_scalarToFixed(x0, 12) & 0xFFFFFF00;
+        fy0 = (state->drawSurface.height << 12) - IScalar_scalarToFixed(y0, 12);
+        fx1 = IScalar_scalarToFixed(x1, 12) & 0xFFFFFF00;
+        fy1 = (state->drawSurface.height << 12) - IScalar_scalarToFixed(y1, 12);
+        fy0 &= 0xFFFFFF00;
+        fy1 &= 0xFFFFFF00;
+
+        if (fx0 != fx1 && fy0 != fy1)
+        {
+            sx0 = grSubpixelTrunc(fx0 + 2048);
+            sx1 = grSubpixelTrunc(fx1 + 2048);
+            sy0 = grSubpixelTrunc(fy0 + 2048);
+            sy1 = grSubpixelTrunc(fy1 + 2048);
+            rx0 = hgMax32(sx0, state->surfaceScissor.x0);
+            rx1 = hgMin32(sx1, state->surfaceScissor.x1);
+            ry0 = hgMax32(sy0, state->surfaceScissor.y0);
+            ry1 = hgMin32(sy1, state->surfaceScissor.y1);
+            rw = rx1 - rx0;
+            rh = ry1 - ry0;
+
+            if (rw > 0 && rh > 0)
+            {
+                int y;
+
+                pixelPipe = (_grPixelPipe *)state->pixelPipeline;
+                /* scanline info: (width << 16) | xStart */
+                for (y = 0; y < rh; ++y)
+                    pixelPipe->scanlineInfo[y] = rx0 + (rw << 16);
+                pixelPipe->yStart = ry0;
+                pixelPipe->numScanlines = rh;
+
+                /* texture-rect gradients */
+                info.z = z;
+                info.fx0 = fx0;
+                info.fy0 = fy0;
+                info.fx1 = fx1;
+                info.fy1 = fy1;
+                info.txMin = txMin;
+                info.tyMin = tyMin;
+                info.txMax = txMax;
+                info.tyMax = tyMax;
+                grSetupTextureRectGradients(state, &info);
+
+                /* row pointers */
+                pixelPipe->colorRow = (char *)state->drawSurface.buffers[0].data +
+                    state->drawSurface.buffers[0].stride * ry0;
+                pixelPipe->depthRow = (char *)state->drawSurface.buffers[1].data +
+                    state->drawSurface.buffers[1].stride * ry0;
+                pixelPipe->stencilRow = (char *)state->drawSurface.buffers[2].data +
+                    state->drawSurface.buffers[2].stride * ry0;
+
+                /* advance gradient references by yStart */
+                for (i = state->numActiveGradients - 1; i >= 0; --i)
+                {
+                    int g = state->activeGradientIndex[i];
+
+                    pixelPipe->reference[g] += pixelPipe->yAdder[g] * ry0;
+                }
+                grExecutePixelPipeline(state);
+            }
+        }
+    }
+}

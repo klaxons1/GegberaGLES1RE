@@ -1100,6 +1100,7 @@ int  grClipper(Gerbera_s *state, unsigned char *outputFan, unsigned int indices)
 void grSetupRendering(Gerbera_s *state);
 void grCleanupRendering(Gerbera_s *state);
 void grSetupTextureRectGradients(Gerbera_s *state, _grTRGradSetupInfo *info);
+void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z);
 void grrBeginRendering(Gerbera_s *state);
 void grrEndRendering(Gerbera_s *state);
 void grrUpdateState(Gerbera_s *state);

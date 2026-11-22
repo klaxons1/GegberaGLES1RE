@@ -1411,3 +1411,17 @@ Committed: texture-rect gradient setup with decompile-matching assert site.
   (40960 for 1000<<12/100), fog reference, color references, depth
   reference (IScalar_toFixedHO(0.5f,30) = 0x1FFFFFE0). 295 hg / 311 imath /
   1086 core, 0 failures.
+
+## Session 3z — grRenderTextureRect (grApiFast.inl 1831)
+
+Committed: texture-rect draw with decompile-matching assert sites.
+
+- **grRenderTextureRect** (1831; DLL 33175-33511): clips the IScalar rect to
+  the viewport (GR_MAX_VIEWPORT_DIMENSION = 2048, asserts 1925-1953),
+  computes per-unit texture coordinates from the crop rect (tex+188..+200
+  shifted by 21-log2dim), sets up the pixel-pipe gradients via
+  grSetupTextureRectGradients, fills the scanline info ((width<<16)|xStart),
+  advances gradient references by yStart, and executes the pipeline.
+  Early-outs: zero-size rect, fully off-screen, degenerate after clipping.
+- Tests: test_renderrect (+2 checks, 1086 -> 1088): compilationFailed
+  early-out. 295 hg / 311 imath / 1088 core, 0 failures.
