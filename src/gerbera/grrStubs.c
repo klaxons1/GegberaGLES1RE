@@ -1,12 +1,10 @@
-/* grrStubs.c - die-stubs for the rasterizer-side entry points that
+/* grrStubs.c - scaffolding for the rasterizer-side entry points that
  * grFlushPrimitiveBatch and grClipPrimitive reach.
  *
- * These are SCAFFOLDING, not ports: the real implementations land with the
- * rasterizer session (grrDrawClippedPoint/Line/Triangle + grInterpolate-
- * VertexGradients) and the vertex-pipeline stage-selector session
-. grUpdateVertexPipeline
- * is already ported (grVertexPipeline.c). Tests never reach them (grDie
- * aborts).
+ * These are NOT ports: the real implementations land with the rasterizer
+ * session (grrDrawClippedPoint/Line/Triangle + grInterpolateVertex-
+ * Gradients). grUpdateVertexPipeline is already ported (grVertexPipeline.c).
+ * They return silently so the queue/flush machinery stays testable.
  */
 #include "gerbera/grState.h"
 
@@ -17,7 +15,6 @@ void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
     (void)vertex;
     (void)origIndices;
     (void)side;
-    grDie(0);
 }
 
 void grrDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
@@ -25,7 +22,6 @@ void grrDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri, unsigned int or
     (void)state;
     (void)tri;
     (void)origIndices;
-    grDie(0);
 }
 
 void grrDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
@@ -33,7 +29,6 @@ void grrDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri, unsigned int ori
     (void)state;
     (void)tri;
     (void)origIndices;
-    grDie(0);
 }
 
 void grrDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
@@ -41,5 +36,4 @@ void grrDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri, unsigned int
     (void)state;
     (void)tri;
     (void)origIndices;
-    grDie(0);
 }

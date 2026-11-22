@@ -460,3 +460,411 @@ void grFlushPrimitiveBatch(Gerbera_s *state)
     cache->allocIndex = GR_VERTEX_CACHE_SIZE;
     GR_COMMAND_QUEUE_INDEX(state) = 0;
 }
+
+/* --- grCheckPixelPipeStack (grApiFast.inl 486; DLL 31896-31967) --------------
+ * Validates the live pixel-pipe record against the draw surface strides and
+ * the packed rasterizer state (asserts 491-500). */
+
+void grCheckPixelPipeStack(Gerbera_s *state)
+{
+    _grPixelPipe *pixelPipe = (_grPixelPipe *)state->pixelPipeline;
+    int ok = 1;
+
+    if (pixelPipe->colorBufferStride != ((int *)&state->drawSurface)[7] &&
+        grAssert("pixelPipe->colorBufferStride == drawSurface->buffers[GR_BUFFERTYPE_COLOR].stride",
+                 "grApiFast.inl", 491) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (pixelPipe->depthBufferStride != ((int *)&state->drawSurface)[9] &&
+        grAssert("pixelPipe->depthBufferStride == drawSurface->buffers[GR_BUFFERTYPE_DEPTH].stride",
+                 "grApiFast.inl", 492) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (pixelPipe->stencilBufferStride != ((int *)&state->drawSurface)[11] &&
+        grAssert("pixelPipe->stencilBufferStride == drawSurface->buffers[GR_BUFFERTYPE_STENCIL].stride",
+                 "grApiFast.inl", 493) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (pixelPipe->fogColor != state->packedFogColor &&
+        grAssert("pixelPipe->fogColor == state->packedFogColor", "grApiFast.inl", 495) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (pixelPipe->alphaReference != state->alphaReference &&
+        grAssert("pixelPipe->alphaReference == state->alphaReference", "grApiFast.inl", 496) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (pixelPipe->stencilReference != state->stencilReference &&
+        grAssert("pixelPipe->stencilReference == state->stencilReference", "grApiFast.inl", 497) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (pixelPipe->stencilReferenceMasked !=
+            (unsigned char)(state->stencilReference & state->stencilTestMask) &&
+        grAssert("pixelPipe->stencilReferenceMasked == (state->stencilReference & state->stencilTestMask)",
+                 "grApiFast.inl", 498) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (pixelPipe->stencilTestMask != state->stencilTestMask &&
+        grAssert("pixelPipe->stencilTestMask == state->stencilTestMask", "grApiFast.inl", 499) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (pixelPipe->stencilWriteMask != state->stencilWriteMask &&
+        grAssert("pixelPipe->stencilWriteMask == state->stencilWriteMask", "grApiFast.inl", 500) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+}
+
+/* --- grFetchPrimitives (grApiFast.inl 1114; DLL 32611-32933) -----------------
+ * Walks the index source per fetch type and queues one primitive per step
+ * through the grQueuePrimitive1/2/3 wrappers (degenerates drop out there);
+ * marks the vertex pipeline dirty, then flushes the batch.
+ * TRIANGLES/STRIP/FAN keep the decompile's rotated queue order
+ * qp3(src[2], src[0], src[1]); strip winding flips per segment. */
+
+void grFetchPrimitives(Gerbera_s *state, int fetchType, int numVertices,
+                       int vertexCount, void *srcIndices, int baseIndex)
+{
+    const unsigned char *bytes = (const unsigned char *)srcIndices;
+    const unsigned short *shorts = (const unsigned short *)srcIndices;
+    int vtxIndex = baseIndex;
+    int stripSwap = 0;
+    int fetchIndex = 0;
+    int ok = 1;
+
+    state->vertexPipelineDirty = 1;
+    if (state == NULL && grAssert("state", "grApiFast.inl", 1298) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (hgInRange32(fetchType, 0, GR_FETCHTYPE_MAX - 1) == 0 &&
+        grAssert("hgInRange32(fetchType, 0, GR_FETCHTYPE_MAX-1)", "grApiFast.inl", 1299) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (vertexCount < numVertices &&
+        grAssert("vertexCount >= numVertices", "grApiFast.inl", 1300) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    switch (fetchType)
+    {
+        case GR_FETCHTYPE_POINTSchar:
+            do
+            {
+                grQueuePrimitive1(state, *bytes++);
+                --vertexCount;
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_POINTS_SHORT:
+            do
+            {
+                grQueuePrimitive1(state, *shorts++);
+                --vertexCount;
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_POINTS_ARRAY:
+            do
+            {
+                grQueuePrimitive1(state, vtxIndex++);
+                --vertexCount;
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_LINESchar:
+            do
+            {
+                grQueuePrimitive2(state, bytes[1], bytes[0]);
+                bytes += 2;
+                vertexCount -= 2;
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_LINES_SHORT:
+            do
+            {
+                grQueuePrimitive2(state, shorts[1], shorts[0]);
+                shorts += 2;
+                vertexCount -= 2;
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_LINES_ARRAY:
+            do
+            {
+                int i0 = vtxIndex;
+                int i1 = vtxIndex + 1;
+
+                vtxIndex += 2;
+                vertexCount -= 2;
+                grQueuePrimitive2(state, i1, i0);
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_LINELOOPchar:
+            do
+            {
+                grQueuePrimitive2(state, bytes[1], bytes[0]);
+                bytes += 1;
+                --vertexCount;
+            } while (vertexCount >= numVertices);
+            grQueuePrimitive2(state, ((const unsigned char *)srcIndices)[0], bytes[0]);
+            break;
+        case GR_FETCHTYPE_LINELOOP_SHORT:
+            do
+            {
+                grQueuePrimitive2(state, shorts[1], shorts[0]);
+                ++shorts;
+                --vertexCount;
+            } while (vertexCount >= numVertices);
+            grQueuePrimitive2(state, ((const unsigned short *)srcIndices)[0], shorts[0]);
+            break;
+        case GR_FETCHTYPE_LINELOOP_ARRAY:
+            do
+            {
+                int i1 = vtxIndex++;
+
+                --vertexCount;
+                grQueuePrimitive2(state, vtxIndex, i1);
+            } while (vertexCount >= numVertices);
+            grQueuePrimitive2(state, baseIndex, vtxIndex);
+            break;
+        case GR_FETCHTYPE_LINESTRIPchar:
+            do
+            {
+                grQueuePrimitive2(state, bytes[1], bytes[0]);
+                bytes += 1;
+                --vertexCount;
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_LINESTRIP_SHORT:
+            do
+            {
+                grQueuePrimitive2(state, shorts[1], shorts[0]);
+                ++shorts;
+                --vertexCount;
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_LINESTRIP_ARRAY:
+            do
+            {
+                int i1 = vtxIndex++;
+
+                --vertexCount;
+                grQueuePrimitive2(state, vtxIndex, i1);
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_TRIANGLESchar:
+            do
+            {
+                grQueuePrimitive3(state, bytes[2], bytes[0], bytes[1]);
+                bytes += 3;
+                vertexCount -= 3;
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_TRIANGLES_SHORT:
+            do
+            {
+                grQueuePrimitive3(state, shorts[2], shorts[0], shorts[1]);
+                shorts += 3;
+                vertexCount -= 3;
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_TRIANGLES_ARRAY:
+            do
+            {
+                int i0 = vtxIndex;
+                int i1 = vtxIndex + 1;
+                int i2 = vtxIndex + 2;
+
+                vtxIndex += 3;
+                vertexCount -= 3;
+                grQueuePrimitive3(state, i2, i0, i1);
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_TRISTRIPchar:
+            do
+            {
+                int i1 = bytes[stripSwap];
+                int i2 = bytes[1 - stripSwap];
+                int i0 = bytes[2];
+
+                bytes += 1;
+                stripSwap = 1 - stripSwap;
+                --vertexCount;
+                grQueuePrimitive3(state, i0, i1, i2);
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_TRISTRIP_SHORT:
+            do
+            {
+                int i1 = shorts[stripSwap];
+                int i2 = shorts[1 - stripSwap];
+                int i0 = shorts[2];
+
+                ++shorts;
+                stripSwap = 1 - stripSwap;
+                --vertexCount;
+                grQueuePrimitive3(state, i0, i1, i2);
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_TRISTRIP_ARRAY:
+            do
+            {
+                int i1 = stripSwap + vtxIndex;
+                int i2 = vtxIndex + 1 - stripSwap;
+                int i0 = vtxIndex + 2;
+
+                stripSwap = 1 - stripSwap;
+                ++vtxIndex;
+                --vertexCount;
+                grQueuePrimitive3(state, i0, i1, i2);
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_TRIFANchar:
+            do
+            {
+                int i2 = bytes[fetchIndex + 1];
+                int i0 = bytes[fetchIndex + 2];
+
+                ++fetchIndex;
+                --vertexCount;
+                grQueuePrimitive3(state, i0, bytes[0], i2);
+            } while (vertexCount >= numVertices);
+            break;
+        case GR_FETCHTYPE_TRIFAN_SHORT:
+            do
+            {
+                int i2 = shorts[fetchIndex + 1];
+                int i0 = shorts[fetchIndex + 2];
+
+                ++fetchIndex;
+                --vertexCount;
+                grQueuePrimitive3(state, i0, shorts[0], i2);
+            } while (vertexCount >= numVertices);
+            break;
+        default:
+            if (fetchType != GR_FETCHTYPE_TRIFAN_ARRAY &&
+                grAssert("fetchType == GR_FETCHTYPE_TRIFAN_ARRAY", "grApiFast.inl", 1562) != 0)
+                ok = 0;
+            if (ok == 0)
+                grDie(0);
+            do
+            {
+                int i2 = fetchIndex + baseIndex + 1;
+                int i0 = fetchIndex + baseIndex + 2;
+
+                ++fetchIndex;
+                --vertexCount;
+                grQueuePrimitive3(state, i0, baseIndex, i2);
+            } while (vertexCount >= numVertices);
+            break;
+    }
+    grFlushPrimitiveBatch(state);
+}
+
+/* --- grRenderElements (grApiFast.inl 1596; DLL 32936-33023) ----------------- */
+
+void grRenderElements(Gerbera_s *state, int primitiveType, int vertexCount,
+                      int dataType, void *indices)
+{
+    int numVertices;
+    int fetchType;
+    int ok = 1;
+
+    if (state->compilationFailed != 0)
+        return;
+    if (state == NULL && grAssert("state", "grApiFast.inl", 1606) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (hgInRange32(primitiveType, 0, GR_PRIMITIVE_MAX - 1) == 0 &&
+        grAssert("hgInRange32(primitiveType, 0, GR_PRIMITIVE_MAX-1)", "grApiFast.inl", 1607) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (vertexCount <= 0 && grAssert("vertexCount > 0", "grApiFast.inl", 1608) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (dataType != GR_DATATYPE_UINT8 && dataType != GR_DATATYPE_UINT16 &&
+        grAssert("dataType==GR_DATATYPE_UINT8 || dataType==GR_DATATYPE_UINT16",
+                 "grApiFast.inl", 1609) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (indices == NULL && grAssert("indices", "grApiFast.inl", 1610) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    numVertices = 3;
+    if (primitiveType == GR_PRIMITIVE_POINTS)
+    {
+        numVertices = 1;
+    }
+    else if (hgInRange32(primitiveType, 1, 3) != 0)
+    {
+        numVertices = 2;
+    }
+    else if (hgInRange32(primitiveType, 4, 6) == 0)
+    {
+        if (grAssert("hgInRange32(primitiveType, GR_PRIMITIVE_TRIANGLES, GR_PRIMITIVE_TRIANGLE_FAN)",
+                     "grApiFast.inl", 1615) != 0)
+            grDie(0);
+    }
+    fetchType = 3 * primitiveType;
+    if (dataType == GR_DATATYPE_UINT16)
+    {
+        ++fetchType;
+    }
+    else if (dataType != GR_DATATYPE_UINT8)
+    {
+        if (grAssert("dataType == GR_DATATYPE_UINT8", "grApiFast.inl", 1619) != 0)
+            grDie(0);
+    }
+    grFetchPrimitives(state, fetchType, numVertices, vertexCount, indices, 0);
+    grCheckPixelPipeStack(state);
+}
+
+/* --- grRenderArrays (grApiFast.inl 1636; DLL 33026-33074) ------------------- */
+
+void grRenderArrays(Gerbera_s *state, int primitiveType, int vertexCount, int baseIndex)
+{
+    int fetchType = 3 * primitiveType + 2;
+    int ok = 1;
+
+    if (state->compilationFailed != 0)
+        return;
+    if (hgInRange32(primitiveType, 0, GR_PRIMITIVE_MAX - 1) == 0 &&
+        grAssert("hgInRange32(primitiveType, 0, GR_PRIMITIVE_MAX-1)", "grApiFast.inl", 1647) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (vertexCount <= 0 && grAssert("vertexCount > 0", "grApiFast.inl", 1648) != 0)
+        ok = 0;
+    if (ok == 0)
+        grDie(0);
+    if (primitiveType == GR_PRIMITIVE_POINTS)
+    {
+        grFetchPrimitives(state, fetchType, 1, vertexCount, NULL, baseIndex);
+    }
+    else if (hgInRange32(primitiveType, 1, 3) != 0)
+    {
+        grFetchPrimitives(state, fetchType, 2, vertexCount, NULL, baseIndex);
+    }
+    else if (primitiveType == GR_PRIMITIVE_TEXTURE_RECT)
+    {
+        grFetchPrimitives(state, fetchType, 0, vertexCount, NULL, baseIndex);
+    }
+    else
+    {
+        if (hgInRange32(primitiveType, 4, 6) == 0 &&
+            grAssert("hgInRange32(primitiveType, GR_PRIMITIVE_TRIANGLES, GR_PRIMITIVE_TRIANGLE_FAN)",
+                     "grApiFast.inl", 1656) != 0)
+            grDie(0);
+        grFetchPrimitives(state, fetchType, 3, vertexCount, NULL, baseIndex);
+    }
+}

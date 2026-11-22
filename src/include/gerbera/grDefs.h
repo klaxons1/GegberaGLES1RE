@@ -47,7 +47,9 @@ enum GR_DATATYPE_e
     GR_DATATYPE_INT8 = 0,     /* size 1 */
     GR_DATATYPE_UINT8 = 1,    /* size 1 */
     GR_DATATYPE_INT16 = 2,    /* size 2 */
-    GR_DATATYPE_3 = 3,        /* size 2 */
+    GR_DATATYPE_UINT16 = 3,   /* size 2; index data only (oglMapDataType
+                               * maps GL_UNSIGNED_SHORT 0x1403 here; the
+                               * vertex-array paths never accept it) */
     GR_DATATYPE_4 = 4,        /* size 4 */
     GR_DATATYPE_5 = 5,        /* size 4 */
     GR_DATATYPE_FLOAT = 6,    /* size 4 */

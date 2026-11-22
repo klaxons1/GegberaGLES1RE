@@ -130,6 +130,7 @@ static void test_clear(void);
 static void test_clipper(void);
 static void test_vertextcache(void);
 static void test_queueprimitive(void);
+static void test_fetchprimitives(void);
 
 int main(void)
 {
@@ -158,6 +159,7 @@ int main(void)
     test_clipper();
     test_vertextcache();
     test_queueprimitive();
+    test_fetchprimitives();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -1972,4 +1974,184 @@ static void test_queueprimitive(void)
         }
     }
     CHECK(i == 21);
+}
+
+/* --- grApiFast.inl: grFetchPrimitives + grRenderElements/grRenderArrays ----- */
+
+static int listlen(const unsigned char *p)
+{
+    int n = 0;
+
+    while (p[n] != 0xFF)
+        ++n;
+    return n;
+}
+
+static float fpos[66][3];
+
+static void test_fetchprimitives(void)
+{
+    Gerbera_s st;
+    _IMatrix4x4 id;
+    _grVertexCache *cache;
+    _grVertex *vb;
+    _grPixelPipe pp;
+    static unsigned char stack[GR_RENDER_STACK_SIZE];
+    static unsigned char seen[256];
+    unsigned char idx8[16];
+    unsigned short idx16[8];
+    int i, qidx, pop;
+
+    for (i = 0; i < 16; ++i)
+    {
+        idx8[i] = (unsigned char)i;
+        fpos[i][0] = 0.06f * (float)i;
+        fpos[i][1] = 0.07f * (float)((i * 7) % 13);
+        fpos[i][2] = 0.5f;
+        seen[i] = 0;
+    }
+    idx16[0] = 0; idx16[1] = 1; idx16[2] = 2; idx16[3] = 3;
+
+    IMatrix4x4_identity(&id);
+    memset(&st, 0, sizeof(st));
+    memset(stack, 0, sizeof(stack));
+    memset(&pp, 0, sizeof(pp));
+    st.renderStack = stack;
+    st.renderStackAllocated = 1;
+    st.vertexCache = stack;
+    st.pixelPipeline = &pp;
+    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    grSetMatrix(&st, GR_MATRIXMODE_MODELVIEW, &id);
+    grSetMatrix(&st, GR_MATRIXMODE_PROJECTION, &id);
+    st.vertexArray[0].size = 3;
+    st.vertexArray[0].type = GR_DATATYPE_FLOAT;
+    st.vertexArray[0].data = fpos;
+    st.vertexArray[0].stride = 12;
+    grSetCapability(&st, GR_CAPABILITY_VERTEX_ARRAY, 1);
+    grSetRectangle(&st.renderScissor, 0, 100, 0, 100);
+    grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    grVertexCacheInvalidate(&st);
+    st.viewportScale.normal[0] = 0x640;
+    st.viewportScale.normal[1] = 0x640;
+    cache = (_grVertexCache *)stack;
+    vb = (_grVertex *)(stack + 1332);
+
+    /* POINTS via arrays: base 10, count 5 -> vertices 10..14; hash slots
+     * 11/10/13/12/15; one cache allocation per point */
+    grSetupCulling(&st, GR_PRIMITIVETYPE_POINT);
+    grRenderArrays(&st, GR_PRIMITIVE_POINTS, 5, 10);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 0);
+    CHECK(cache->totalFreeSlots == 63);
+    CHECK(vb[11].index == 10);
+    CHECK(vb[15].index == 14);
+    CHECK(listlen(stack + 1264) == 5);
+    CHECK(stack[1264] == 15 && stack[1265] == 12 && stack[1266] == 13 &&
+          stack[1267] == 10 && stack[1268] == 11);
+    CHECK(listlen(stack + 1196) == 5);
+    CHECK(stack[1196] == 15 && stack[1197] == 12 && stack[1198] == 13 &&
+          stack[1199] == 10 && stack[1200] == 11);
+
+    /* TRIANGLES via u8 elements: rotated queue order (src[2], src[0], src[1]);
+     * flush lists build in reverse command order */
+    grVertexCacheInvalidate(&st);
+    grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    grRenderElements(&st, GR_PRIMITIVE_TRIANGLES, 9, GR_DATATYPE_UINT8, idx8);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 0);
+    CHECK(cache->totalFreeSlots == 61);
+    pop = 0;
+    {
+        HGuint64 m = (HGuint64)cache->batchLockMask;
+
+        while (m != 0) { pop += (int)(m & 1); m >>= 1; }
+    }
+    CHECK(pop == 3);
+    for (i = 0; i <= 8; ++i)
+        seen[i] = 0;
+    for (i = 0; i < 64; ++i)
+        if (vb[i].index >= 0 && vb[i].index <= 8)
+            seen[vb[i].index] = 1;
+    for (i = 0; i <= 8; ++i)
+        CHECK(seen[i] == 1);
+    CHECK(listlen(stack + 1264) == 3);
+    CHECK(stack[1264] == 9 && stack[1265] == 5 && stack[1266] == 2);
+    CHECK(listlen(stack + 1196) == 9);
+    CHECK(stack[1196] == 9 && stack[1197] == 6 && stack[1198] == 7 &&
+          stack[1199] == 5 && stack[1200] == 3 && stack[1201] == 4 &&
+          stack[1202] == 2 && stack[1203] == 0 && stack[1204] == 1);
+
+    /* LINELOOP via u8: 4 vertices -> 4 edges (3 strip + closing (0,3));
+     * both lists end up {0,3,2,1} */
+    grVertexCacheInvalidate(&st);
+    idx8[0] = 0; idx8[1] = 1; idx8[2] = 2; idx8[3] = 3;
+    grSetupCulling(&st, GR_PRIMITIVETYPE_LINE);
+    grRenderElements(&st, GR_PRIMITIVE_LINE_LOOP, 4, GR_DATATYPE_UINT8, idx8);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 0);
+    CHECK(cache->totalFreeSlots == 62);
+    CHECK(listlen(stack + 1264) == 4);
+    CHECK(stack[1264] == 0 && stack[1265] == 3 && stack[1266] == 2 && stack[1267] == 1);
+    CHECK(listlen(stack + 1196) == 4);
+    CHECK(stack[1196] == 0 && stack[1197] == 3 && stack[1198] == 2 && stack[1199] == 1);
+
+    /* TRIFAN via u8: center = byte 0; tris (2,0,1),(3,0,2),(4,0,3) */
+    grVertexCacheInvalidate(&st);
+    idx8[0] = 0; idx8[1] = 1; idx8[2] = 2; idx8[3] = 3; idx8[4] = 4;
+    grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    grRenderElements(&st, GR_PRIMITIVE_TRIANGLE_FAN, 5, GR_DATATYPE_UINT8, idx8);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 0);
+    CHECK(cache->totalFreeSlots == 61);
+    CHECK(listlen(stack + 1264) == 3);
+    CHECK(stack[1264] == 4 && stack[1265] == 3 && stack[1266] == 2);
+    CHECK(listlen(stack + 1196) == 5);
+    CHECK(stack[1196] == 4 && stack[1197] == 0 && stack[1198] == 3 &&
+          stack[1199] == 2 && stack[1200] == 1);
+
+    /* TRISTRIP via u16: winding swap per segment; tris (2,0,1),(3,1,0) */
+    grVertexCacheInvalidate(&st);
+    grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    grRenderElements(&st, GR_PRIMITIVE_TRIANGLE_STRIP, 4, GR_DATATYPE_UINT16, idx16);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 0);
+    CHECK(cache->totalFreeSlots == 61);
+    CHECK(listlen(stack + 1264) == 2);
+    CHECK(stack[1264] == 3 && stack[1265] == 2);
+    CHECK(listlen(stack + 1196) == 4);
+    CHECK(stack[1196] == 3 && stack[1197] == 2 && stack[1198] == 1 &&
+          stack[1199] == 0);   /* strip tris (2,0,1) then (3,2,1) */
+
+    /* LINES via u16: (1,0),(3,2) */
+    grVertexCacheInvalidate(&st);
+    grSetupCulling(&st, GR_PRIMITIVETYPE_LINE);
+    grRenderElements(&st, GR_PRIMITIVE_LINES, 4, GR_DATATYPE_UINT16, idx16);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 0);
+    CHECK(cache->totalFreeSlots == 62);
+    CHECK(listlen(stack + 1264) == 2);
+    CHECK(stack[1264] == 3 && stack[1265] == 1);
+    CHECK(listlen(stack + 1196) == 4);
+    CHECK(stack[1196] == 3 && stack[1197] == 2 && stack[1198] == 1 && stack[1199] == 0);
+
+    /* degenerate first triangle drops through the wrapper */
+    grVertexCacheInvalidate(&st);
+    idx8[0] = 0; idx8[1] = 0; idx8[2] = 1; idx8[3] = 0; idx8[4] = 1; idx8[5] = 2;
+    grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    grRenderElements(&st, GR_PRIMITIVE_TRIANGLES, 6, GR_DATATYPE_UINT8, idx8);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 0);
+    CHECK(listlen(stack + 1264) == 1);
+    CHECK(stack[1264] == 2);
+
+    /* compilationFailed short-circuits both entry points */
+    grVertexCacheInvalidate(&st);
+    st.compilationFailed = 1;
+    grRenderElements(&st, GR_PRIMITIVE_TRIANGLES, 9, GR_DATATYPE_UINT8, idx8);
+    grRenderArrays(&st, GR_PRIMITIVE_POINTS, 5, 10);
+    grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE);
+    qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
+    CHECK(qidx == 0);
+    CHECK(cache->totalFreeSlots == 64);
+    st.compilationFailed = 0;
 }

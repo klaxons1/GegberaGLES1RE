@@ -142,6 +142,66 @@ typedef struct _grVertexCache
     unsigned int cacheIndices[32]; /* +40: hash table, 4 packed bytes each */
 } _grVertexCache;                  /* 168 bytes */
 
+/* API-side primitive types (grRenderElements/grRenderArrays; fetchType =
+ * 3*primitiveType + source, source 0 = u8 indices, 1 = u16, 2 = sequential).
+ * TEXTURE_RECT draws bypass this family via grRenderTextureRect. */
+enum GR_PRIMITIVE_e
+{
+    GR_PRIMITIVE_POINTS = 0,
+    GR_PRIMITIVE_LINES = 1,
+    GR_PRIMITIVE_LINE_LOOP = 2,
+    GR_PRIMITIVE_LINE_STRIP = 3,
+    GR_PRIMITIVE_TRIANGLES = 4,
+    GR_PRIMITIVE_TRIANGLE_STRIP = 5,
+    GR_PRIMITIVE_TRIANGLE_FAN = 6,
+    GR_PRIMITIVE_TEXTURE_RECT = 7,
+    GR_PRIMITIVE_MAX = 8
+};
+
+/* fetch walkers (grFetchPrimitives switch, values 0..20) */
+enum GR_FETCHTYPE_e
+{
+    GR_FETCHTYPE_POINTSchar = 0,
+    GR_FETCHTYPE_POINTS_SHORT = 1,
+    GR_FETCHTYPE_POINTS_ARRAY = 2,
+    GR_FETCHTYPE_LINESchar = 3,
+    GR_FETCHTYPE_LINES_SHORT = 4,
+    GR_FETCHTYPE_LINES_ARRAY = 5,
+    GR_FETCHTYPE_LINELOOPchar = 6,
+    GR_FETCHTYPE_LINELOOP_SHORT = 7,
+    GR_FETCHTYPE_LINELOOP_ARRAY = 8,
+    GR_FETCHTYPE_LINESTRIPchar = 9,
+    GR_FETCHTYPE_LINESTRIP_SHORT = 10,
+    GR_FETCHTYPE_LINESTRIP_ARRAY = 11,
+    GR_FETCHTYPE_TRIANGLESchar = 12,
+    GR_FETCHTYPE_TRIANGLES_SHORT = 13,
+    GR_FETCHTYPE_TRIANGLES_ARRAY = 14,
+    GR_FETCHTYPE_TRISTRIPchar = 15,
+    GR_FETCHTYPE_TRISTRIP_SHORT = 16,
+    GR_FETCHTYPE_TRISTRIP_ARRAY = 17,
+    GR_FETCHTYPE_TRIFANchar = 18,
+    GR_FETCHTYPE_TRIFAN_SHORT = 19,
+    GR_FETCHTYPE_TRIFAN_ARRAY = 20,
+    GR_FETCHTYPE_MAX = 21
+};
+
+/* the pixel-pipe record header grCheckPixelPipeStack validates
+ * (cv_anon_1722; lives at state->pixelPipeline in the render stack). Field
+ * ORDER here follows the assert sequence - byte offsets get pinned when
+ * grSetupRendering/the pixel pipeline is ported. */
+typedef struct _grPixelPipe
+{
+    int colorBufferStride;
+    int depthBufferStride;
+    int stencilBufferStride;
+    unsigned int fogColor;
+    int alphaReference;
+    unsigned int stencilReference;
+    unsigned char stencilReferenceMasked;
+    unsigned int stencilTestMask;
+    unsigned int stencilWriteMask;
+} _grPixelPipe;
+
 /* the queued-primitive record handed to the rasterizer draws
  * (cv_anon_17A7): packed cache indices (+ flags: bit 24 = triangle side,
  * bit 28 = needs clipping), the rounded screen area, the side */
@@ -541,9 +601,17 @@ typedef struct Gerbera_s
      * +47, stage pointers +7624..7652) -------------------------------------- */
     void *renderStack;                                /* +116 */
     unsigned char renderStackAllocated;
+    unsigned char compilationFailed;                  /* hc compiler verdict;
+                                                       * grRenderElements/Arrays
+                                                       * no-op when set */
     void *vertexCache;                                /* = renderStack while
                                                        * allocated (grSetup-
                                                        * Rendering) */
+    void *pixelPipeline;                              /* pixel-pipe record in
+                                                       * the render stack
+                                                       * (grSetupRendering) */
+    unsigned int packedFogColor;                      /* fog color packed for
+                                                       * the pixel pipe */
     unsigned char textureUnitEnabled[2];              /* +48/49: per-unit texcoord
                                                        * stage active (set by the
                                                        * ogl texture-enable path) */
@@ -757,6 +825,12 @@ void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
 void grrDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices);
 void grrDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices);
 void grrDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices);
+void grCheckPixelPipeStack(Gerbera_s *state);
+void grFetchPrimitives(Gerbera_s *state, int fetchType, int numVertices,
+                       int vertexCount, void *srcIndices, int baseIndex);
+void grRenderElements(Gerbera_s *state, int primitiveType, int vertexCount,
+                      int dataType, void *indices);
+void grRenderArrays(Gerbera_s *state, int primitiveType, int vertexCount, int baseIndex);
 void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int nSides, int bDirectional);
 void grLightVertex(Gerbera_s *state, _grVertex *v);
 void grApplyLighting(Gerbera_s *state, unsigned char *vertexList);

@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 3o)
+Last updated: 2026-11-22 (session 3p)
 
 ## Legend
 
@@ -109,6 +109,72 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3p (grFetchPrimitives + grRenderElements/grRenderArrays + grCheckPixelPipeStack)
+
+- **grApiFast.c additions**: grCheckPixelPipeStack (asserts 491-500: pixelPipe
+  color/depth/stencil strides vs drawSurface buffers[0..2].stride (ints
+  7/9/11), fogColor/alphaReference/stencilReference/stencilReferenceMasked/
+  stencilTestMask/stencilWriteMask vs the packed state), grFetchPrimitives
+  (dll 32611-32933; asserts 1298 state/1299 fetchType 0..20/1300 vertexCount
+  >= numVertices; sets vertexPipelineDirty=1 FIRST; per-type index walks
+  ending in grFlushPrimitiveBatch), grRenderElements (asserts 1606-1619;
+  numVertices 1/2/3 by primitive class; TEXTURE_RECT(7) dies at assert 1615;
+  fetchType = 3*primitiveType + (UINT16 ? 1 : 0); ends with grCheckPixelPipe-
+  Stack), grRenderArrays (asserts 1647/1648; fetchType = 3*primitiveType+2
+  computed BEFORE the compilationFailed check; TEXTURE_RECT goes to the fetch
+  with numVertices 0 -> fetchType 23 -> dies at assert 1299/1562; NO
+  grCheckPixelPipeStack call).
+- **GR_DATATYPE_UINT16 = 3 pinned** (grDefs.h, was the GR_DATATYPE_3
+  placeholder): oglMapDataType maps GL_UNSIGNED_SHORT 0x1403 -> 3; the index
+  datatype enum shares the vertex-array enum names but the array paths never
+  accept 3 (their type switches only handle 0/1/2/6/7).
+- **Enums pinned** (grState.h): GR_PRIMITIVE_* (POINTS=0, LINES=1, LINE_LOOP=2,
+  LINE_STRIP=3, TRIANGLES=4, TRIANGLE_STRIP=5, TRIANGLE_FAN=6, TEXTURE_RECT=7,
+  MAX=8) and GR_FETCHTYPE_* (3*primitive + {0=u8,1=u16,2=sequential}; 21
+  values, TRIFAN_ARRAY=20, MAX=21).
+- **Fetch walk semantics** (all verified by tests): do-while
+  (vertexCount >= numVertices) after each consume; POINTS 1/consumed (u8/u16/
+  sequential); LINES 2/consumed, qp2(bytes[1], bytes[0]) - swapped;
+  LINELOOP 1/consumed strip-pattern + closing segment qp2(first, last) (u8
+  cursor +1 byte, u16 +1 short, ARRAY vtxIndex++ with closing qp2(baseIndex,
+  vtxIndex)); LINESTRIP same without closing; TRIANGLES 3/consumed with the
+  decompile's rotated order qp3(src[2], src[0], src[1]); TRISTRIP 1/consumed
+  with stripSwap winding (iter k reads src[k+swap], src[k+1-swap], src[k+2]
+  after k advances: tri2 of {0,1,2,3} = (3,2,1) NOT (3,1,0)); TRIFAN center =
+  src[0] absolute (bytes[fetchIndex+1], bytes[fetchIndex+2], ARRAY uses
+  baseIndex + fetchIndex).
+- **grrStubs.c now SILENT returns** (was die-stubs): the queue/flush machinery
+  is under test through them; the fetch lists at renderStack+1264 (smooth/
+  provoking, 0x20 bit) and +1196 (per-vertex, 0x10 bit) are observable after
+  grRenderElements/Arrays - both 0xFF-terminated, built by the BACKWARD
+  command walk (reverse command order), dedup via per-vertex-record
+  stateMask bits (records keep bits until re-allocated: grVertexCacheGet
+  resets stateMask on allocation).
+- **State fields added**: compilationFailed (u8, grRenderElements/Arrays
+  no-op when set), pixelPipeline (void*), packedFogColor (u32). _grPixelPipe
+  struct = cv_anon_1722 with the 9 checked fields in assert order (byte
+  offsets unpinned until grSetupRendering/pixel-pipeline session).
+- **Test-data traps** (cost several probes): positions must satisfy
+  |x|,|y|,|z| <= 1.0 AND within the scissor in SCREEN space (scale 0x640
+  maps 1 unit to ~12.8 pixels; y=-0.54 -> negative screen y -> scissor
+  reject; x>1.0 -> clip bit -> point AND-reject); collinear positions give
+  zero area -> triangles silently dropped (the identity-transform rounding
+  makes "exactly collinear" floats land on- or off-line unpredictably -
+  use scattered y = 0.07*((i*7)%13)); hash slots for raw 8 = 9 (8^1),
+  10/11 -> 11/10, 12/13 -> 13/12, 14 -> 15.
+- **tests/test_core.c**: test_fetchprimitives (+53): POINTS array walk
+  (slots 11/10/13/12/15, lists [15,12,13,10,11]), TRIANGLES u8 (rotated
+  packing, smooth [9,5,2], pipe [9,6,7,5,3,4,2,0,1]), LINELOOP u8 (closing
+  segment; lists [0,3,2,1]), TRIFAN u8 (smooth [4,3,2], pipe [4,0,3,2,1]),
+  TRISTRIP u16 (tris (2,0,1),(3,2,1); smooth [3,2], pipe [3,2,1,0]),
+  LINES u16 (smooth [3,1], pipe [3,2,1,0]), degenerate-triangle drop,
+  compilationFailed short-circuit, listlen helper. grSetupCulling must run
+  per primitive class before each render (state->primitiveType drives the
+  flush re-arm: freeSlots = 64 - grGetPrimitiveVertices).
+- **Deferred**: grSetupTextureRectGradients (dll 33077-33172) + grRenderTexture-
+  Rect (texture-rect path; needs gradients), grUpdateVertexPipeline already
+  ported, pixel pipeline + rasterizer + grrDrawClipped* + data tables.
 
 ## DONE session 3o (grQueuePrimitive + grFlushPrimitiveBatch + grClipPrimitive + area helpers)
 
