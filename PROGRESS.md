@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 2)
+Last updated: 2026-11-22 (session 3)
 
 ## Legend
 
@@ -13,7 +13,7 @@ Last updated: 2026-11-22 (session 2)
 | module | original tree | functions (unique) | status |
 |---|---|---|---|
 | hg | renderer/libs/hg | 105 | **DONE** (session 1) |
-| imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar layer done (session 2) |
+| imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar + vector/matrix layers done (sessions 2-3) |
 | gerbera/core | .../gerbera/core/implementation | 318 | SCAFFOLDED |
 | gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | SCAFFOLDED |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
@@ -24,6 +24,66 @@ Last updated: 2026-11-22 (session 2)
 
 Total unique functions in the binary: 1402 (1776 definitions, of which 374 are
 per-translation-unit inline clones that were deduped).
+
+## DONE session 3 (imath vector/matrix layer)
+
+1. **New files** (`src/imath/`): `imInline.c` (XScalar 10.21 layer: mul/mul_sat/
+   add/sub/abs/min/cmp/sign/tous/pow, reconstructed exp2, imRcpu packed
+   reciprocal with intrcpLUT[310], XColor3/XColor3Acc, IFVector3 basics),
+   `IVector3.c` (zero/set/init001p/normsub/length/clipperDot + rsqLUTm/rsqLUTa[256]
+   embedded), `IVector4.c` (zero/set/set_noINF/inf/copy/testeq, IFVector4
+   set/getf/copy/negate/setxv/setfv, smul/add/clip/wNorm/fixClipSpacePosition/
+   stp/viewportTransform), `INormal3.c` (XNormal3: setf/setb/sets/setx/copy/
+   negate/dot/normalize/init001p/n/accfv; rsqLUTs extern'd from IVector3.c),
+   `IMatrix3.c` (XNormalTransform_mulNormal), `IMatrix4.c` (statics
+   getScalar/setScalar/copy_column/rows_by_column/rows_by_scalar/subrcp/dp3h +
+   copy/transpose/setfv/getfv/identity/I64_tof/mul/mulfv4/frustum/ortho/scale/
+   translate/rotate/det2h/inverse/inversetranspose/dp4l/dp4l_fast,
+   IFVector4_tov3/IFVector3_tov3/IFVector4_accfv, IVertexTransform_copy/mulxv4/
+   mulxv4s).
+2. **imApi.h extended**: full vector/matrix/XScalar/XNormal3/XColor3 struct
+   defs + decls; `IMatrix4x4_inverse` HGint32 return; `IFVector4_dp4l` HGint32.
+3. **IScalar.c additions**: expe (scalarToFixed(x,21) -> imMulAsr32Sat(v,
+   774541002, 29) -> XScalar_exp2; constant verified vs decompile 23157),
+   attenuateRcp (verified line-for-line vs decompile 23449), attenuateRsq.
+4. **IMath.c**: IVector3_isValid / IVector4_isValid moved in (bsum & 0x20000000
+   convention: at least one shared-exp mantissa must have the 2.30 top bit).
+5. **Tests**: test_imath.c now 308 checks (XScalar roundtrips, vectors,
+   normals, matrices incl. rotate 90/180 deg about z, ortho, inverse of
+   diag(2,2,2,1), inversetranspose of rot90, attenuate clamps). Total
+   288 + 308 = 596 checks, 0 failures, zero compiler warnings.
+
+### Bugs found while verifying (fixed)
+
+- **F_ADD swap path** (hgFloat.c): after the |a|<|b| swap the "equal
+  magnitudes -> +0" shortcut compared the wrong pair (`ba == t` always true
+  post-swap) - decompile compares original ba vs original aa. This broke
+  every swapped-magnitude subtraction (IScalar_sub(0,2)==0), which killed
+  ortho/inverse/inversetranspose through subrcp/rcp chains.
+- **det2h**: stray `exp = 0` wiped the shared exponent before the clz
+  renormalize -> every 2x2 determinant returned 0 -> inverse all zeros.
+- Test-side: getScalar(c, r) is (column, row) - column-major storage; rotate
+  products R[1][0]/R[0][1] were checked swapped; I64_tof input scale is 2^50
+  (>= 2^51 trips the driver's own `e <= 127` assert - kept faithfully);
+  IVector4_set with a packed exponent word > 0xFE inf-clamps (driver quirk,
+  faithful); clip bits are 0x88/0x44 (main+guard, guardBits=0).
+
+### Key conventions established (verified numerically)
+
+- `_IMatrix4x4` is **column-major**: `v[i]` = column i, `m[c]` = row c;
+  `getScalar(pS, c, r)` = element (row r, col c). mul(pD,pA,pB) = A*B;
+  translate/scale/ortho/rotate all POST-multiply (M*T, M*R) like GL.
+- rotate reconstructs Rodrigues: (k,j,m) pairs (1,2,0),(2,0,1),(0,1,2);
+  p = (a_k*omc)*a_j and q = a_m*sin at scale 2^51, cols[k].m[j] = p+q,
+  cols[j].m[k] = p-q, diag[j] = cos + a_j*omc*a_j; composed with
+  rows_by_column (= M * col). The printed rotate decompile has overlapping
+  stack slots (axis[] clobbered by tmp[]) - index choices reconstructed from
+  scales + Rodrigues, structure/scales decompile-faithful.
+- XNormal3_normalize output is 10.21 (1.0 = 0x200000); rotate consumes it.
+- IScalar_getMantissa = (frac|implicit 0x800000 when e!=0) << 6, sign-applied
+  (2.30 mantissa; 1.0 -> 0x20000000).
+- attenuateRcp/attenuateRsq semantics: atten = ka0 + ka1*d + ka2*d^2;
+  e<116 -> 0x7FFFFFFF (rcp would overflow); e>148 -> 0; else fixed21(rcp).
 
 ## DONE session 2 (imath scalar layer)
 

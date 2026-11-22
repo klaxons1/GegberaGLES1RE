@@ -205,8 +205,9 @@ HGuint32 F_ADD(HGuint32 a, HGuint32 b)
         aa = ba;
         ba = t;
         sign ^= signDiff;
-        if (ba == t && signDiff != 0)
-            return 0;             /* equal magnitude, opposite sign */
+        /* equal magnitudes, opposite signs -> +0 (decompile: v3 == oldBM[1]) */
+        if (aa == t && signDiff != 0)
+            return 0;
     }
 
     if (ba < 0x800000u)           /* b is denormal or zero: result is a */

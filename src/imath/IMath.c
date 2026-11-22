@@ -38,5 +38,68 @@ HGint32 IUnitScalar_isValid(HGint32 v)
     return 1;
 }
 
-/* IMath.c also defines IVector3_isValid / IVector4_isValid; they move in
- * with the IVector port (they need _IVector3/_IVector4). */
+HGint32 IVector3_isValid(_IVector3 *v)
+{
+    if (v->e != 0)
+    {
+        int bsum;
+        if (v->e > 0xFEu)
+            return 0;
+        bsum = hgAbs32(v->m[0]) | hgAbs32(v->m[1]) | hgAbs32(v->m[2]);
+        if ((bsum & IUNITSCALAR_ONE) == 0)
+            imAssert("bsum & IUNITSCALAR_ONE", "IMath.c", 0x84u);
+        if (hgInRange32(v->m[0], -IM_MANTISSA_MAX, IM_MANTISSA_MAX) == 0)
+            imAssert("hgInRange32(v->m[0], -IM_MANTISSA_MAX, IM_MANTISSA_MAX)", "IMath.c", 0x85u);
+        if (hgInRange32(v->m[1], -IM_MANTISSA_MAX, IM_MANTISSA_MAX) == 0)
+            imAssert("hgInRange32(v->m[1], -IM_MANTISSA_MAX, IM_MANTISSA_MAX)", "IMath.c", 0x86u);
+        if (hgInRange32(v->m[2], -IM_MANTISSA_MAX, IM_MANTISSA_MAX) == 0)
+            imAssert("hgInRange32(v->m[2], -IM_MANTISSA_MAX, IM_MANTISSA_MAX)", "IMath.c", 0x87u);
+        return 1;
+    }
+    else
+    {
+        if (v->m[0] != 0)
+            imAssert("v->m[0] == 0", "IMath.c", 0x7Cu);
+        if (v->m[1] != 0)
+            imAssert("v->m[1] == 0", "IMath.c", 0x7Du);
+        if (v->m[2] != 0)
+            imAssert("v->m[2] == 0", "IMath.c", 0x7Eu);
+        return 1;
+    }
+}
+
+HGint32 IVector4_isValid(_IVector4 *v)
+{
+    if (v->e != 0)
+    {
+        int bsum;
+        if (v->e > 0xFEu)
+            return 0;
+        bsum = hgAbs32(v->m[0]) | hgAbs32(v->m[1]) | hgAbs32(v->m[2]) | hgAbs32(v->m[3]);
+        if ((bsum & IUNITSCALAR_ONE) == 0)
+            imAssert("bsum & IUNITSCALAR_ONE", "IMath.c", 0x9Eu);
+        if (hgInRange32(v->m[0], -IM_MANTISSA_MAX, IM_MANTISSA_MAX) == 0)
+            imAssert("hgInRange32(v->m[0], -IM_MANTISSA_MAX, IM_MANTISSA_MAX)", "IMath.c", 0x9Fu);
+        if (hgInRange32(v->m[1], -IM_MANTISSA_MAX, IM_MANTISSA_MAX) == 0)
+            imAssert("hgInRange32(v->m[1], -IM_MANTISSA_MAX, IM_MANTISSA_MAX)", "IMath.c", 0xA0u);
+        if (hgInRange32(v->m[2], -IM_MANTISSA_MAX, IM_MANTISSA_MAX) == 0)
+            imAssert("hgInRange32(v->m[2], -IM_MANTISSA_MAX, IM_MANTISSA_MAX)", "IMath.c", 0xA1u);
+        if (hgInRange32(v->m[3], -IM_MANTISSA_MAX, IM_MANTISSA_MAX) == 0)
+            imAssert("hgInRange32(v->m[3], -IM_MANTISSA_MAX, IM_MANTISSA_MAX)", "IMath.c", 0xA2u);
+        return 1;
+    }
+    else
+    {
+        if (v->m[0] != 0)
+            imAssert("v->m[0] == 0", "IMath.c", 0x95u);
+        if (v->m[1] != 0)
+            imAssert("v->m[1] == 0", "IMath.c", 0x96u);
+        if (v->m[2] != 0)
+            imAssert("v->m[2] == 0", "IMath.c", 0x97u);
+        if (v->m[3] != 0)
+            imAssert("v->m[3] == 0", "IMath.c", 0x98u);
+        return 1;
+    }
+}
+
+/* IMath.c also defines nothing else; the matrix layer lives in IMatrix4.c. */

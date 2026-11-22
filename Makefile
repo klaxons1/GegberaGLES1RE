@@ -19,7 +19,13 @@ LIB_SRC := \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
     src/imath/IUnitScalar.c \
-    src/imath/IMath.c
+    src/imath/IMath.c \
+    src/imath/imInline.c \
+    src/imath/IVector3.c \
+    src/imath/IVector4.c \
+    src/imath/INormal3.c \
+    src/imath/IMatrix3.c \
+    src/imath/IMatrix4.c
 
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 

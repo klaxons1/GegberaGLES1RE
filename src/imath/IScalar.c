@@ -292,3 +292,163 @@ HGint32 XScalar_log2(HGint32 y)
     sh = hgClz32((HGuint32)y);
     return (HGint32)((IScalar_log2_iterate((HGuint32)y << sh) >> 10) - ((sh - 10) << 21));
 }
+
+/* ------------------------------------------------------------------ */
+/* IScalar_expe + light attenuation (imApi.inl; need _IFVector3)       */
+/* ------------------------------------------------------------------ */
+
+HGint32 IScalar_expe(HGint32 x)
+{
+    int f;
+    if (IScalar_isValid(x) == 0)
+        imAssert("IScalar_isValid(x)", "imApi.inl", 0x51u);
+    f = imMulAsr32Sat(IScalar_scalarToFixed(x, 21), 774541002, 29);
+    return XScalar_exp2(f);
+}
+
+HGint32 IScalar_attenuateRcp(HGint32 d, _IFVector3 *ka)
+{
+    unsigned int m0 = ka->m[0], m1 = ka->m[1], m2 = ka->m[2];
+    unsigned int e0 = (HGuint8)ka->e;
+    unsigned int e1 = (HGuint8)(ka->e >> 8);
+    unsigned int e2 = (HGuint8)(ka->e >> 16);
+    unsigned int em;
+    int m, e, sh;
+    HGint32 r = 0;
+
+    m = 8 * (int)hgMulu64h(IScalar_getMantissa(d), m2);
+    e = (int)(e2 + IScalar_getExponent(d)) - 127;
+    if (m == 0)
+        e = e1;
+    if ((m & 0x40000000) != 0)
+    {
+        ++e;
+        m = (unsigned int)m >> 1;
+    }
+    sh = hgMin32(hgDiff32(e, e1), 31);
+    if (e < (int)e1)
+    {
+        m = (unsigned int)m >> sh;
+        e = e1;
+    }
+    else
+    {
+        m1 >>= sh;
+    }
+    m += (int)m1;
+    if ((m & 0x40000000) != 0)
+    {
+        ++e;
+        m = (unsigned int)m >> 1;
+    }
+    em = m;
+    m = 8 * (int)hgMulu64h(IScalar_getMantissa(d), em);
+    e = (int)e + IScalar_getExponent(d) - 127;
+    if (m == 0)
+        e = 0;
+    if ((m & 0x40000000) != 0)
+    {
+        ++e;
+        m = (unsigned int)m >> 1;
+    }
+    sh = hgMin32(hgDiff32(e, e0), 31);
+    if (e < (int)e0)
+    {
+        m = (unsigned int)m >> sh;
+        e = e0;
+    }
+    else
+    {
+        m0 >>= sh;
+    }
+    if (e < 116)
+        return 0x7FFFFFFF;
+    m += (int)m0;
+    if ((m & 0x40000000) != 0)
+    {
+        ++e;
+        m = (unsigned int)m >> 1;
+    }
+    if (m == 0)
+        imAssert("m", "imApi.inl", 0x390u);
+    if (e <= 148)
+    {
+        HGint32 v = IScalar_set(e, m);
+        r = IScalar_scalarToFixed(IScalar_rcp(v), 21);
+    }
+    return r;
+}
+
+HGint32 IScalar_attenuateRsq(HGint32 d, _IFVector3 *ka)
+{
+    unsigned int m0 = ka->m[0], m1 = ka->m[1], m2 = ka->m[2];
+    unsigned int e0 = (HGuint8)ka->e;
+    unsigned int e1 = (HGuint8)(ka->e >> 8);
+    unsigned int e2 = (HGuint8)(ka->e >> 16);
+    int m, e, sh;
+
+    m = 8 * (int)hgMulu64h(IScalar_getMantissa(d), m2);
+    e = (int)(e2 + IScalar_getExponent(d)) - 127;
+    if (m == 0)
+        e = e1;
+    if ((m & 0x40000000) != 0)
+    {
+        ++e;
+        m = (unsigned int)m >> 1;
+    }
+    sh = hgMin32(hgDiff32(e, e1), 31);
+    if (e < (int)e1)
+    {
+        m = (unsigned int)m >> sh;
+        e = e1;
+    }
+    else
+    {
+        m1 >>= sh;
+    }
+    m += (int)m1;
+    if ((m & 0x40000000) != 0)
+    {
+        ++e;
+        m = (unsigned int)m >> 1;
+    }
+    m = 8 * (int)hgMulu64h(m, IScalar_getMantissa(d));
+    e = (int)e + IScalar_getExponent(d) - 127;
+    if (m == 0)
+        e = 0;
+    if ((m & 0x40000000) != 0)
+    {
+        ++e;
+        m = (unsigned int)m >> 1;
+    }
+    sh = hgMin32(hgDiff32(e, e0), 31);
+    if (e < (int)e0)
+    {
+        m = (unsigned int)m >> sh;
+        e = e0;
+    }
+    else
+    {
+        m0 >>= sh;
+    }
+    m += (int)m0;
+    if ((m & 0x40000000) != 0)
+    {
+        ++e;
+        m = (unsigned int)m >> 1;
+    }
+    if (e > 0)
+    {
+        if (e > 254)
+        {
+            e = 254;
+            m = 0x3FFFFFFF;
+        }
+    }
+    else
+    {
+        e = 0;
+        m = 0;
+    }
+    return IScalar_rsq(IScalar_set(e, m));
+}
