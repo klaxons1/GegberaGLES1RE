@@ -100,17 +100,54 @@ enum GR_FOGMODE_e
     GR_FOGMODE_MAX = 3
 };
 
-/* capabilities (values unknown except the light block 41..48) */
+/* capabilities. PINNED from the oglMapCapability lookup tables (WINSCW
+ * values[24] fully visible; keys recovered from the EPOC build's
+ * dword_35E6C/word_35E9A tables - 22 of 23 keys decode to ascending GL
+ * tokens, each mapping to the value at the same index):
+ *   0x0BC0 GL_ALPHA_TEST->1, 0x0B71 GL_DEPTH_TEST->2,
+ *   0x0B90 GL_STENCIL_TEST->3, 0x0BE2 GL_BLEND->4,
+ *   0x0BF2 GL_COLOR_LOGIC_OP->5, 0x0BD0 (driver DITHER token; GL_DITHER is
+ *   0x0BD1)->6, 0x0B60 (unresolved)->7, 0x0DE1 GL_TEXTURE_2D->10,
+ *   0x8037 GL_POLYGON_OFFSET_FILL->14, 0x0C11 GL_SCISSOR_TEST->15,
+ *   0x0B44 GL_CULL_FACE->16, 0x0B20 GL_LINE_SMOOTH->18,
+ *   0x0B10 GL_POINT_SMOOTH->19, 0x0B50 GL_LIGHTING->36,
+ *   0x0BA1 GL_NORMALIZE->37, 0x803A GL_RESCALE_NORMAL->38,
+ *   0x0B57 GL_COLOR_MATERIAL->40, GL_LIGHT0..7 (0x4000..0x4007)->41..48,
+ *   0x809D GL_MULTISAMPLE->49, 0x809E GL_SAMPLE_ALPHA_TO_COVERAGE->50,
+ *   0x809F GL_SAMPLE_ALPHA_TO_ONE->51, 0x80A0 GL_SAMPLE_COVERAGE->52,
+ *   0x8840 GL_MATRIX_PALETTE_OES->53; key 23 missing (-> cap 20).
+ * Clip planes 0x3000..0x3005 map to caps 30..35 (ogl layer; the grSmall
+ * clip-plane enum used by grSetUserClipPlane is 10..15, a different space).
+ * Caps 0,8,9,11..13,17,20,21..29,39 are internal (not GL tokens); among
+ * them LIGHT_MODEL_TWO_SIDE, whose number is NOT pinned - placeholder 39. */
 enum GR_CAPABILITY_e
 {
-    GR_CAPABILITY_DITHER = 0,             /* value not pinned yet */
-    GR_CAPABILITY_SCISSOR_TEST = 1,       /* value not pinned yet */
-    GR_CAPABILITY_LIGHT_MODEL_TWO_SIDE = 2, /* value not pinned yet */
-    GR_CAPABILITY_COLOR_MATERIAL = 3,     /* value not pinned yet */
-    GR_CAPABILITY_RESCALE_NORMAL = 4,     /* value not pinned yet */
-    GR_CAPABILITY_LIGHT0 = 41,            /* lights occupy 41..48 */
+    GR_CAPABILITY_ALPHA_TEST = 1,
+    GR_CAPABILITY_DEPTH_TEST = 2,
+    GR_CAPABILITY_STENCIL_TEST = 3,
+    GR_CAPABILITY_BLEND = 4,
+    GR_CAPABILITY_COLOR_LOGIC_OP = 5,
+    GR_CAPABILITY_DITHER = 6,
+    GR_CAPABILITY_UNKNOWN_0x0B60 = 7,
+    GR_CAPABILITY_TEXTURE_2D = 10,
+    GR_CAPABILITY_POLYGON_OFFSET_FILL = 14,
+    GR_CAPABILITY_SCISSOR_TEST = 15,
+    GR_CAPABILITY_CULL_FACE = 16,
+    GR_CAPABILITY_LINE_SMOOTH = 18,
+    GR_CAPABILITY_POINT_SMOOTH = 19,
+    GR_CAPABILITY_KEY23 = 20,             /* token unknown */
+    GR_CAPABILITY_LIGHTING = 36,
+    GR_CAPABILITY_NORMALIZE = 37,
+    GR_CAPABILITY_RESCALE_NORMAL = 38,
+    GR_CAPABILITY_LIGHT_MODEL_TWO_SIDE = 39, /* UNPINNED guess - internal cap */
+    GR_CAPABILITY_COLOR_MATERIAL = 40,
+    GR_CAPABILITY_LIGHT0 = 41,
     GR_CAPABILITY_LIGHT7 = 48,
-    GR_CAPABILITY_MAX_VALUE = 54
+    GR_CAPABILITY_MULTISAMPLE = 49,
+    GR_CAPABILITY_SAMPLE_ALPHA_TO_COVERAGE = 50,
+    GR_CAPABILITY_SAMPLE_ALPHA_TO_ONE = 51,
+    GR_CAPABILITY_SAMPLE_COVERAGE = 52,
+    GR_CAPABILITY_MATRIX_PALETTE = 53
 };
 
 /* light record (decompile cv_anon_1748). The decompile reaches the fields

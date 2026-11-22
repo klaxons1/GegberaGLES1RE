@@ -50,8 +50,8 @@ per-translation-unit inline clones that were deduped).
 
 ### Core next steps
 - Pin GR_IMAGEFORMAT_6 / GR_PIXELFORMAT_MAX / GR_PALETTEFORMAT_MAX /
-  GR_DATATYPE / GR_CAPABILITY member values from ogl mapping tables
-  (oglMapCapability binary-searches keys/values tables in .data).
+  GR_DATATYPE member names from oglSmall mapping functions + callers.
+  GR_CAPABILITY values are NOW PINNED (session 3f).
 - User clip planes (normalsToEyePal[17][0].originalVertex area +
   texCoordTransform[8] stride-80) need the normalsToEyePal/texCoordTransform
   record layouts - deferred to the transform stack port.
@@ -104,6 +104,35 @@ per-translation-unit inline clones that were deduped).
    grSetMaterialColor/Alpha/Shininess/grGetMaterialShininess ported.
    GR_MATERIALCOLOR: AMBIENT/EMISSION named, values unpinned.
 7. **tests/test_core.c**: +83 checks. Totals: 288 + 311 + 195 = 794 green.
+
+## DONE session 3f (capability enum pinned via the EPOC decompile)
+
+The user contributed `docs/libgles_cm.dll.epoc.c` - the stripped ARM device
+build (all sub_XXXX, GNU C++, 1622 functions). Despite having no symbols it
+resolves tables the WINSCW decompile truncates:
+
+1. **GR_CAPABILITY values pinned**: WINSCW showed oglMapCapability's
+   `values[24]` fully but truncated `keys` to its first element (2832).
+   The EPOC build keeps both tables: keys = dword_35E6C[11] (44 bytes = 22
+   uint16 keys, ascending), values = word_35E9A onward. 22/23 keys decode
+   to GL tokens; combined with the values array the mapping is:
+   ALPHA_TEST=1, DEPTH_TEST=2, STENCIL_TEST=3, BLEND=4, COLOR_LOGIC_OP=5,
+   0x0BD0->6 (driver DITHER token; GL_DITHER is 0x0BD1), 0x0B60->7 (name
+   unresolved), TEXTURE_2D=10, POLYGON_OFFSET_FILL=14, SCISSOR_TEST=15,
+   CULL_FACE=16, LINE_SMOOTH=18, POINT_SMOOTH=19, key23-missing->20,
+   LIGHTING=36, NORMALIZE=37, RESCALE_NORMAL=38, COLOR_MATERIAL=40,
+   LIGHT0..7=41..48 (confirmed by EPOC `result + 41`), MULTISAMPLE=49,
+   SAMPLE_ALPHA_TO_COVERAGE=50, SAMPLE_ALPHA_TO_ONE=51, SAMPLE_COVERAGE=52,
+   MATRIX_PALETTE=53. Clip planes 0x3000..5 -> caps 30..35 (ogl space).
+   LIGHT_MODEL_TWO_SIDE is internal (not a GL token) - value still guessed
+   (39, flagged in grState.h).
+2. **Cross-validation**: grCapChangesRejectAllState table {98306} = bits
+   1/15/16 = ALPHA_TEST/SCISSOR_TEST/CULL_FACE - exactly the caps that
+   reject all drawing. grCapChangesPixelPipeline {32766} = bits 1..14 =
+   ALPHA_TEST..POLYGON_OFFSET_FILL. Both bit tables coherent with the pins.
+3. grState.h enum rewritten with pinned values; all 818 checks stay green.
+4. EPOC build noted as reference: same .data tables survive, useful wherever
+   WINSCW Hex-Rays truncates arrays (treat as secondary, symbol-less).
 
 ## DONE session 3e (core: lights)
 
