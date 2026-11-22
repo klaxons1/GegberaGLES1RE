@@ -51,11 +51,39 @@ per-translation-unit inline clones that were deduped).
 ### Core next steps
 - Pin GR_IMAGEFORMAT_6 / GR_PIXELFORMAT_MAX / GR_PALETTEFORMAT_MAX /
   GR_DATATYPE member names from oglSmall mapping functions + callers.
-- Reconstruct Gerbera_s (the driver context) - grGetDrawBufferDescriptor and
-  grUtilSmall.inl (grIsValidDescriptor/grPackColor/grUnpackColor/
-  grMaskedDescriptorsEqual/grGetPackedColorWriteMask) are the next small
-  chunks; texture struct (cv_anon_1477), cache (cv_anon_172A) follow.
-- Then grApiSmall/grApiFast/grVertexPipeline -> rasterizer pipeline.
+- Reconstruct Gerbera_s (the driver context) - grSetActiveTexture needs
+  state->textureUnit[2*ndx] (Hex-Rays types it as .xStart[0]); context fields
+  seen so far: textureUnit[], pixelPipelineDirty, activeTexture,
+  clientActiveTexture, getValues (rgbaOffsets inside), textureManager.
+- grUtil.h misc: grMaskedColorsEqual (port pending).
+- Then grApiSmall state setters -> grApiFast/grVertexPipeline -> rasterizer.
+
+## DONE session 3c (core: color + texture utilities)
+
+1. **grRGBA.h/grRGBA.c**: grSetRGBA/grUnpackRGBA/grPackRGBA; word layout
+   (a<<24)|(b<<16)|(g<<8)|r. GR_COLOR_MAX=4 pinned via
+   `imageFormat == (GR_COLOR_MAX|GR_COLOR_A)` == GR_IMAGEFORMAT_MAX(7).
+2. **grUtilSmall.c**: grIsValidDescriptor (17 verbatim assert sites),
+   grPackColor, grMaskedDescriptorsEqual, grGetPackedColorWriteMask,
+   grUnpackColor with every channel-size quirk: size 4..8 replicate,
+   9..15 shift-down, size 1 -> hgBitMask32 (0/-1 -> 0/255 via unsigned char
+   store), size 2 -> (16*((4c)|c))|(4c)|c, size 3 -> (c>>1)|32c|4c (c=1 -> 36),
+   size 0 -> alpha defaults 255, others 0.
+3. **grTexture.h/grTexture.c**: _grMipLevel (pixels, log2Dim[2], texFormat,
+   initialized, pbuffer) + _grTexture (parmMask, filterMask[2], wrapMode[2],
+   target, numMipLevels, palette, mipmap[11], cropRect, genMipMaps). Enums
+   pinned: GR_TEXTURETARGET_2D=0/MAX=1 (MAX = unbound sentinel; init stores 1),
+   GR_TEXTUREFORMAT 0..4 from oglMapInternalTextureFormat(6406..6410), paletted
+   5..14, MAX=18 (init sentinel), GR_MAX_TEXTURE_MIPMAPS=11, DIMENSION_LOG2=10,
+   MAX_TEXTURE_UNITS=2, filter bits FILTER=1/USE_MIPMAPS=2/FILTER_MIPMAPS=4,
+   WRAPMODE_MAX=3, TEXCOORD S/T. Functions: grIsValidTexture, grUpdateTexture
+   (mip-chain walk + parmMask synthesis, verified: chain break leaves
+   parmMask=2), grInitTexture, get/set target, mip level access/format/
+   initialized, wrap mode, gen mipmaps, crop rect (hgMemCopy 0x10), filter
+   (MAG rejects mipmap bits). grGetTextureTargetDimensionality (2D only).
+4. **tests/test_core.c**: +54 checks. Totals: 288 + 311 + 101 = 700 green.
+
+## DONE session 3b (core: grDefs.h foundation)
 
 ## DONE session 3 (imath vector/matrix layer)
 

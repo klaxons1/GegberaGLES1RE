@@ -20,6 +20,7 @@ LIB_SRC := \
              src/gerbera/grSmall.c \
              src/gerbera/grRGBA.c \
              src/gerbera/grUtilSmall.c \
+             src/gerbera/grTexture.c \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
     src/imath/IUnitScalar.c \

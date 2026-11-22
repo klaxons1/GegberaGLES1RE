@@ -109,6 +109,7 @@ static void test_stack(void)
 
 static void test_rgba(void);
 static void test_pack_color(void);
+static void test_texture(void);
 
 int main(void)
 {
@@ -118,6 +119,7 @@ int main(void)
     test_stack();
     test_rgba();
     test_pack_color();
+    test_texture();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -200,4 +202,85 @@ static void test_pack_color(void)
         CHECK(grMaskedDescriptorsEqual(0xDu, &a, &b) == 1);  /* G bit not in mask */
         CHECK(grMaskedDescriptorsEqual(0x2u, &a, &b) == 0);
     }
+}
+
+/* --- grTexture.h ---------------------------------------------------------- */
+#include "gerbera/grTexture.h"
+
+static void test_texture(void)
+{
+    _grTexture tex;
+    int dims[2];
+    void *p;
+
+    grInitTexture(&tex);
+    CHECK(grIsValidTexture(&tex) == 1);
+    CHECK(grGetTextureTarget(&tex) == GR_TEXTURETARGET_MAX);   /* unbound */
+    CHECK(tex.filterMask[GR_FILTERTYPE_MIN] == 6);
+    CHECK(tex.filterMask[GR_FILTERTYPE_MAG] == 1);
+    CHECK(tex.numMipLevels == 1);
+    CHECK(tex.mipmap[0].texFormat == GR_TEXTUREFORMAT_MAX);
+    CHECK(tex.mipmap[10].log2Dim[0] == -1);
+    CHECK(tex.genMipMaps == 0);
+    CHECK(grIsPalettedTextureFormat(5) == 1);
+    CHECK(grIsPalettedTextureFormat(14) == 1);
+    CHECK(grIsPalettedTextureFormat(4) == 0);
+    CHECK(grIsPalettedTextureFormat(15) == 0);
+    CHECK(grGetTextureTargetDimensionality(GR_TEXTURETARGET_2D) == 2);
+
+    /* bind (grUpdateTexture walks mips via dimensionality, which asserts 2D) */
+    grSetTextureTarget(&tex, GR_TEXTURETARGET_2D);
+    CHECK((tex.parmMask & 1u) != 0);
+    /* set up a 4x4 level-0 image, no mipmaps */
+    {
+        static unsigned char pix[16 * 4];
+        tex.mipmap[0].pixels = pix;
+        tex.mipmap[0].log2Dim[0] = 2;
+        tex.mipmap[0].log2Dim[1] = 2;
+        tex.mipmap[0].texFormat = GR_TEXTUREFORMAT_RGBA;
+        tex.mipmap[0].initialized = 1;
+    }
+    p = grGetTextureMipLevel(&tex, 0, dims);
+    CHECK(p != NULL);
+    CHECK(dims[0] == 2 && dims[1] == 2);
+    CHECK(grGetTextureMipLevel(&tex, 1, dims) == NULL);
+    CHECK(grGetTextureMipLevelFormat(&tex, 0) == GR_TEXTUREFORMAT_RGBA);
+    CHECK(grTextureMipLevelInitialized(&tex, 0) == 1);
+
+    /* update: MIN filter = 6 has USE_MIPMAPS; chain walk fails at level 1
+     * (missing), so the final parmMask write is skipped entirely (faithful:
+     * stays at the initial 2) */
+    grUpdateTexture(&tex);
+    CHECK(tex.parmMask == 2u);
+
+    /* enable mipmaps + full chain */
+    {
+        static unsigned char pix2[8 * 4], pix3[4 * 4];
+        tex.filterMask[GR_FILTERTYPE_MIN] = 6;
+        tex.mipmap[1].pixels = pix2; tex.mipmap[1].log2Dim[0] = 1; tex.mipmap[1].log2Dim[1] = 1;
+        tex.mipmap[1].texFormat = GR_TEXTUREFORMAT_RGBA;
+        tex.mipmap[2].pixels = pix3; tex.mipmap[2].log2Dim[0] = 0; tex.mipmap[2].log2Dim[1] = 0;
+        tex.mipmap[2].texFormat = GR_TEXTUREFORMAT_RGBA;
+        grUpdateTexture(&tex);
+        /* chain ends at level 2 (2x2 -> next would be 1x1 level 3 missing) */
+        CHECK(tex.numMipLevels == 3);
+        CHECK((tex.parmMask & 8u) != 0);           /* mipmap chain complete */
+        CHECK((tex.parmMask & 4u) != 0);
+    }
+    /* setters */
+    grSetTextureWrapMode(&tex, GR_TEXCOORD_S, 1);
+    CHECK(grGetTextureWrapMode(&tex, GR_TEXCOORD_S) == 1);
+    grSetTextureGenMipmaps(&tex, 1);
+    CHECK(grGetTextureGenMipmaps(&tex) == 1);
+    grSetTextureFilter(&tex, GR_FILTERTYPE_MAG, 1);
+    CHECK(grGetTextureFilter(&tex, GR_FILTERTYPE_MAG) == 1);
+    {
+        _grRect r, r2;
+        grSetRectangle(&r, 1, 2, 3, 4);
+        grSetTextureCropRect(&tex, &r);
+        grGetTextureCropRect(&tex, &r2);
+        CHECK(r2.x0 == 1 && r2.x1 == 2 && r2.y0 == 3 && r2.y1 == 4);
+    }
+    CHECK(grGetTextureTarget(&tex) == GR_TEXTURETARGET_2D);
+    CHECK((tex.parmMask & 1u) != 0);
 }
