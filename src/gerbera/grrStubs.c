@@ -4,6 +4,7 @@
  * All rasterizer-side entry points are now REAL ports; grTriangleTessellator
  * lives in grTessellator.c and grUpdateVertexPipeline in grVertexPipeline.c.
  */
+#include <stdlib.h>
 #include "gerbera/grState.h"
 #include "gerbera/hc/hcBackend.h"
 
@@ -64,5 +65,18 @@ int grScratchGrowMemory(Gerbera_s *state)
 {
     (void)state;
     return 0;
+}
+
+void *eglAlloc(unsigned int size)
+{
+    if (size == 0 && grAssert("size > 0", "eglSymbian.inl", 252) != 0)
+        grDie(0);
+    return malloc((size_t)size);
+}
+
+void eglFree(void *ptr)
+{
+    if (ptr != NULL)
+        free(ptr);
 }
 

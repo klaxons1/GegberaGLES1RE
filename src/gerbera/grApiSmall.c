@@ -700,3 +700,41 @@ void grResetVertexArray(Gerbera_s *state, int arrayType)
     GR_API_CHECK(hgInRange32(arrayType, 0, 8 - 1) != 0, 1730);
     state->vertexArray[arrayType].data = NULL;
 }
+
+/* --- grGetInteger / grGetIScalar (grApiSmall.inl 2270 / 2296) -------------- */
+
+int grGetInteger(Gerbera_s *state, int value)
+{
+    GR_API_CHECK(state != NULL, 2270);
+    switch (value)
+    {
+    case GR_QUERY_FRONT_FACE:
+        return state->frontFace;
+    case GR_QUERY_CULL_MASK:
+        return state->cullMask;
+    case GR_QUERY_STENCIL_REF:
+        return state->stencilReference;
+    case GR_QUERY_STENCIL_CLEAR:
+        return state->clearStencil;
+    default:
+        if (grAssert("!\"grGetInteger(): invalid query value\"", "grApiSmall.inl", 2283) != 0)
+            grDie(0);
+        return 0;
+    }
+}
+
+int grGetIScalar(Gerbera_s *state, int value)
+{
+    GR_API_CHECK(state != NULL, 2296);
+    switch (value)
+    {
+    case GR_QUERY_FOG_START:
+        return state->fogStart;
+    case GR_QUERY_FOG_END:
+        return state->fogEnd;
+    default:
+        if (grAssert("!\"grGetIScalar(): invalid query value\"", "grApiSmall.inl", 2305) != 0)
+            grDie(0);
+        return IScalar_zero();
+    }
+}

@@ -51,6 +51,13 @@ src/gerbera/grrTexture.c \
  src/gerbera/grClipper.c \
  src/gerbera/grApiFast.c \
  src/gerbera/grrStubs.c \
+    src/gerbera/api_opengl/oglError.c \
+    src/gerbera/api_opengl/oglDescriptor.c \
+    src/gerbera/api_opengl/oglMatrixStack.c \
+    src/gerbera/api_opengl/oglTexManager.c \
+    src/gerbera/api_opengl/oglBufObjManager.c \
+    src/gerbera/api_opengl/oglUtil.c \
+    src/gerbera/api_opengl/oglGetter.c \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
     src/imath/IUnitScalar.c \
@@ -88,10 +95,15 @@ $(BUILD)/test_core: $(LIB_OBJ) tests/test_core.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LIB_SRC) tests/test_core.c -lm -o $@
 
-test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_core
+$(BUILD)/test_opengl: $(BUILD)/libgerbera.a tests/test_opengl.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) tests/test_opengl.c $(BUILD)/libgerbera.a -lm -o $@
+
+test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_core $(BUILD)/test_opengl
 	$(BUILD)/test_hg
 	$(BUILD)/test_imath
 	$(BUILD)/test_core
+	$(BUILD)/test_opengl
 
 clean:
 	rm -rf $(BUILD)

@@ -60,3 +60,46 @@ void grrGetTextureFormatDescriptor(_grSurfaceDescriptor *desc, int texFormat)
     desc->pixelFormat = info->pixelFormat;
     desc->paletteFormat = info->paletteFormat;
 }
+
+/* --- grrFreeTextureLevel / grrFreeTextureData (grrTexture.inl 341 / 370) --- */
+
+extern void eglFree(void *ptr);
+
+void grrFreeTextureLevel(_grTexture *texture, int mipLevel)
+{
+    _grMipLevel *mipmap;
+
+    if (texture == NULL &&
+        grAssert("texture", "grrTexture.inl", 341) != 0)
+        grDie(0);
+    if ((hgInRange32(mipLevel, 0, GR_MAX_TEXTURE_MIPMAPS - 1) == 0) &&
+        grAssert("hgInRange32(mipLevel, 0, GR_MAX_TEXTURE_MIPMAPS-1)",
+                 "grrTexture.inl", 342) != 0)
+        grDie(0);
+    mipmap = &texture->mipmap[mipLevel];
+    if (mipmap->pbuffer == 0)
+        eglFree(mipmap->pixels);
+    mipmap->pixels = NULL;
+    mipmap->log2Dim[0] = -1;
+    mipmap->log2Dim[1] = -1;
+    mipmap->texFormat = GR_TEXTUREFORMAT_MAX;
+    mipmap->initialized = 0;
+    mipmap->pbuffer = 0;
+    texture->parmMask |= 1u;
+    texture->flags183 |= 1u;
+}
+
+void grrFreeTextureData(_grTexture *texture)
+{
+    int i;
+
+    if (texture == NULL &&
+        grAssert("texture", "grrTexture.inl", 370) != 0)
+        grDie(0);
+    texture->parmMask |= 1u;
+    texture->flags183 |= 1u;
+    for (i = 0; i < GR_MAX_TEXTURE_MIPMAPS; ++i)
+        grrFreeTextureLevel(texture, i);
+    eglFree(texture->palette);
+    texture->palette = NULL;
+}

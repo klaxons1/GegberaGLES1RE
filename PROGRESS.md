@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 4g)
+Last updated: 2026-11-22 (session 5a)
 
 ## Legend
 
@@ -13,10 +13,10 @@ Last updated: 2026-11-22 (session 4g)
 | module | original tree | functions (unique) | status |
 |---|---|---|---|
 | hg | renderer/libs/hg | 105 | **DONE** (session 1) |
-| imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar + vector/matrix layers done (sessions 2-3) |
-| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z, 4g) - all functions + `HC_compile` pipeline wired |
-| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z) - clears, blit, texture rect |
-| gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
+| imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar + vector/matrix layers done (sessions 2-3; all `api_opengl` call targets present) |
+| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z, 4g, 5a) - core + `HC_compile` pipeline + `grGetInteger`/`grGetIScalar` |
+| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z, 5a) - clears, texture format/free, texture rect |
+| gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | **IN PROGRESS** (session 5a) - `GLES/gl.h`, `oglContext.h` (CodeView `TI=0x145B..0x1652`), `oglError`, `oglDescriptor`, `oglMatrixStack`, `oglTexManager`, `oglBufObjManager`, `oglGetter` (55 funcs, 224 checks); `oglUtil`, `oglContext`, `oglFast`, `oglApi` next |
 | gerbera/hc | .../gerbera/hc | 296 | **DONE** (sessions 4a-4g) - ALL 17 TUs ported (`hcCompiler.c` + `hcPanicRegalloc.inl`, x86 & ARM32 JIT backends, optimizer, regalloc, interpreter, bytecode; 2,254 core checks) |
 | egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
 | egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
@@ -1678,6 +1678,59 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
   **2,860 checks, 0 failures, 0 warnings across `src/`**.
 - **Next up**: `gerbera/api_opengl` (`ogl*.inl`, `oglFast.c`), remaining `imath`
   gaps (if any), and `egl` (`eglApi.inl`, `eglBase.inl`, `eglUtil.inl`).
+
+## Session 5a - `api_opengl` foundation, object managers, matrix stacks, & `oglGetter`
+
+- **CodeView NB11 `sstGlobalTypes` dump for `api_opengl` (`TI=0x145B..0x1652`)**:
+  - Recovered exact field layouts & byte offsets for `oglContext_s` (`TI=0x149E`),
+    `_oglGetterValues` (`TI=0x149A`, `676 = 0x2A4` bytes, pure scalar/array
+    layout identical on 32-bit and 64-bit hosts), `_oglGetterInfo` (`TI=0x14C7`),
+    `oglMatrixStack_s` (`TI=0x146B`), `oglTexContainer_s` / `oglTextureManager`
+    (`TI=0x147A/0x147D`), `oglBufObj_s` / `oglBufObjContainer_s` /
+    `oglBufObjManager_s` (`TI=0x1484/0x1487/0x148A`), and all 36 `OGL_*` / `GR_*`
+    enums (`OGL_ERROR`, `OGL_TEXSTATE`, `OGL_BUFOBJSTATE`, `OGL_BUFOBJUSAGE`,
+    `OGL_BUFOBJTARGET`, `OGL_INPUTTYPE`, `OGL_OUTPUTTYPE`, `OGL_STRINGNAME`,
+    `GR_QUERY`, `GR_IMAGEFORMAT_BGRA`, `GR_TEXTUREFORMAT_*`, `GR_WRAPMODE_*`).
+- **Headers & core helpers**:
+  - `src/include/GLES/gl.h`: OpenGL ES 1.1 Common Profile + OES extension types,
+    tokens, and `GL_API` entry-point declarations.
+  - `src/include/gerbera/api_opengl/oglContext.h`: all `OGL_*` enums, structs,
+    and internal `ogl*` prototypes.
+  - `src/gerbera/grApiSmall.c` (`grGetInteger`, `grGetIScalar`),
+    `src/gerbera/grrTexture.c` (`grrFreeTextureLevel`, `grrFreeTextureData`),
+    and `src/gerbera/grrStubs.c` (`eglAlloc`, `eglFree` hosted hooks).
+- **Ported 7 warning-free `src/gerbera/api_opengl/*.c` TUs (55 functions)**:
+  1. `oglError.c`: `oglSetError` (sticky first-error recording).
+  2. `oglDescriptor.c`: `oglFillDescriptor` (`RGB565`, `RGBA4444`, `RGBA5551`).
+  3. `oglMatrixStack.c`: `oglIsMatrixStackValid`, `oglGetMatrixStack`,
+     `oglGetActiveMatrixStack`, `oglGetActiveMatrix`, `oglGetMatrix`,
+     `oglMatrixToOutput`, `oglMatrixFixedToFloat`.
+  4. `oglTexManager.c`: `oglHashTexIndex`, `oglHashTexIndex2`,
+     `oglIsValidTextureManager`, `oglTexHashInsert`, `oglTexHashRemove`,
+     `oglGetTexture`, `oglIsTexture`, `oglNextPowerOfTwo`, `oglGrowTextureHash`,
+     `oglGenerateTextureName`, `oglAllocateTexture`, `oglDeleteTexture`,
+     `oglDestroyTextureManager`, `oglCreateTextureManager`.
+  5. `oglBufObjManager.c`: `oglIsValidBufObj`, `oglIsValidBufObjManager`,
+     `oglHashBufObjIndex`, `oglHashBufObjIndex2`, `oglBufObjHashInsert`,
+     `oglBufObjHashRemove`, `oglGetBufObj`, `oglIsBufObj`, `oglGrowBufObjHash`,
+     `oglGenerateBufObjName`, `oglInitBufObj`, `oglFreeBufObjData`,
+     `oglAllocateBufObj`, `oglDeleteBufObj`, `oglCreateBufObjManager`,
+     `oglDestroyBufObjManager`, `oglSetupBufObj`, `oglGetActiveBufObj`,
+     `oglBindBuffer`.
+  6. `oglUtil.c`: started with `oglBinarySearch`.
+  7. `oglGetter.c`: `s_defaultValues` (`0x471A74`), `s_getterTokens[154]`
+     (`0x471D18`), and `s_getterInfos[154]` (`0x471E4C`) extracted from PE
+     `.rdata` (catching `split_decomp.py`'s `_BOOL -> int` mutation inside
+     `"dataType == OGL_OUTPUTTYPE_BOOL"` via raw binary string verification),
+     plus all 13 `oglGetter.inl` functions (`ogl*ToOutput`, `oglFindGetterInfo`,
+     `oglSetDefaultGetterValues`, `oglSetGetterValue*`, `oglGetInternal`).
+- **`tests/test_opengl.c`** (`build/test_opengl`): +224 checks, 0 warnings,
+  0 failures (`hg`: 295, `imath`: 311, `core`: 2,254, `opengl`: 224 ->
+  **3,084 total checks, 0 failures**).
+- **Next up (Session 5b)**: remaining `grApiSmall.c` / `grrTexture.c` /
+  `grrBlit.c` helpers + full `oglUtil.c` + `oglContext.c`, followed by
+  **Session 5c** (`oglFast.c` + `oglApi.c` `gl*` entry points).
+
 
 
 

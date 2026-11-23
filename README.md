@@ -25,9 +25,10 @@ make test      # builds src/ and runs the unit tests
 ```
 
 Status: `hg` (295 checks), `imath` scalar/vector/matrix layers (311 checks),
-`gerbera/core` + `grr` rasterizer, and the **complete `gerbera/hc` JIT
-compiler** (`hcCompiler`, CFG/dominators/liveness/SSA-optimizations,
-graph-coloring & panic register allocators, interpreter, and BOTH x86 & ARM32
-JIT backends; 2,254 core checks) are ported and green (`2,860` total checks,
-0 failures, 0 warnings across `src/`). Next up: `api_opengl` and `egl`. See
+`gerbera/core` + `grr` rasterizer, the **complete `gerbera/hc` JIT compiler**
+(2,254 core checks), and **`gerbera/api_opengl` foundation** (`GLES/gl.h`,
+`oglContext.h`, `oglError`, `oglDescriptor`, `oglMatrixStack`, `oglTexManager`,
+`oglBufObjManager`, `oglGetter`; 224 opengl checks) are ported and green
+(`3,084` total checks, 0 failures, 0 warnings across `src/`). Next up:
+`oglUtil.c`, `oglContext.c`, `oglFast.c`, `oglApi.c`, and `egl`. See
 `PROGRESS.md`.

@@ -1294,8 +1294,27 @@ void grSetColorMask(Gerbera_s *state, unsigned int mask);
 void grSetDepthMask(Gerbera_s *state, int mask);
 void grSetStencilMask(Gerbera_s *state, unsigned int mask);
 
+/* --- grQuery (TI=0x1558) --------------------------------------------------- */
+enum GR_QUERY_e
+{
+    GR_QUERY_FRONT_FACE    = 0,
+    GR_QUERY_CULL_MASK     = 1,
+    GR_QUERY_STENCIL_REF   = 2,
+    GR_QUERY_STENCIL_CLEAR = 3,
+    GR_QUERY_FOG_START     = 4,
+    GR_QUERY_FOG_END       = 5,
+    GR_QUERY_MAX           = 6
+};
+
+int  grGetInteger(Gerbera_s *state, int value);
+int  grGetIScalar(Gerbera_s *state, int value);
+
 /* --- grClearBuffers (grApiSmall.inl 388): queue a clear record ------------- */
 void grClearBuffers(Gerbera_s *state, unsigned int bufferMask);
+
+/* --- egl allocator hooks (eglSymbian.inl, hosted in grrStubs.c until egl) -- */
+void *eglAlloc(unsigned int size);
+void eglFree(void *ptr);
 
 /* --- grr layer (grrClear.inl + grrRender.inl, implemented in grrRender.c) --
  * the flush side of the clear queue; the lock/release pair is egl material

@@ -29,7 +29,8 @@ enum GR_IMAGEFORMAT_e
     GR_IMAGEFORMAT_LUMINANCE = 3,
     GR_IMAGEFORMAT_LUMINANCE_ALPHA = 4,
     GR_IMAGEFORMAT_BGR = 5,
-    GR_IMAGEFORMAT_6 = 6,            /* 4 components; name unknown yet */
+    GR_IMAGEFORMAT_BGRA = 6,
+    GR_IMAGEFORMAT_6 = 6,            /* legacy alias */
     GR_IMAGEFORMAT_MAX = 7
 };
 
