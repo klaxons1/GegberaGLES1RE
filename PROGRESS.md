@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 4e)
+Last updated: 2026-11-22 (session 4f)
 
 ## Legend
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-22 (session 4e)
 | gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z) - all functions ported, 1088 checks green |
 | gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z) - clears, blit, texture rect |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
-| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - opcode + interpreter + memory/arena + backendInfo + **BOTH x86 & ARM JIT backends** done (4a-4e, 1498 core checks); HC_compile & hcEmulator next |
+| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - ALL leaf modules (`hcOpcode`, `hcMemory`, `hcBitSet`, `hcAdjMtx`, `hcAdjList`, `hcBucketDefs`, `hcDUChain`, `hcBasicBlock`, `hcQueue`, `hcStack`, `hcEmulator`, `hcBackendInfo`), `grInterpreter`, and **BOTH x86 & ARM32 JIT backends** done (4a-4f, 1653 core checks); ONLY `hcCompiler.c` + `grrStubs.c` wiring left in `hc`! |
 | egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
 | egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
 | crt/platform | Symbian + MSL runtime | 44 | n/a (reference) |
@@ -1591,4 +1591,41 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
 - Next: `hcEmulator.c` (compile-time constant folding/substitution helpers) +
   `HC_compile` core (`hcCompiler` / CFG / SSA / liveness / regalloc) +
   `grrStubs.c` wiring.
+
+## Session 4f - All remaining `hc` data structures & `hcEmulator` ported
+
+- Parsed CodeView `NB11` `sstGlobalTypes` (`docs/libGLES_CM.dll` offset `0x98000`
+  -> `0x142F58`, 3,656 records) to pin exact field names, byte offsets, and
+  bitfields for every `hc` struct (`HCBitSet_s`, `HCAdjMtx_s`, `HCAdjList_s`,
+  `DUChain_s`, `UDChainStub_s`, `HCBucketDefs_s`, `BasicBlock_s`, `HCQueue_s`,
+  `HCStack_s`, `HCRandom_s`, plus upcoming `hcCompiler.c` structs `AdjEntry_s`,
+  `LREntry_s`, `CopySet_s`, `FillBlock_s`, `CompParams_s`).
+- Ported 9 warning-free, 64-bit-clean `hc` modules (`src/include/gerbera/hc/` +
+  `src/gerbera/hc/`):
+  1. `hcBitSet.h/.c` (`HCBitSet_*`: create/noClear, contains, or, sub, copy,
+     clear, set, equal, numElements, getFirst/getNext, getFirstUnset/getNextUnset,
+     union, intersect, difference; preserved `0x451688` logical `shr` behavior
+     in `getNextUnset`).
+  2. `hcAdjMtx.h/.c` (`HCAdjMtx_calcIndex`, `create`, `connect`, `hasEdge`).
+  3. `hcAdjList.h/.c` (`HCAdjList_create`, `getEdges` + delta-reference lower
+     rows and RLE upper spans).
+  4. `hcBucketDefs.h/.c` (`HCBucketDefs_create`, `numValues`, `getValue`,
+     `getCachedSet`, `sub`).
+  5. `hcDUChain.h/.c` (`DUChain_create`, `UDChainStub_create`).
+  6. `hcBasicBlock.h/.c` (`BasicBlock_init`, `setStart`/`getStart`,
+     `setEnd`/`getEnd`, `setDominators`).
+  7. `hcQueue.h/.c` (`HCQueue_create`, `isEmpty`, `enqueue`, `dequeue`).
+  8. `hcStack.h/.c` (`HCStack_create`, `push`, `pop`, `isEmpty`).
+  9. `hcEmulator.h/.c` (`emulator_evalConditional`, `emulator_evalALUOp`,
+     `emulator_substitute` with `nonComm[5]` @ `0x47F724` and `ops[12]` @
+     `0x47F72E` verified from raw PE bytes, plus binary-verified `op == op`
+     variable-shadowing behavior in both x86 `0x45DD9B` and ARM `sub_2CABC`).
+- Updated `README.md`, `AGENTS.md`, `docs/analysis.md`, and `PROGRESS.md`.
+- **test_hcdatastructs_and_emulator** (`tests/test_core.c`): +155 checks (`hg`:
+  295, `imath`: 311, `core`: 1653 checks -> **2,259 total checks, 0 failures**).
+- Next: **Session 4g** — `hcCompiler.c` + `hcPanicRegalloc.inl` (`HC_compile`,
+  `HC_extraStackSpace`, CFG/dominators/liveness/SSA-optimizations/graph-coloring
+  & panic register allocation) + `grrStubs.c` wiring (`grGetBackend`,
+  `grScratchGrowMemory`) to complete the entire `hc` module!
+
 

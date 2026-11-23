@@ -20,9 +20,9 @@ extern "C" {
 
 typedef struct HCRandom_s
 {
-    unsigned int randBuffer[HC_RANDOM_KK];
     int p1;
     int p2;
+    unsigned int randBuffer[HC_RANDOM_KK];
 } HCRandom_s;
 
 void HCRandom_init(HCRandom_s *self);

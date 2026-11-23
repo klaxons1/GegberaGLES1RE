@@ -29,6 +29,15 @@ LIB_SRC := \
              src/gerbera/grPipelineCache.c \
              src/gerbera/hc/hcOpcode.c \
              src/gerbera/hc/hcMemory.c \
+             src/gerbera/hc/hcBitSet.c \
+             src/gerbera/hc/hcAdjMtx.c \
+             src/gerbera/hc/hcAdjList.c \
+             src/gerbera/hc/hcBucketDefs.c \
+             src/gerbera/hc/hcDUChain.c \
+             src/gerbera/hc/hcBasicBlock.c \
+             src/gerbera/hc/hcQueue.c \
+             src/gerbera/hc/hcStack.c \
+             src/gerbera/hc/hcEmulator.c \
              src/gerbera/hc/hcBackendInfo.c \
              src/gerbera/hc/hcX86Backend.c \
              src/gerbera/hc/hcARMBackend.c \

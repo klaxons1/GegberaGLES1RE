@@ -144,6 +144,7 @@ static void test_hcopcode(void);
 static void test_interpreter(void);
 static void test_hcx86backend(void);
 static void test_hcarmbackend(void);
+static void test_hcdatastructs_and_emulator(void);
 static void test_gradients(void);
 
 int main(void)
@@ -188,6 +189,7 @@ int main(void)
     test_interpreter();
     test_hcx86backend();
     test_hcarmbackend();
+    test_hcdatastructs_and_emulator();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -4245,4 +4247,293 @@ static void test_hcarmbackend(void)
         HCArena_releaseBottom(&arena, mark);
     }
 }
+
+/* --- test_hcdatastructs_and_emulator (4f) --------------------------------- */
+#include "gerbera/hc/hcAdjList.h"
+#include "gerbera/hc/hcAdjMtx.h"
+#include "gerbera/hc/hcBasicBlock.h"
+#include "gerbera/hc/hcBitSet.h"
+#include "gerbera/hc/hcBucketDefs.h"
+#include "gerbera/hc/hcDUChain.h"
+#include "gerbera/hc/hcEmulator.h"
+#include "gerbera/hc/hcQueue.h"
+#include "gerbera/hc/hcStack.h"
+
+static void test_hcdatastructs_and_emulator(void)
+{
+    static unsigned char arenaBuf[65536];
+    HCArena_s arena;
+    HCMemory_s mem;
+    int mark;
+
+    HCArena_init(&arena, arenaBuf, (int)sizeof(arenaBuf));
+    mem = HCArena_bottomInterface(&arena);
+
+    /* 1. HCBitSet: multi-word operations (length = 70 -> 3 words) */
+    mark = HCMemory_mark(&mem);
+    {
+        HCBitSet_s *a = HCBitSet_create(&mem, 70);
+        HCBitSet_s *b = HCBitSet_create(&mem, 70);
+
+        CHECK(HCBitSet_numElements(a) == 0);
+        CHECK(HCBitSet_getFirst(a) == -1);
+        CHECK(HCBitSet_getFirstUnset(a) == 0);
+
+        HCBitSet_or(a, 0);
+        HCBitSet_or(a, 31);
+        HCBitSet_or(a, 32);
+        HCBitSet_or(a, 69);
+        CHECK(HCBitSet_contains(a, 0) != 0);
+        CHECK(HCBitSet_contains(a, 31) != 0);
+        CHECK(HCBitSet_contains(a, 32) != 0);
+        CHECK(HCBitSet_contains(a, 69) != 0);
+        CHECK(HCBitSet_contains(a, 33) == 0);
+        CHECK(HCBitSet_numElements(a) == 4);
+        CHECK(HCBitSet_getFirst(a) == 0);
+        CHECK(HCBitSet_getNext(a, 0) == 31);
+        CHECK(HCBitSet_getNext(a, 31) == 32);
+        CHECK(HCBitSet_getNext(a, 32) == 69);
+        CHECK(HCBitSet_getNext(a, 69) == -1);
+
+        HCBitSet_sub(a, 31);
+        CHECK(HCBitSet_contains(a, 31) == 0);
+        CHECK(HCBitSet_numElements(a) == 3);
+
+        HCBitSet_copy(b, a);
+        CHECK(HCBitSet_equal(a, b) == 1);
+        HCBitSet_or(b, 15);
+        CHECK(HCBitSet_equal(a, b) == 0);
+
+        HCBitSet_union(a, b);
+        CHECK(HCBitSet_equal(a, b) == 1);
+        HCBitSet_sub(b, 0);
+        HCBitSet_intersect(a, b);
+        CHECK(HCBitSet_contains(a, 0) == 0 && HCBitSet_contains(a, 15) != 0);
+        HCBitSet_difference(a, b);
+        CHECK(HCBitSet_numElements(a) == 0);
+
+        /* HCBitSet_set masks tail word to 70 bits (69 max, 70 out-of-range) */
+        HCBitSet_set(b);
+        CHECK(HCBitSet_numElements(b) == 70);
+        CHECK(HCBitSet_getFirstUnset(b) == -1);
+        HCBitSet_sub(b, 35);
+        HCBitSet_sub(b, 42);
+        CHECK(HCBitSet_getFirstUnset(b) == 35);
+        CHECK(HCBitSet_getNextUnset(b, 35) == 42);
+        HCBitSet_clear(b);
+        CHECK(HCBitSet_numElements(b) == 0);
+
+        /* Single-word nHardRegs=14 bitset (as used by minColor) */
+        {
+            HCBitSet_s *c = HCBitSet_create(&mem, 14);
+            HCBitSet_set(c);
+            HCBitSet_sub(c, 3);
+            HCBitSet_sub(c, 11);
+            CHECK(HCBitSet_getFirstUnset(c) == 3);
+            CHECK(HCBitSet_getNextUnset(c, 3) == 11);
+            CHECK(HCBitSet_getNextUnset(c, 11) == -1);
+        }
+    }
+    HCMemory_release(&mem, mark);
+
+    /* 2. HCAdjMtx + HCAdjList: 8-node compressed interference graph */
+    mark = HCMemory_mark(&mem);
+    {
+        static const int pairs[][2] = {
+            {1, 0}, {2, 0}, {2, 1}, {4, 0}, {4, 1}, {4, 3},
+            {5, 0}, {5, 1}, {5, 4}, {6, 2}, {6, 5}, {7, 0}, {7, 3}, {7, 6}
+        };
+        int adjRef[8][8];
+        HCAdjMtx_s *mtx = HCAdjMtx_create(&mem, 8);
+        HCAdjList_s *list;
+        unsigned short edges[16];
+        int k, u, v;
+
+        memset(adjRef, 0, sizeof(adjRef));
+        for (k = 0; k < (int)(sizeof(pairs) / sizeof(pairs[0])); ++k)
+        {
+            u = pairs[k][0];
+            v = pairs[k][1];
+            HCAdjMtx_connect(mtx, u, v);
+            adjRef[u][v] = 1;
+            adjRef[v][u] = 1;
+        }
+        CHECK(HCAdjMtx_hasEdge(mtx, 4, 1) != 0);
+        CHECK(HCAdjMtx_hasEdge(mtx, 4, 2) == 0);
+
+        list = HCAdjList_create(&mem, mtx);
+        CHECK(list != NULL && list->numNodes == 8);
+        for (u = 0; u < 8; ++u)
+        {
+            int got = HCAdjList_getEdges(list, u, edges);
+            int expected = 0;
+            int idx = 0;
+            for (v = 0; v < 8; ++v)
+                expected += adjRef[u][v];
+            CHECK(got == expected);
+            for (v = 0; v < 8; ++v)
+            {
+                if (adjRef[u][v])
+                    CHECK(idx < got && edges[idx++] == (unsigned short)v);
+            }
+        }
+    }
+    HCMemory_release(&mem, mark);
+
+    /* 3. HCBucketDefs (cached nBuckets<32 and uncached nBuckets>=32) + DUChain + BasicBlock */
+    mark = HCMemory_mark(&mem);
+    {
+        HCInstr_s ir[6];
+        HCBucketDefs_s *bdSmall;
+        HCBucketDefs_s *bdLarge;
+        HCBitSet_s *reach;
+        DUChain_s *du;
+        UDChainStub_s *uds;
+        BasicBlock_s bb;
+
+        ir[0] = HC_genOp2Imm(HCOP_MOV, 2, 10);
+        ir[1] = HC_genOp2Imm(HCOP_MOV, 5, 20);
+        ir[2] = HC_genOp3(HCOP_ADD, 2, 2, 5);
+        ir[3] = HC_genOp3Imm(HCOP_SD, 2, 0, 4); /* store: no def */
+        ir[4] = HC_genOp2Imm(HCOP_MOV, 2, 99);
+        ir[5] = HC_genOp0(HCOP_EOP);
+
+        bdSmall = HCBucketDefs_create(&mem, ir, 8, 6);
+        CHECK(HCBucketDefs_numValues(bdSmall, 2) == 3);
+        CHECK(HCBucketDefs_getValue(bdSmall, 2, 0) == 0);
+        CHECK(HCBucketDefs_getValue(bdSmall, 2, 1) == 2);
+        CHECK(HCBucketDefs_getValue(bdSmall, 2, 2) == 4);
+        CHECK(HCBucketDefs_numValues(bdSmall, 5) == 1);
+        CHECK(HCBucketDefs_getValue(bdSmall, 5, 0) == 1);
+        CHECK(HCBucketDefs_numValues(bdSmall, 3) == 0);
+        CHECK(HCBucketDefs_getCachedSet(bdSmall, 2) != NULL);
+
+        reach = HCBitSet_create(&mem, 6);
+        HCBitSet_set(reach);
+        HCBucketDefs_sub(bdSmall, reach, 2);
+        CHECK(HCBitSet_contains(reach, 0) == 0);
+        CHECK(HCBitSet_contains(reach, 2) == 0);
+        CHECK(HCBitSet_contains(reach, 4) == 0);
+        CHECK(HCBitSet_contains(reach, 1) != 0);
+
+        bdLarge = HCBucketDefs_create(&mem, ir, 40, 6);
+        CHECK(HCBucketDefs_getCachedSet(bdLarge, 2) == NULL);
+        HCBitSet_set(reach);
+        HCBucketDefs_sub(bdLarge, reach, 2);
+        CHECK(HCBitSet_numElements(reach) == 3);
+
+        du = DUChain_create(&mem, 4);
+        CHECK(du != NULL && du->length == 0);
+        uds = UDChainStub_create(&mem, 3);
+        CHECK(uds != NULL && uds->chains[0] == NULL && uds->chains[2] == NULL);
+
+        BasicBlock_init(&bb);
+        BasicBlock_setStart(&bb, 3);
+        BasicBlock_setEnd(&bb, 19);
+        BasicBlock_setDominators(&bb, reach);
+        CHECK(BasicBlock_getStart(&bb) == 3);
+        CHECK(BasicBlock_getEnd(&bb) == 19);
+        CHECK(bb.dominators == reach);
+    }
+    HCMemory_release(&mem, mark);
+
+    /* 4. HCQueue (wrap-around + grow) & HCStack (grow past 2) */
+    mark = HCArena_markBottom(&arena);
+    {
+        HCQueue_s *q = HCQueue_create(&arena);
+        int i;
+
+        CHECK(HCQueue_isEmpty(q) == 1);
+        for (i = 0; i < 8; ++i)
+            HCQueue_enqueue(&arena, q, 100 + i);
+        for (i = 0; i < 5; ++i)
+            CHECK(HCQueue_dequeue(q) == 100 + i);
+        /* Queue now has 3 elements wrapped near end; enqueue 12 more to force grows */
+        for (i = 8; i < 20; ++i)
+            HCQueue_enqueue(&arena, q, 100 + i);
+        for (i = 5; i < 20; ++i)
+            CHECK(HCQueue_dequeue(q) == 100 + i);
+        CHECK(HCQueue_isEmpty(q) == 1);
+    }
+    HCArena_releaseBottom(&arena, mark);
+
+    mark = HCArena_markBottom(&arena);
+    {
+        HCStack_s *st = HCStack_create(&arena);
+        int i;
+
+        CHECK(HCStack_isEmpty(st) == 1);
+        for (i = 0; i < 10; ++i)
+            HCStack_push(&arena, st, 500 + i);
+        CHECK(HCStack_isEmpty(st) == 0);
+        for (i = 9; i >= 0; --i)
+            CHECK(HCStack_pop(st) == 500 + i);
+        CHECK(HCStack_isEmpty(st) == 1);
+    }
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 5. hcEmulator: conditionals, ALU ops, and instruction substitution */
+    CHECK(emulator_evalConditional(HCOP_CBA, 0x0Au, 0x02u) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBNA, 0x0Au, 0x04u) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBEQ, 42u, 42u) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBNEQ, 42u, 43u) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBLTS, 0x80000000u, 1u) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBLTU, 0x80000000u, 1u) == 0);
+    CHECK(emulator_evalConditional(HCOP_CBGTS, 1u, 0xFFFFFFFFu) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBGTU, 0xFFFFFFFFu, 1u) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBGES, 0xFFFFFFFFu, 0xFFFFFFFFu) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBGEU, 5u, 5u) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBLES, 0xFFFFFFFFu, 0u) == 1);
+    CHECK(emulator_evalConditional(HCOP_CBLEU, 0u, 0xFFFFFFFFu) == 1);
+
+    CHECK(emulator_evalALUOp(HCOP_ADD, 10u, 25u) == 35);
+    CHECK(emulator_evalALUOp(HCOP_SUB, 10u, 25u) == -15);
+    CHECK(emulator_evalALUOp(HCOP_SUBR, 10u, 25u) == 15);
+    CHECK(emulator_evalALUOp(HCOP_BIC, 0xFFu, 0x0Fu) == 0xF0);
+    CHECK(emulator_evalALUOp(HCOP_ASR, 0xFFFFFFF0u, 2u) == -4);
+    CHECK(emulator_evalALUOp(HCOP_LSR, 0xFFFFFFF0u, 4u) == 0x0FFFFFFF);
+    CHECK(emulator_evalALUOp(HCOP_ASD, 0xFFFFFFF0u, (unsigned int)-2) == -4);
+    CHECK(emulator_evalALUOp(HCOP_LSD, 0xFFFFFFF0u, (unsigned int)-4) == 0x0FFFFFFF);
+    CHECK((unsigned int)emulator_evalALUOp(HCOP_ROL, 0x80000001u, 1u) == 3u);
+    CHECK((unsigned int)emulator_evalALUOp(HCOP_ROR, 3u, 1u) == 0x80000001u);
+    CHECK(emulator_evalALUOp(HCOP_MAXS, (unsigned int)-5, 3u) == 3);
+    CHECK((unsigned int)emulator_evalALUOp(HCOP_MAXU, (unsigned int)-5, 3u) == (unsigned int)-5);
+    CHECK(emulator_evalALUOp(HCOP_MINS, (unsigned int)-5, 3u) == -5);
+    CHECK(emulator_evalALUOp(HCOP_MINU, (unsigned int)-5, 3u) == 3);
+    CHECK(emulator_evalALUOp(HCOP_MOVN, 0u, 0u) == -1);
+
+    {
+        HCInstr_s in, out;
+
+        /* ADD r1, r3, #7 with r3=10 -> MOV r1, #17 */
+        in = HC_genOp3Imm(HCOP_ADD, 1, 3, 7);
+        out = emulator_substitute(&in, 3, 10);
+        CHECK(HC_getOpcodeOper(&out) == HCOP_MOV && HC_getOpcodeImm(&out) == 17);
+
+        /* SUB r1, r3, r4 with r3=50 -> SUBR r1, r4, #50 */
+        in = HC_genOp3(HCOP_SUB, 1, 3, 4);
+        out = emulator_substitute(&in, 3, 50);
+        CHECK(HC_getOpcodeOper(&out) == HCOP_SUBR
+              && HC_getOpcodeSrc0(&out) == 4
+              && HC_getOpcodeImm(&out) == 50);
+
+        /* LD4 r1, r0, r3 with r3=5 -> LD r1, r0, #20 */
+        in = HC_genOp3(HCOP_LD4, 1, 0, 3);
+        out = emulator_substitute(&in, 3, 5);
+        CHECK(HC_getOpcodeOper(&out) == HCOP_LD && HC_getOpcodeImm(&out) == 20);
+
+        /* LD4 r1, r3, r2 (base is r3): NOT folded (scaled index is r2) */
+        in = HC_genOp3(HCOP_LD4, 1, 3, 2);
+        out = emulator_substitute(&in, 3, 5);
+        CHECK(HC_getOpcodeOper(&out) == HCOP_LD4 && !HC_opcodeHasImm(&out));
+
+        /* CBEQ label9, r3, #42: r3=42 -> BRA 9; r3=41 -> NOP */
+        in = HC_genOp3ImmRaw(HCOP_CBEQ, 9, 3, 42);
+        out = emulator_substitute(&in, 3, 42);
+        CHECK(HC_getOpcodeOper(&out) == HCOP_BRA && HC_getOpcodeDst(&out) == 9);
+        out = emulator_substitute(&in, 3, 41);
+        CHECK(HC_getOpcodeOper(&out) == HCOP_NOP);
+    }
+}
+
 

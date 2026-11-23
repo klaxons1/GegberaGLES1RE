@@ -193,6 +193,28 @@ semantics line-for-line (verified against the session-4b port): big-endian
 16-bit offsets, HC-instruction inner loop without pop, repeat-frame
 `[limit, counter]` with cases 0xE/F/0x10 reading the counter.
 
+### CodeView NB11 `sstGlobalTypes` & `hc` binary quirks (recovered session 4f)
+
+- `docs/libGLES_CM.dll` embeds a complete CodeView `NB11` debug directory at
+  file offset `0x98000` (`sstGlobalTypes` at `0x142F58`, `3,656` type records),
+  preserving exact struct field names, byte offsets, and bitfield widths even
+  for anonymous typedef structs (`HCBitSet_s`, `HCAdjMtx_s`, `HCAdjList_s`,
+  `DUChain_s`, `UDChainStub_s`, `HCBucketDefs_s`, `BasicBlock_s`, `HCQueue_s`
+  `TI=0x1A9B`, `HCStack_s` `TI=0x1AA0`, `AdjEntry_s` `TI=0x1AAB`
+  `{spillCost:31, spill:1, color:6, disp:26}`, `LREntry_s`, `CopySet_s`
+  `{dst:16, src:16, shift:6, type:2, pad:24}`, peephole rule `TI=0x1A7D`,
+  `FillBlock_s`, and `CompParams_s` `TI=0x1B70`).
+- Two original Gerbera C quirks verified directly in machine code:
+  1. `emulator_substitute` (`hcEmulator.c`): in the 2-register conditional
+     branch loop (`VA 0x45DD84..0x45DD9E` on x86; `sub_2CABC` on ARM), the
+     original C code shadowed outer `op` (`int op = ops[i] & 0xff; if (op == op)`),
+     compiling literally to `cmp [ebp-0x38], eax` (`op == op`) on x86 and
+     matching `i = 0` (`HCOP_CBA`) unconditionally when `s0 == cReg`.
+  2. `HCBitSet_getNextUnset` (`hcBitSet.c`, `VA 0x451688`): uses logical `shr`
+     (`data[ndx] >> ofs != 0xFFFFFFFFu`), which leaves `ofs` top zero bits when
+     `ofs > 0`; harmless for its sole caller `minColor` (`length == nHardRegs
+     <= 14`, single word, where `ofs + (32 - ofs) == 32 >= length` returns `-1`).
+
 ## Strategy for full reconstruction
 
 1. Port leaf libraries first (hg done, imath next) - no struct unknowns.

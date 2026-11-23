@@ -29,7 +29,7 @@ typedef struct _HCInstr
 } HCInstr_s;
 
 /* --- opcode enum (exact CodeView LF_ENUMERATE order from libGLES_CM.dll) -- */
-enum HCOP_e
+typedef enum HCOP_e
 {
     HCOP_ADD   = 0,
     HCOP_AND   = 1,
@@ -87,26 +87,26 @@ enum HCOP_e
     HCOP_EOP   = 53,
     HCOP_LABEL = 54,
     HCOP_MAX   = 55
-};
+} HCOP_e;
 
 /* opcode types (HC_opcodeDecls bits 3-4) */
-enum HCOP_TYPE_e
+typedef enum HCOP_TYPE_e
 {
     HCOP_TYPE_ALUOP  = 0,
     HCOP_TYPE_MEMOP  = 1,
     HCOP_TYPE_BRANCH = 2,
     HCOP_TYPE_SIZE   = 2
-};
+} HCOP_TYPE_e;
 
 /* dst flags (HC_opcodeDecls bits 6-7) */
-enum HCOP_DST_e
+typedef enum HCOP_DST_e
 {
     HCOP_DST_NORMAL        = 0,
     HCOP_DST_AS_SRC        = 1,
     HCOP_DST_AS_LABEL      = 2,
     HCOP_DST_NOT_AVAILABLE = 3,
     HCOP_DST_SIZE          = 2
-};
+} HCOP_DST_e;
 
 #define HCOP_OPER_SIZE   8
 #define HCOP_DST_SIZE    11
