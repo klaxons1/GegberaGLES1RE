@@ -614,7 +614,7 @@ static void test_gl_strings_errors_and_state(void)
     egliSetCurrentContext(ctx);
 
     CHECK(glGetError() == GL_NO_ERROR);
-    CHECK(strcmp((const char *)glGetString(GL_VENDOR), "Nokia") == 0);
+    CHECK(strcmp((const char *)glGetString(GL_VENDOR), "klaxons") == 0);
     CHECK(strcmp((const char *)glGetString(GL_RENDERER), "1.1.0") == 0);
     CHECK(strcmp((const char *)glGetString(GL_VERSION), "OpenGL ES-CM 1.1") == 0);
     CHECK(strstr((const char *)glGetString(GL_EXTENSIONS), "GL_OES_draw_texture") != NULL);

@@ -21,7 +21,7 @@ Running ClassiCube on Windows (x86 / x64)
 3. In game, open chat (T) and run:
        /client gpuinfo
    to verify live driver strings from libGLES_CM.dll:
-       Vendor: Nokia
+       Vendor: klaxons
        Renderer: 1.1.0
        GL version: OpenGL ES-CM 1.1
        EGL: 1.1 (Hybrid Graphics, Ltd. - Gerbera libGLES_CM.dll Win32)

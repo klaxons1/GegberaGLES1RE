@@ -15,7 +15,7 @@ EXPORTS
     eglGetCurrentSurface @13
     eglGetDisplay @14
     eglGetError @15
-    void @16
+    eglGetProcAddress @16
     eglInitialize @17
     eglMakeCurrent @18
     eglQueryContext @19

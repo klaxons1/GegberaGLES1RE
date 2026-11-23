@@ -15,7 +15,7 @@
 
 static const char *const g_getStrings[4] =
 {
-    "Nokia",
+    "klaxons",
     "1.1.0",
     "OpenGL ES-CM 1.1",
     "GL_OES_byte_coordinates GL_OES_fixed_point GL_OES_single_precision "
