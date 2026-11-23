@@ -12,10 +12,20 @@ extern "C" {
 #endif
 
 #ifndef GL_API
-#define GL_API extern
+#  if defined(_WIN32) && defined(GERBERA_DLL_EXPORTS)
+#    define GL_API __declspec(dllexport)
+#  elif defined(_WIN32) && defined(GERBERA_DLL_IMPORTS)
+#    define GL_API __declspec(dllimport)
+#  else
+#    define GL_API extern
+#  endif
 #endif
 #ifndef GL_APIENTRY
-#define GL_APIENTRY
+#  if defined(_WIN32)
+#    define GL_APIENTRY __cdecl
+#  else
+#    define GL_APIENTRY
+#  endif
 #endif
 
 /* --- OpenGL ES 1.1 types --------------------------------------------------- */

@@ -81,8 +81,11 @@ LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 
 TEST_SRC := tests/test_hg.c tests/test_imath.c tests/test_core.c tests/test_opengl.c tests/test_egl.c
 
-.PHONY: all test clean
+.PHONY: all test win32 clean
 all: $(BUILD)/libgerbera.a
+
+win32:
+	./demo/build_win32.sh
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)

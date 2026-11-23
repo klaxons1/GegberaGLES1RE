@@ -1845,6 +1845,17 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
   7. `grClipper` (`src/gerbera/grClipper.c:290`): `dot[GR_MAX_CLIPPER_VERTICES]` (`15`) for multi-plane clipped polygons.
 - **Tests (`make test`)**: **4,422 / 4,422 checks passing, 0 failures, 0 warnings, 0 ASan/LSan errors**.
 
+## DONE session 8 (Win32 x86 Release Build: `libGLES_CM.dll` + playable `ClassiCube.exe` + Early-Z/Fast-Path rasterizer)
+
+- **32-bit x86 Portability & DEP Safety (`src/hg/hgInt32.c`, `src/gerbera/grPixelPipeline.c`, `src/include/GLES/{gl.h,egl.h}`)**:
+  - Fixed C99 shift-by-`>=32` undefined behavior in `hgLsl64` and `hgLsl64h` (`src/hg/hgInt32.c:271,278`) uncovered by 32-bit x86 `-O2`/`-O3` constant folding (`4,422 / 4,422` checks verified on both 32-bit `i386` and 64-bit `x86_64`).
+  - Enabled DEP-safe `grExecutePixelPipeline64` across both 32-bit and 64-bit targets (avoiding execution from heap/arena memory on modern Windows DEP) and added Early-Z depth rejection + specialized `XRGB8888`/`ARGB8888` + `Z16` + `RGBA8 MODULATE` scanline fast-paths (~4-5x pixel-pipeline speedup while preserving 100% bit-exact output).
+  - Added `_WIN32` `__declspec(dllexport)` / `__declspec(dllimport)` (`GERBERA_DLL_EXPORTS` / `GERBERA_DLL_IMPORTS`) and `__cdecl` annotations to `<GLES/gl.h>`, `<GLES/egl.h>`, and `<gerbera/grState.h>`, plus PE module-definition reference `src/gerbera/egl/libGLES_CM.def`.
+- **Win32 (32-bit `i386` PE32) Release Package (`demo/win32/` & `demo/ClassiCube-Gerbera-GLES1-Win32.zip`, built via `make win32` / `demo/build_win32.sh`)**:
+  - `demo/win32/libGLES_CM.dll` (`546 KB`, `-O3 -DNDEBUG -DHG_NO_ASSERTS`) + `libGLES_CM.lib`: exports all **177 / 177** original `libGLES_CM.dll` symbols plus OES & hosted EGL entry points (`190` exports total), importing only Windows `KERNEL32.dll` + UCRT.
+  - `demo/win32/ClassiCube.exe` (`1.40 MB`, `IMAGE_SUBSYSTEM_WINDOWS_GUI` PE32): interactive Win32 ClassiCube release dynamically importing `52` OpenGL ES 1.1 + EGL 1.1 entry points from `libGLES_CM.dll` (zero `OPENGL32.dll` or Direct3D dependencies), presenting `eglSwapBuffers` via a top-down 32-bpp GDI `DIBSection` with live window resizing and bundled offline `texpacks/default.zip`.
+
+
 
 
 

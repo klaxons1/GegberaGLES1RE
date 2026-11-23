@@ -887,7 +887,7 @@ typedef struct grBlitInfo_s
     grBlitImage_s *dstImage;
 } grBlitInfo_s;
 
-typedef struct Gerbera_s
+struct Gerbera_s
 {
     /* --- capabilities --------------------------------------------------- */
     unsigned char capabilities[GR_CAPABILITY_MAX];
@@ -1093,7 +1093,7 @@ typedef struct Gerbera_s
     _XColor3 baseColor;             /* ambientLightSum*material.ambient+emission
                                      * (grUpdateLights) */
     int baseColorDirty;
-} Gerbera_s;
+};
 
 /* --- grApiSmall.inl: transform stack / user clip planes -------------------- */
 void grSetMatrix(Gerbera_s *state, int mode, _IMatrix4x4 *matrix);
@@ -1503,8 +1503,13 @@ void grrClearStencilBuffer(_grDrawSurface *surface, _grClearInfo *info);
 void grrClearBuffers(_grDrawSurface *surface, _grClearInfo *info);
 void grFlushBufferClears(Gerbera_s *state);
 
-int  grGetStatistic(int stat);
-void grResetStatistics(void);
+#if defined(_WIN32) && defined(GERBERA_DLL_EXPORTS)
+#define GR_PUBLIC_API __declspec(dllexport)
+#else
+#define GR_PUBLIC_API
+#endif
+GR_PUBLIC_API int  grGetStatistic(int stat);
+GR_PUBLIC_API void grResetStatistics(void);
 
 HG_EXTERN_C_END
 

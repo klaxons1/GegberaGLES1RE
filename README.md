@@ -22,7 +22,8 @@ What is in this repository:
 Build and test:
 
 ```
-make test      # builds build/libgerbera.a (66 .c files) and runs all 5 test suites
+make test      # builds build/libgerbera.a (65 .c files) and runs all 5 test suites
+make win32     # cross-compiles Win32 (i386 PE32) libGLES_CM.dll + ClassiCube.exe in demo/win32/
 ```
 
 Status: **100% of all modules (`hg`, `imath`, `gerbera/core`, `grr`, `hc`,

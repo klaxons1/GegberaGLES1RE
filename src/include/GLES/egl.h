@@ -190,6 +190,11 @@ EGLAPI EGLBoolean  EGLAPIENTRY eglWaitNative(EGLint engine);
 EGLAPI EGLBoolean  EGLAPIENTRY eglSwapBuffers(EGLDisplay dpy, EGLSurface surface);
 EGLAPI EGLBoolean  EGLAPIENTRY eglCopyBuffers(EGLDisplay dpy, EGLSurface surface, NativePixmapType target);
 
+/* Hosted display mode & Gerbera statistics exports */
+EGLAPI void        EGLAPIENTRY egliSetDefaultDisplayMode(int displayMode);
+EGLAPI int         EGLAPIENTRY grGetStatistic(int stat);
+EGLAPI void        EGLAPIENTRY grResetStatistics(void);
+
 #ifdef __cplusplus
 }
 #endif

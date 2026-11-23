@@ -36,7 +36,24 @@ Sunset environment colors (`Env_SetSkyCol`, `Env_SetFogCol`, `Env_SetCloudsCol`,
 
 ![06 Sunset Fog Atmosphere](06_sunset_fog_atmosphere.png)
 
-## Reproducing in One Command
+## Playable Win32 (32-bit Windows x86) Release Build (`demo/win32/` & `demo/ClassiCube-Gerbera-GLES1-Win32.zip`)
+
+In addition to the automated Linux capture harness, `demo/` includes a ready-to-run **32-bit Windows (`i386` PE32) Release package** built with `-O3 -DNDEBUG -DHG_NO_ASSERTS` plus Early-Z & `XRGB8888`/`Z16`/`RGBA8` scanline fast-paths:
+
+| Artifact | Size | Description |
+|----------|------|-------------|
+| [`demo/win32/libGLES_CM.dll`](win32/libGLES_CM.dll) | `546 KB` | Reconstructed 32-bit Win32 PE32 OpenGL ES 1.1 + EGL 1.1 DLL (`190` exported `gl*`/`egl*`/`gr*` symbols, including **177 / 177** original `libGLES_CM.dll` exports; depends only on Windows `KERNEL32.dll` + UCRT) |
+| [`demo/win32/libGLES_CM.lib`](win32/libGLES_CM.lib) + [`include/`](win32/include/) | `30 KB` | Win32 COFF import library + `<GLES/gl.h>`, `<GLES/egl.h>`, `<EGL/egl.h>`, and `libGLES_CM.def` |
+| [`demo/win32/ClassiCube.exe`](win32/ClassiCube.exe) | `1.40 MB` | Interactive 32-bit Win32 GUI (`WINDOWS_GUI`) Release build of ClassiCube dynamically importing `52` OpenGL ES 1.1 + EGL 1.1 symbols from `libGLES_CM.dll` (**zero** `OPENGL32.dll` or Direct3D imports), presenting `eglSwapBuffers` into a top-down 32-bit GDI `DIBSection` with live dynamic window resize, mouse/keyboard input, WinMM sound, and bundled offline [`texpacks/default.zip`](win32/texpacks/default.zip) |
+| [`demo/ClassiCube-Gerbera-GLES1-Win32.zip`](ClassiCube-Gerbera-GLES1-Win32.zip) | `1.02 MB` | Single-archive download containing the complete `win32/` folder ready to unzip and play on Windows |
+
+Rebuilding the Win32 Release package from Linux:
+
+```bash
+make win32    # or ./demo/build_win32.sh
+```
+
+## Reproducing the Linux Screenshot Capture in One Command
 
 ```bash
 ./demo/build_and_capture.sh
@@ -44,9 +61,10 @@ Sunset environment colors (`Env_SetSkyCol`, `Env_SetFogCol`, `Env_SetCloudsCol`,
 
 | File | Description |
 |------|-------------|
-| `demo/Window_Gerbera.c` | Self-contained 960x540 Gerbera EGL 1.1 (`NativeWindowType` -> `GerberaWindowSurfaceDesc`) window/context backend + automated 6-scene camera & world showcase driver |
-| `demo/classicube_gles1.patch` | Minimal 28-line patch enabling ClassiCube's Symbian OpenGL ES 1.1 VBO + `GL_RGBA` path under generic `CC_BUILD_GLES` and deterministic `CC_SEED` world generation |
-| `demo/build_and_capture.sh` | Builds `build/libgerbera.a`, clones/patches ClassiCube, compiles `ClassiCube` against `libgerbera.a`, and captures `01`..`06` PNGs |
+| `demo/Window_Gerbera.c` | Self-contained 960x540 Gerbera EGL 1.1 (`NativeWindowType` -> `eglNativeWindow_s`) window/context backend + automated 6-scene camera & world showcase driver |
+| `demo/classicube_gles1.patch` | Unified OpenGL ES 1.1 + Win32 Gerbera EGL (`Window_Win.c` + `GLCommon.h` + `Graphics_GL1.c`) patch |
+| `demo/build_and_capture.sh` | Builds `build/libgerbera.a` (`-O3`), patches ClassiCube, compiles `ClassiCube` against `libgerbera.a`, and captures `01`..`06` PNGs |
+| `demo/build_win32.sh` | Cross-compiles `demo/win32/libGLES_CM.dll`, `libGLES_CM.lib`, `ClassiCube.exe`, and `demo/ClassiCube-Gerbera-GLES1-Win32.zip` (`x86-windows-gnu`, `-O3`) |
 
 ## Real-World Driver Fixes Uncovered by 3D Engine Bring-Up
 

@@ -267,15 +267,15 @@ HGint64 hgLsl64(HGint64 a, int sh)
     HG_ASSERT_AT("hgInt64Native.inl", 1016, sh >= 0 && sh <= 63);
     if ((sh & 0x20) == 0)
         return a << (sh & 31);
-    /* shift by >= 32: low word vanishes, high word = low word << sh */
-    return hgSet64((int)((HGuint32)a << sh), 0);
+    /* shift by >= 32: low word vanishes, high word = low word << (sh & 31) */
+    return hgSet64((int)((HGuint32)a << (sh & 31)), 0);
 }
 
 int hgLsl64h(HGint64 a, int sh)
 {
     HG_ASSERT_AT("hgInt64Native.inl", 1104, sh >= 0 && sh <= 63);
     if ((sh & 0x20) != 0)
-        return (int)((HGuint32)a << sh);
+        return (int)((HGuint32)a << (sh & 31));
     return (int)((HGuint64)(a << sh) >> 32);
 }
 

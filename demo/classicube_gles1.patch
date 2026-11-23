@@ -1,7 +1,59 @@
+diff --git a/misc/opengl/GLCommon.h b/misc/opengl/GLCommon.h
+index 207c732..94f19f0 100644
+--- a/misc/opengl/GLCommon.h
++++ b/misc/opengl/GLCommon.h
+@@ -1,12 +1,25 @@
+-#if defined CC_BUILD_WIN
+-	/* Avoid pointless includes */
+-	#define WIN32_LEAN_AND_MEAN
+-	#define NOSERVICE
+-	#define NOMCX
+-	#define NOIME
+-	#include <windows.h>
+-	#define GLAPI WINGDIAPI
+-#elif defined CC_BUILD_SYMBIAN && !defined __WINSCW__
++#if defined CC_BUILD_WIN && !defined CC_BUILD_GLES
++	/* Avoid pointless includes */
++	#define WIN32_LEAN_AND_MEAN
++	#define NOSERVICE
++	#define NOMCX
++	#define NOIME
++	#include <windows.h>
++	#define GLAPI WINGDIAPI
++#elif defined CC_BUILD_WIN && defined CC_BUILD_GLES
++	#define WIN32_LEAN_AND_MEAN
++	#define NOSERVICE
++	#define NOMCX
++	#define NOIME
++	#include <windows.h>
++	#ifdef GERBERA_DLL_IMPORTS
++		#define GLAPI __declspec(dllimport)
++	#else
++		#define GLAPI extern
++	#endif
++	#undef APIENTRY
++	#define APIENTRY __cdecl
++#elif defined CC_BUILD_SYMBIAN && !defined __WINSCW__
+ 	#define GLAPI IMPORT_C
+ 	#define APIENTRY
+ #else
 diff --git a/src/Graphics_GL1.c b/src/Graphics_GL1.c
-index f50e140..c6d5ef9 100644
+index f50e140..e218116 100644
 --- a/src/Graphics_GL1.c
 +++ b/src/Graphics_GL1.c
+@@ -9,9 +9,9 @@
+ #include "Errors.h"
+ #include "Window.h"
+ 
+-#if defined CC_BUILD_WIN
+-	#define CC_BUILD_GL11_FALLBACK
+-#endif
++#if defined CC_BUILD_WIN && !defined CC_BUILD_GLES
++	#define CC_BUILD_GL11_FALLBACK
++#endif
+ 
+ /* The OpenGL backend is a bit of a mess, since it's really 2 backends in one:
+  * - OpenGL 1.5 or OpenGL 1.2 + GL_ARB_vertex_buffer_object (default desktop backend)
 @@ -24,11 +24,16 @@
  /* e.g. GLAPI void APIENTRY glFunction(int value); */
  #define GL_FUNC(retType, name, args) GLAPI retType APIENTRY name args;
@@ -82,6 +134,217 @@ index c9b9a87..f95d3d9 100644
  }
  
  static char sp_lastCol;
+diff --git a/src/Window_Win.c b/src/Window_Win.c
+index 69c9f64..c99018b 100644
+--- a/src/Window_Win.c
++++ b/src/Window_Win.c
+@@ -432,15 +432,24 @@ void Window_Destroy(void) {
+ 	DestroyWindow(hwnd);
+ }
+ 
+-void Window_SetTitle(const cc_string* title) {
+-	HWND hwnd = Window_Main.Handle.ptr;
+-	cc_winstring str;
+-	Platform_EncodeString(&str, title);
+-	if (SetWindowTextW(hwnd, str.uni)) return;
+-
+-	/* Windows 9x does not support W API functions */
+-	SetWindowTextA(hwnd, str.ansi);
+-}
++void Window_SetTitle(const cc_string* title) {
++	HWND hwnd = Window_Main.Handle.ptr;
++	cc_winstring str;
++#if defined CC_BUILD_GERBERA_WIN32
++	char titleBuf[256];
++	cc_string tagged;
++	String_InitArray(tagged, titleBuf);
++	String_AppendString(&tagged, title);
++	String_AppendConst(&tagged, " [Gerbera OpenGL ES 1.1]");
++	Platform_EncodeString(&str, &tagged);
++#else
++	Platform_EncodeString(&str, title);
++#endif
++	if (SetWindowTextW(hwnd, str.uni)) return;
++
++	/* Windows 9x does not support W API functions */
++	SetWindowTextA(hwnd, str.ansi);
++}
+ 
+ void Clipboard_GetText(cc_string* value) {
+ 	HWND hwnd = Window_Main.Handle.ptr;
+@@ -871,11 +880,11 @@ void Window_DisableRawMouse(void) {
+ }
+ 
+ 
+-/*########################################################################################################################*
+-*-------------------------------------------------------WGL OpenGL--------------------------------------------------------*
+-*#########################################################################################################################*/
+-#if CC_GFX_BACKEND_IS_GL() && !defined CC_BUILD_EGL
+-static HGLRC ctx_handle;
++/*########################################################################################################################*
++*-------------------------------------------------------WGL OpenGL--------------------------------------------------------*
++*#########################################################################################################################*/
++#if CC_GFX_BACKEND_IS_GL() && !defined CC_BUILD_EGL && !defined CC_BUILD_GERBERA_WIN32
++static HGLRC ctx_handle;
+ static HDC   ctx_DC;
+ static void* gl_lib;
+ 
+@@ -969,10 +978,148 @@ cc_bool GLContext_SwapBuffers(void) {
+ 	return true;
+ }
+ 
+-void GLContext_SetVSync(cc_bool vsync) {
+-	if (!_wglSwapIntervalEXT) return;
+-	_wglSwapIntervalEXT(vsync);
+-}
+-void GLContext_GetApiInfo(cc_string* info) { }
+-#endif
+-#endif
++void GLContext_SetVSync(cc_bool vsync) {
++	if (!_wglSwapIntervalEXT) return;
++	_wglSwapIntervalEXT(vsync);
++}
++void GLContext_GetApiInfo(cc_string* info) { }
++#elif CC_GFX_BACKEND_IS_GL() && defined CC_BUILD_GERBERA_WIN32
++#include <GLES/egl.h>
++
++static EGLDisplay         g_eglDisplay = EGL_NO_DISPLAY;
++static EGLConfig          g_eglConfig  = 0;
++static EGLSurface         g_eglSurface = EGL_NO_SURFACE;
++static EGLContext         g_eglContext = EGL_NO_CONTEXT;
++static eglNativeWindow_s  g_gerberaWin;
++static HDC                g_gerberaDC;
++static HBITMAP            g_gerberaDIB;
++static HGDIOBJ            g_gerberaOldBmp;
++static void*              g_gerberaPixels;
++
++static void Gerbera_FreeDIB(void) {
++	if (g_gerberaDIB) {
++		if (g_gerberaDC && g_gerberaOldBmp) {
++			SelectObject(g_gerberaDC, g_gerberaOldBmp);
++			g_gerberaOldBmp = NULL;
++		}
++		DeleteObject(g_gerberaDIB);
++		g_gerberaDIB    = NULL;
++		g_gerberaPixels = NULL;
++	}
++}
++
++static void Gerbera_ResizeSurface(void) {
++	BITMAPINFO bmi = { 0 };
++	int w = Window_Main.Width  > 0 ? Window_Main.Width  : 1;
++	int h = Window_Main.Height > 0 ? Window_Main.Height : 1;
++
++	if (g_gerberaDIB && g_gerberaWin.width == w && g_gerberaWin.height == h && g_eglSurface != EGL_NO_SURFACE) {
++		return;
++	}
++
++	Gerbera_FreeDIB();
++	if (!g_gerberaDC) g_gerberaDC = CreateCompatibleDC(win_DC);
++
++	bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
++	bmi.bmiHeader.biWidth       = w;
++	bmi.bmiHeader.biHeight      = -h; /* top-down DIB: row 0 = top scanline */
++	bmi.bmiHeader.biPlanes      = 1;
++	bmi.bmiHeader.biBitCount    = 32;
++	bmi.bmiHeader.biCompression = BI_RGB;
++
++	g_gerberaDIB = CreateDIBSection(g_gerberaDC, &bmi, DIB_RGB_COLORS, &g_gerberaPixels, NULL, 0);
++	if (!g_gerberaDIB) Process_Abort2(GetLastError(), "Gerbera CreateDIBSection failed");
++	g_gerberaOldBmp = SelectObject(g_gerberaDC, g_gerberaDIB);
++
++	g_gerberaWin.width       = w;
++	g_gerberaWin.height      = h;
++	g_gerberaWin.stride      = w * 4;
++	g_gerberaWin.displayMode = EGL_SYMBIAN_ECOLOR16MU;
++	g_gerberaWin.frontBuffer = g_gerberaPixels;
++
++	if (g_eglSurface == EGL_NO_SURFACE) {
++		g_eglSurface = eglCreateWindowSurface(g_eglDisplay, g_eglConfig, (NativeWindowType)&g_gerberaWin, NULL);
++		if (g_eglSurface == EGL_NO_SURFACE) Process_Abort("Gerbera eglCreateWindowSurface failed");
++		if (!eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext))
++			Process_Abort("Gerbera eglMakeCurrent failed");
++	}
++}
++
++void GLContext_Create(void) {
++	static const EGLint cfgAttribs[] = {
++		EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
++		EGL_RED_SIZE,     8,
++		EGL_GREEN_SIZE,   8,
++		EGL_BLUE_SIZE,    8,
++		EGL_DEPTH_SIZE,   16,
++		EGL_NONE
++	};
++	EGLint major = 0, minor = 0, numConfigs = 0;
++
++	egliSetDefaultDisplayMode(EGL_SYMBIAN_ECOLOR16MU);
++
++	g_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
++	if (g_eglDisplay == EGL_NO_DISPLAY) Process_Abort("Gerbera eglGetDisplay failed");
++	if (!eglInitialize(g_eglDisplay, &major, &minor)) Process_Abort("Gerbera eglInitialize failed");
++	if (!eglChooseConfig(g_eglDisplay, cfgAttribs, &g_eglConfig, 1, &numConfigs) || numConfigs < 1)
++		Process_Abort("Gerbera eglChooseConfig failed");
++
++	g_eglContext = eglCreateContext(g_eglDisplay, g_eglConfig, EGL_NO_CONTEXT, NULL);
++	if (g_eglContext == EGL_NO_CONTEXT) Process_Abort("Gerbera eglCreateContext failed");
++
++	Mem_Set(&g_gerberaWin, 0, sizeof(g_gerberaWin));
++	Gerbera_ResizeSurface();
++}
++
++void GLContext_Update(void) {
++	if (g_eglDisplay != EGL_NO_DISPLAY && g_eglContext != EGL_NO_CONTEXT) {
++		Gerbera_ResizeSurface();
++	}
++}
++
++cc_bool GLContext_TryRestore(void) { return true; }
++
++void GLContext_Free(void) {
++	if (g_eglDisplay != EGL_NO_DISPLAY) {
++		eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
++		if (g_eglSurface != EGL_NO_SURFACE) {
++			eglDestroySurface(g_eglDisplay, g_eglSurface);
++			g_eglSurface = EGL_NO_SURFACE;
++		}
++		if (g_eglContext != EGL_NO_CONTEXT) {
++			eglDestroyContext(g_eglDisplay, g_eglContext);
++			g_eglContext = EGL_NO_CONTEXT;
++		}
++		eglTerminate(g_eglDisplay);
++		g_eglDisplay = EGL_NO_DISPLAY;
++	}
++	Gerbera_FreeDIB();
++	if (g_gerberaDC) {
++		DeleteDC(g_gerberaDC);
++		g_gerberaDC = NULL;
++	}
++}
++
++void* GLContext_GetAddress(const char* function) {
++	return (void*)(cc_uintptr)eglGetProcAddress(function);
++}
++
++cc_bool GLContext_SwapBuffers(void) {
++	if (!eglSwapBuffers(g_eglDisplay, g_eglSurface)) return false;
++	GdiFlush();
++	BitBlt(win_DC, 0, 0, g_gerberaWin.width, g_gerberaWin.height, g_gerberaDC, 0, 0, SRCCOPY);
++	return true;
++}
++
++void GLContext_SetVSync(cc_bool vsync) {
++	if (g_eglDisplay != EGL_NO_DISPLAY) eglSwapInterval(g_eglDisplay, vsync ? 1 : 0);
++}
++
++void GLContext_GetApiInfo(cc_string* info) {
++	if (g_eglDisplay == EGL_NO_DISPLAY) return;
++	String_Format2(info, "EGL: %c (%c - Gerbera libGLES_CM.dll Win32)\n",
++	               eglQueryString(g_eglDisplay, EGL_VERSION),
++	               eglQueryString(g_eglDisplay, EGL_VENDOR));
++}
++#endif
++#endif
 diff --git a/src/_GLShared.h b/src/_GLShared.h
 index 242b585..2d84719 100644
 --- a/src/_GLShared.h
@@ -109,9 +372,9 @@ index 242b585..2d84719 100644
 +	if (convert_rgba) {
 +		BitmapCol* tmp = (BitmapCol*)Mem_TryAlloc(bmp.width * bmp.height, BITMAPCOLOR_SIZE);
 +		if (!tmp) return ERR_OUT_OF_MEMORY;
-+		
++
 +		ConvertRGBA(tmp, bmp.scan0, bmp.width * bmp.height);
-+		
++
 +		Mem_Free(bmp.scan0);
 +		bmp.scan0 = tmp;
 +	}

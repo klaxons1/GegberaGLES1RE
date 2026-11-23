@@ -443,6 +443,8 @@ static unsigned int grApplyLogicOp64(int op, unsigned int s, unsigned int d)
     }
 }
 
+#define GR_DIV255_EXACT(v) ((int)(((unsigned int)(v) * 257u + 257u) >> 16))
+
 static void grExecutePixelPipeline64(Gerbera_s *state)
 {
     _grPixelPipe *pp = state->pixelPipeline;
@@ -464,7 +466,9 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
     int blendEnabled = grTestCapability(state, GR_CAPABILITY_BLEND);
     int logicEnabled = grTestCapability(state, GR_CAPABILITY_COLOR_LOGIC_OP);
     int ditherEnabled = grTestCapability(state, GR_CAPABILITY_DITHER);
+    int earlyDepth = depthTest && !alphaTest && !stencilTest;
     unsigned int writeMask = 0xFFFFFFFFu;
+    const _grTexture *texObj0 = (const _grTexture *)state->textureUnit[0].texture;
     int g, u, s;
 
     if (surf->colorMask != (unsigned char)(state->colorMask & surf->colorMask))
@@ -480,18 +484,183 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
                         texObj != NULL && pp->textureUnit[u].pixels != NULL;
         if (unitActive[u])
         {
-            int mip = 0;
-            int m;
-            for (m = 0; m < texObj->numMipLevels; ++m)
-            {
-                if (texObj->mipmap[m].pixels == pp->textureUnit[u].pixels)
-                {
-                    mip = m;
-                    break;
-                }
-            }
-            grrGetTextureFormatDescriptor(&texDesc[u], texObj->mipmap[mip].texFormat);
+            grrGetTextureFormatDescriptor(&texDesc[u], texObj->mipmap[0].texFormat);
         }
+    }
+
+    /* Fast-path for standard 32-bit XRGB8888/ARGB8888 surfaces with Z16 + RGBA8 MODULATE */
+    if (!stencilTest && !logicEnabled && !ditherEnabled &&
+        writeMask == 0xFFFFFFFFu && state->colorMask != 0 &&
+        colorBpp == 4 && colorRow != NULL &&
+        surf->rgbaSizes[0] == 8 && surf->rgbaSizes[1] == 8 && surf->rgbaSizes[2] == 8 &&
+        surf->rgbaOffsets[0] == 16 && surf->rgbaOffsets[1] == 8 && surf->rgbaOffsets[2] == 0 &&
+        (surf->rgbaSizes[3] == 0 || (surf->rgbaSizes[3] == 8 && surf->rgbaOffsets[3] == 24)) &&
+        !unitActive[1] &&
+        (!depthTest || (depthBpp == 2 && (state->depthFunc == GR_FUNC_LEQUAL || state->depthFunc == GR_FUNC_LESS))) &&
+        (!alphaTest || state->alphaFunc == GR_FUNC_GREATER) &&
+        (!blendEnabled || (state->srcBlendFactor == GR_BLENDFACTOR_SRC_ALPHA &&
+                           state->dstBlendFactor == GR_BLENDFACTOR_ONE_MINUS_SRC_ALPHA)) &&
+        (!unitActive[0] || (texObj0->mipmap[0].texFormat == GR_TEXTUREFORMAT_RGBA8 &&
+                            state->textureUnit[0].envMode == GR_TEXENVMODE_MODULATE &&
+                            texObj0->wrapMode[0] != GR_WRAPMODE_MIRRORED_REPEAT &&
+                            texObj0->wrapMode[1] != GR_WRAPMODE_MIRRORED_REPEAT &&
+                            pp->textureUnit[0].sMask > 0 && pp->textureUnit[0].tMask > 0)))
+    {
+        const int hasZ    = depthTest;
+        const int zLess   = (state->depthFunc == GR_FUNC_LESS);
+        const int zWrite  = (state->depthMask != 0);
+        const int hasTex  = unitActive[0];
+        const int hasFog  = fogEnabled;
+        const int hasAlp  = alphaTest;
+        const int hasBld  = blendEnabled;
+        const int dstHasA = (surf->rgbaSizes[3] == 8);
+        const int gFog    = (gradMask & 2) != 0;
+        const int gColR   = (gradMask & 4) != 0;
+        const int gColG   = (gradMask & 8) != 0;
+        const int gColB   = (gradMask & 16) != 0;
+        const int gColA   = (gradMask & 32) != 0;
+        const int defR    = hgClamp32_0_x((state->defaultColorRGBA[0] + 128) >> 8, 255);
+        const int defG    = hgClamp32_0_x((state->defaultColorRGBA[1] + 128) >> 8, 255);
+        const int defB    = hgClamp32_0_x((state->defaultColorRGBA[2] + 128) >> 8, 255);
+        const int defA    = hgClamp32_0_x((state->defaultColorRGBA[3] + 128) >> 8, 255);
+        const int fogR    = (int)(state->fogColor & 0xFFu);
+        const int fogG    = (int)((state->fogColor >> 8) & 0xFFu);
+        const int fogB    = (int)((state->fogColor >> 16) & 0xFFu);
+        const int fogDef  = hgClamp32_0_x((int)(state->fogAtZero + 128u) >> 8, 255);
+        const int alpRef  = (int)state->alphaReference;
+        const unsigned int *texPixels = hasTex ? (const unsigned int *)pp->textureUnit[0].pixels : NULL;
+        const int sMask   = hasTex ? pp->textureUnit[0].sMask : 0;
+        const int tMask   = hasTex ? pp->textureUnit[0].tMask : 0;
+        const int rShiftS = hasTex ? pp->textureUnit[0].rShift[0] : 0;
+        const int rShiftT = hasTex ? pp->textureUnit[0].rShift[1] : 0;
+        const int log2S   = hasTex ? pp->textureUnit[0].log2DimS : 0;
+        const int clampS  = hasTex && (texObj0->wrapMode[0] == GR_WRAPMODE_CLAMP_TO_EDGE);
+        const int clampT  = hasTex && (texObj0->wrapMode[1] == GR_WRAPMODE_CLAMP_TO_EDGE);
+        const int dzdx = pp->xAdder[0], dfdx = pp->xAdder[1];
+        const int drdx = pp->xAdder[2], dgdx = pp->xAdder[3], dbdx = pp->xAdder[4], dadx = pp->xAdder[5];
+        const int dudx = pp->xAdder[6], dvdx = pp->xAdder[7];
+
+        for (s = 0; s < pp->numScanlines; ++s)
+        {
+            unsigned int spanWord = pp->scanlineInfo[s];
+            int xStart = (int)(spanWord & 0xFFFFu);
+            int xEnd   = xStart + (int)(spanWord >> 16);
+            unsigned int *cRow32 = (unsigned int *)colorRow;
+            unsigned short *dRow16 = (unsigned short *)depthRow;
+            int zCur = rowRef[0] + dzdx * xStart;
+            int fCur = rowRef[1] + dfdx * xStart;
+            int rCur = rowRef[2] + drdx * xStart;
+            int gCur = rowRef[3] + dgdx * xStart;
+            int bCur = rowRef[4] + dbdx * xStart;
+            int aCur = rowRef[5] + dadx * xStart;
+            int uCur = rowRef[6] + dudx * xStart;
+            int vCur = rowRef[7] + dvdx * xStart;
+            int x;
+
+            for (x = xStart; x < xEnd; ++x)
+            {
+                unsigned int zVal = 0;
+                int pr, pg, pb, pa;
+
+                if (hasZ && !hasAlp)
+                {
+                    unsigned int z30 = (unsigned int)hgClamp32_0_x(zCur, 0x3FFFFFFF);
+                    unsigned int zDst = dRow16[x];
+                    zVal = z30 >> 14;
+                    if (zLess ? !(zVal < zDst) : !(zVal <= zDst))
+                        goto fast_step;
+                    if (zWrite)
+                        dRow16[x] = (unsigned short)zVal;
+                }
+
+                pr = gColR ? hgClamp32_0_x(rCur >> 16, 255) : defR;
+                pg = gColG ? hgClamp32_0_x(gCur >> 16, 255) : defG;
+                pb = gColB ? hgClamp32_0_x(bCur >> 16, 255) : defB;
+                pa = gColA ? hgClamp32_0_x(aCur >> 16, 255) : defA;
+
+                if (hasTex)
+                {
+                    int sc = clampS ? hgClamp32_0_x(uCur >> rShiftS, sMask)
+                                    : (int)(((unsigned int)uCur >> rShiftS) & (unsigned int)sMask);
+                    int tc = clampT ? hgClamp32_0_x(vCur >> rShiftT, tMask)
+                                    : (int)(((unsigned int)vCur >> rShiftT) & (unsigned int)tMask);
+                    unsigned int texel = texPixels[(tc << log2S) + sc];
+                    int tr = (int)((texel >> 16) & 0xFFu);
+                    int tg = (int)((texel >> 8) & 0xFFu);
+                    int tb = (int)(texel & 0xFFu);
+                    int ta = (int)((texel >> 24) & 0xFFu);
+                    pa = GR_DIV255_EXACT(pa * ta + 127);
+                    if (hasAlp && !(pa > alpRef))
+                        goto fast_step;
+                    pr = GR_DIV255_EXACT(pr * tr + 127);
+                    pg = GR_DIV255_EXACT(pg * tg + 127);
+                    pb = GR_DIV255_EXACT(pb * tb + 127);
+                }
+                else if (hasAlp && !(pa > alpRef))
+                {
+                    goto fast_step;
+                }
+
+                if (hasZ && hasAlp)
+                {
+                    unsigned int z30 = (unsigned int)hgClamp32_0_x(zCur, 0x3FFFFFFF);
+                    unsigned int zDst = dRow16[x];
+                    zVal = z30 >> 14;
+                    if (zLess ? !(zVal < zDst) : !(zVal <= zDst))
+                        goto fast_step;
+                    if (zWrite)
+                        dRow16[x] = (unsigned short)zVal;
+                }
+
+                if (hasFog)
+                {
+                    int fog8 = gFog ? hgClamp32_0_x(fCur >> 16, 255) : fogDef;
+                    int invF = 255 - fog8;
+                    pr = GR_DIV255_EXACT(invF * pr + fog8 * fogR + 127);
+                    pg = GR_DIV255_EXACT(invF * pg + fog8 * fogG + 127);
+                    pb = GR_DIV255_EXACT(invF * pb + fog8 * fogB + 127);
+                }
+
+                if (hasBld)
+                {
+                    unsigned int dstP = cRow32[x];
+                    int dr = (int)((dstP >> 16) & 0xFFu);
+                    int dg = (int)((dstP >> 8) & 0xFFu);
+                    int db = (int)(dstP & 0xFFu);
+                    int da = dstHasA ? (int)((dstP >> 24) & 0xFFu) : 255;
+                    int invA = 255 - pa;
+                    pr = GR_DIV255_EXACT(pr * pa + dr * invA + 127);
+                    pg = GR_DIV255_EXACT(pg * pa + dg * invA + 127);
+                    pb = GR_DIV255_EXACT(pb * pa + db * invA + 127);
+                    pa = GR_DIV255_EXACT(pa * pa + da * invA + 127);
+                }
+
+                cRow32[x] = dstHasA
+                          ? (((unsigned int)pa << 24) | ((unsigned int)pr << 16) | ((unsigned int)pg << 8) | (unsigned int)pb)
+                          : (((unsigned int)pr << 16) | ((unsigned int)pg << 8) | (unsigned int)pb);
+
+fast_step:
+                zCur += dzdx;
+                if (hasFog && gFog) fCur += dfdx;
+                if (gColR) rCur += drdx;
+                if (gColG) gCur += dgdx;
+                if (gColB) bCur += dbdx;
+                if (gColA) aCur += dadx;
+                if (hasTex) { uCur += dudx; vCur += dvdx; }
+            }
+
+            rowRef[0] += pp->yAdder[0];
+            rowRef[1] += pp->yAdder[1];
+            rowRef[2] += pp->yAdder[2];
+            rowRef[3] += pp->yAdder[3];
+            rowRef[4] += pp->yAdder[4];
+            rowRef[5] += pp->yAdder[5];
+            rowRef[6] += pp->yAdder[6];
+            rowRef[7] += pp->yAdder[7];
+            colorRow += surf->buffers[0].stride;
+            if (depthRow != NULL) depthRow += surf->buffers[1].stride;
+        }
+        return;
     }
 
     for (s = 0; s < pp->numScanlines; ++s)
@@ -511,6 +680,23 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
             int rgba[4];
             unsigned int primaryRGBA;
             int c;
+
+            if (earlyDepth)
+            {
+                unsigned int z30 = (unsigned int)hgClamp32_0_x(cur[0], 0x3FFFFFFF);
+                unsigned int zVal = (depthBpp == 4) ? z30 : (z30 >> (30 - 8 * depthBpp));
+                unsigned int zDst = (depthBpp == 1) ? depthRow[x]
+                                  : (depthBpp == 2) ? ((unsigned short *)depthRow)[x]
+                                                    : ((unsigned int *)depthRow)[x];
+                if (!grEvalCompareFunc64(state->depthFunc, zVal, zDst))
+                    goto step_pixel;
+                if (state->depthMask != 0)
+                {
+                    if (depthBpp == 1)      depthRow[x] = (unsigned char)zVal;
+                    else if (depthBpp == 2) ((unsigned short *)depthRow)[x] = (unsigned short)zVal;
+                    else                    ((unsigned int *)depthRow)[x] = zVal;
+                }
+            }
 
             for (c = 0; c < 4; ++c)
             {
@@ -566,7 +752,7 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
                 }
             }
 
-            if (depthTest)
+            if (depthTest && !earlyDepth)
             {
                 unsigned int z30 = (unsigned int)hgClamp32_0_x(cur[0], 0x3FFFFFFF);
                 unsigned int zVal = (depthBpp == 4) ? z30 : (z30 >> (30 - 8 * depthBpp));
@@ -666,7 +852,7 @@ void grExecutePixelPipeline(Gerbera_s *state)
     if (state->pixelPipeline == NULL &&
         grAssert("state->renderStack->pixelPipelineStack", "grPixelPipeline.h", 154) != 0)
         grDie(0);
-    if (sizeof(void *) != 4 && state->pipelineCache != NULL)
+    if (state->pipelineCache != NULL)
     {
         uintptr_t codeAddr = (uintptr_t)pixelPipelineCode;
         uintptr_t arenaStart = (uintptr_t)state->pipelineCache->arena;
