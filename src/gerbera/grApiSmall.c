@@ -18,26 +18,9 @@
             grDie(0);                            \
     } while (0)
 
-/* verbatim from the binary (docs/libGLES_CM.dll.c:5700/5706) */
-int grCapChangesRejectAllState_affectingCapabilities[] = { 98306 };
-int grCapChangesPixelPipeline_affectingCapabilities[15] =
-{
-    32766,
-    0,
-    1025536042,
-    1210589245,
-    1852405063,
-    808007796,
-    1966223736,
-    545029152,
-    1025536042,
-    1210589245,
-    1852405063,
-    808007796,
-    1966618488,
-    1147627520,
-    779314789
-};
+/* verbatim from PE .rdata @ file+0x793D4 / 0x793DC (2x uint32 bitmasks for 45 caps) */
+int grCapChangesRejectAllState_affectingCapabilities[2] = { 98306, 0 };
+int grCapChangesPixelPipeline_affectingCapabilities[2] = { 32766, 0 };
 
 /* --- capabilities (grUtil.h) ---------------------------------------------- */
 

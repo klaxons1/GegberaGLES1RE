@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 5b)
+Last updated: 2026-11-22 (session 5c)
 
 ## Legend
 
@@ -13,10 +13,10 @@ Last updated: 2026-11-22 (session 5b)
 | module | original tree | functions (unique) | status |
 |---|---|---|---|
 | hg | renderer/libs/hg | 105 | **DONE** (session 1) |
-| imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar + vector/matrix layers done (sessions 2-3; all `api_opengl` call targets present) |
-| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z, 4g, 5a, 5b) - full core lifecycle (`grCreateGerbera`/`grDestroyGerbera`/`grSetSurfaces`), texenv, vertex/point API, `grSetupTextureUnit`, & `HC_compile` pipeline |
-| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z, 5a, 5b) - clears, `grrTexture` (levels, box-filtered mipmaps, paletted textures, self-test), `grrBlit` (blits & downsampling), texture rect |
-| gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | **IN PROGRESS** (sessions 5a-5b) - `GLES/gl.h`, `oglContext.h`, `oglError`, `oglDescriptor`, `oglMatrixStack`, `oglTexManager`, `oglBufObjManager`, `oglGetter`, `oglUtil` (56 funcs), `oglContext` (13 funcs) = **123 funcs** done (303 checks); `oglFast` & `oglApi` next |
+| imath | renderer/libs/imath | 198 | **DONE** (sessions 2-3; all scalar + vector/matrix layers used by core & `api_opengl`) |
+| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z, 4g, 5a-5c) - full core lifecycle, vertex/rasterizer/pixel pipelines, LP64 host scanline pixel-pipeline execution (`grExecutePixelPipeline64`), & `HC_compile` JIT |
+| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z, 5a-5c) - clears, `grrTexture` (levels, box-filtered mipmaps, paletted textures, self-test), `grrBlit` (blits & downsampling), `OES_draw_texture` rect |
+| gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | **DONE** (sessions 5a-5c) - ALL 10 TUs (`oglError`, `oglDescriptor`, `oglMatrixStack`, `oglTexManager`, `oglBufObjManager`, `oglGetter`, `oglUtil`, `oglContext`, `oglFast`, `oglApi`) & ALL 158 `gl*` entry points in `GLES/gl.h` (405 checks) |
 | gerbera/hc | .../gerbera/hc | 296 | **DONE** (sessions 4a-4g) - ALL 17 TUs ported (`hcCompiler.c` + `hcPanicRegalloc.inl`, x86 & ARM32 JIT backends, optimizer, regalloc, interpreter, bytecode; 2,327 core checks) |
 | egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
 | egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
@@ -1781,6 +1781,45 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
   `oglUpdateCoreMatrices`, `oglSetupRendering`, `oglMapPrimitive`,
   `glDrawArrays`, `glDrawElements`, `glDrawTex*OES`) and `oglApi.c` (all
   remaining `gl*` entry points).
+
+## DONE session 5c (`api_opengl` completion: `oglFast.c` + `oglApi.c` + LP64 end-to-end rendering)
+
+- **Ported `src/gerbera/api_opengl/oglFast.c` (14 functions)**:
+  - `oglGetPrimitiveType`, `oglUpdateCoreMatrices` (modelview/projection/texture/
+    palette matrix upload to `Gerbera_s`), `oglSetupRendering` (texture unit
+    completeness, point-sprite auto-texcoord override, stack check),
+    `oglMapPrimitive`, `glDrawArrays`, `glDrawElements` (LP64-safe `uintptr_t`
+    EBO byte-offset bounds check & translation), and all 8 `OES_draw_texture`
+    entry points (`glDrawTex{f,x,i,s,fv,xv,iv,sv}OES`).
+- **Ported `src/gerbera/api_opengl/oglApi.c` (158 functions: 17 internal `ogl*` helpers + 141 `gl*` entry points)**:
+  - Completes **100% of `gerbera/api_opengl`** (all 10 translation units and all
+    158 `gl*` OpenGL ES 1.1 Common Profile + OES entry points in `GLES/gl.h`).
+  - Verified all static `.rdata` tables against `docs/libGLES_CM.dll`:
+    `g_getStrings[4]` (`"Nokia"`, `"1.1.0"`, `"OpenGL ES-CM 1.1"`, 13 OES
+    extensions), `acceptedCaps[44]`, `restrictions[7]`,
+    `s_arr{Types,Sizes,Strides,Bindings}[8]`, `s_palettedFormats[10]`, and
+    `s_formatInfos[10]`.
+  - Uses real `grBlitImage_s` / `grBlitInfo_s` C structs in `glTexSubImage2D`,
+    `glCopyTexSubImage2D`, and `glReadPixels`, LP64-safe `uintptr_t` VBO offsets
+    in `oglPointerInternal`, and overflow-safe `GLintptr`/`GLsizeiptr` checks in
+    `glBufferData` / `glBufferSubData`.
+- **LP64 host scanline pixel-pipeline execution & core fixes**:
+  - Added `grExecutePixelPipeline64` in `src/gerbera/grPixelPipeline.c` so full
+    end-to-end rendering runs natively on 64-bit hosts when `pixelPipelineCode`
+    is inside `pipelineCache->arena` (supporting color/depth/stencil/alpha test,
+    blending, logicOp, fog, Ordered Dither, 2-unit texturing incl. paletted4/8 &
+    `GL_COMBINE` with `RGB_SCALE`/`ALPHA_SCALE` `1, 2, 4`).
+  - Fixed LP64 struct accesses in `src/gerbera/grApiFast.c` (`grCheckPixelPipeStack`
+    `drawSurface.buffers[*].stride` and `grRenderTextureRect` `tex->mipmap[0]` /
+    `tex->cropRect` / `fy0`-`fy1` screen-Y flip / `GR_RENDER_STACK_SCANLINE_INFO`),
+    `GR_DATATYPE_MAX = 9` in `src/include/gerbera/grDefs.h`, and PE `.rdata`
+    `grCapChanges*_affectingCapabilities[2]` bitmasks in `src/gerbera/grApiSmall.c`
+    (verified clean under `-fsanitize=address`).
+- **Tests (`make test`)**: **3,338 checks, 0 failures, 0 warnings, 0 ASan errors**
+  (`hg`: 295, `imath`: 311, `core`: 2,327, `opengl`: 405 across 62 `.c` files).
+- **Next up (Session 6)**: `egl` (`eglApi.c`, `eglBase.c`, `eglUtil.c`, and
+  `eglSymbian.c` / portable surface backend, replacing `src/gerbera/grrStubs.c`).
+
 
 
 

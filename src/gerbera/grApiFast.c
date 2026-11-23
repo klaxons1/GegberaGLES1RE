@@ -475,19 +475,19 @@ void grCheckPixelPipeStack(Gerbera_s *state)
     /* the checked block is the assert-order placeholder at _grPixelPipe+128;
      * its real offsets get pinned by grSetupRendering */
 
-    if (pixelPipe->checked.colorBufferStride != ((int *)&state->drawSurface)[7] &&
+    if (pixelPipe->checked.colorBufferStride != state->drawSurface.buffers[GR_BUFFERTYPE_COLOR].stride &&
         grAssert("pixelPipe->checked.colorBufferStride == drawSurface->buffers[GR_BUFFERTYPE_COLOR].stride",
                  "grApiFast.inl", 491) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->checked.depthBufferStride != ((int *)&state->drawSurface)[9] &&
+    if (pixelPipe->checked.depthBufferStride != state->drawSurface.buffers[GR_BUFFERTYPE_DEPTH].stride &&
         grAssert("pixelPipe->checked.depthBufferStride == drawSurface->buffers[GR_BUFFERTYPE_DEPTH].stride",
                  "grApiFast.inl", 492) != 0)
         ok = 0;
     if (ok == 0)
         grDie(0);
-    if (pixelPipe->checked.stencilBufferStride != ((int *)&state->drawSurface)[11] &&
+    if (pixelPipe->checked.stencilBufferStride != state->drawSurface.buffers[GR_BUFFERTYPE_STENCIL].stride &&
         grAssert("pixelPipe->checked.stencilBufferStride == drawSurface->buffers[GR_BUFFERTYPE_STENCIL].stride",
                  "grApiFast.inl", 493) != 0)
         ok = 0;
@@ -1222,13 +1222,13 @@ void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z)
             if (state->useTexUnit[i] != 0)
             {
                 _grTexture *tex = (_grTexture *)state->textureUnit[2 * i].texture;
-                int shiftS = 21 - *(short *)((char *)tex + 4);
-                int shiftT = 21 - *(short *)((char *)tex + 6);
+                int shiftS = 21 - tex->mipmap[0].log2Dim[0];
+                int shiftT = 21 - tex->mipmap[0].log2Dim[1];
 
-                txMin[i] = *(int *)((char *)tex + 188) << shiftS;
-                txMax[i] = *(int *)((char *)tex + 192) << shiftS;
-                tyMin[i] = *(int *)((char *)tex + 196) << shiftT;
-                tyMax[i] = *(int *)((char *)tex + 200) << shiftT;
+                txMin[i] = tex->cropRect.x0 << shiftS;
+                txMax[i] = tex->cropRect.x1 << shiftS;
+                tyMin[i] = tex->cropRect.y1 << shiftT;
+                tyMax[i] = tex->cropRect.y0 << shiftT;
             }
         }
 
@@ -1382,13 +1382,11 @@ void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z)
             }
         }
 
-        /* convert to 12.12 fixed-point screen coords (y flipped) */
+        /* convert to 12.12 fixed-point screen coords (y flipped: y1 -> top fy0, y0 -> bottom fy1) */
         fx0 = IScalar_scalarToFixed(x0, 12) & 0xFFFFFF00;
-        fy0 = (state->drawSurface.height << 12) - IScalar_scalarToFixed(y0, 12);
+        fy0 = ((state->drawSurface.height << 12) - IScalar_scalarToFixed(y1, 12)) & 0xFFFFFF00;
         fx1 = IScalar_scalarToFixed(x1, 12) & 0xFFFFFF00;
-        fy1 = (state->drawSurface.height << 12) - IScalar_scalarToFixed(y1, 12);
-        fy0 &= 0xFFFFFF00;
-        fy1 &= 0xFFFFFF00;
+        fy1 = ((state->drawSurface.height << 12) - IScalar_scalarToFixed(y0, 12)) & 0xFFFFFF00;
 
         if (fx0 != fx1 && fy0 != fy1)
         {
@@ -1406,13 +1404,16 @@ void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z)
             if (rw > 0 && rh > 0)
             {
                 int y;
+                unsigned int *scanInfo = (unsigned int *)((unsigned char *)state->renderStack +
+                                                          GR_RENDER_STACK_SCANLINE_INFO);
 
                 pixelPipe = (_grPixelPipe *)state->pixelPipeline;
                 /* scanline info: (width << 16) | xStart */
                 for (y = 0; y < rh; ++y)
-                    pixelPipe->scanlineInfo[y] = rx0 + (rw << 16);
+                    scanInfo[y] = rx0 + (rw << 16);
                 pixelPipe->yStart = ry0;
                 pixelPipe->numScanlines = rh;
+                pixelPipe->scanlineInfo = scanInfo;
 
                 /* texture-rect gradients */
                 info.z = z;

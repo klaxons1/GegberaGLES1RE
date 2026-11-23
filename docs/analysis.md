@@ -270,6 +270,25 @@ semantics line-for-line (verified against the session-4b port): big-endian
   to `sizeof(void *)` alignment before carving `Gerbera_s` work memory, and
   `eglGetJmpbufSize()` returns `(sizeof(jmp_buf) + 7) & ~7` (`200` B on x86_64
   glibc vs `64` B on 32-bit x86).
+- **End-to-end `api_opengl` & LP64 pixel pipeline findings (session 5c)**:
+  - `GR_DATATYPE_MAX` in CodeView `NB11` is **`9`** (`BOOL=8, MAX=9`;
+    `oglPointerInternal` asserts `dataType != GR_DATATYPE_MAX` against `9`).
+  - `grCapChangesRejectAllState_affectingCapabilities` (`0x793D4`) and
+    `grCapChangesPixelPipeline_affectingCapabilities` (`0x793DC`) in the PE
+    `.rdata` are `int[2]` bitmasks (`{ 98306, 0 }` and `{ 32766, 0 }`) covering
+    `GR_CAPABILITY_MAX = 45`; IDA's decompilation truncated the first to `[1]`
+    and merged adjacent `.rdata` strings into the second as `[15]`.
+  - `grSetTexEnvRGBCombScale` / `grSetTexEnvAlphaCombScale` store the scale
+    multiplier **`1, 2, 4`** directly in `envScaleRGB`/`envScaleAlpha` (not shift
+    counts `0, 1, 2`).
+  - `grRenderTextureRect` (`OES_draw_texture`) flips screen Y so `fy0 = (H<<12) - y1`
+    maps to `cropRect.y1 << shiftT` and `fy1 = (H<<12) - y0` maps to
+    `cropRect.y0 << shiftT`, writing spans into `GR_RENDER_STACK_SCANLINE_INFO`.
+  - Because `HC_compile` emits 32-bit x86/ARM machine code and `g_pixelPipeBytecode`
+    indexes `_grPixelPipe` pointer fields at hardcoded 32-bit byte offsets, 64-bit
+    LP64 hosts execute compiled pixel-pipeline cache entries through a faithful C
+    scanline evaluator (`grExecutePixelPipeline64`) while preserving `HC_compile`
+    and direct host callback invocation in `grExecutePixelPipeline`.
 
 ## Strategy for full reconstruction
 

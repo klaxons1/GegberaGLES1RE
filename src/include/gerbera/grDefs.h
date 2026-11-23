@@ -57,11 +57,11 @@ enum GR_DATATYPE_e
     GR_DATATYPE_FIXED = 7,      /* size 4 */
     GR_DATATYPE_BOOL = 8,       /* size 1 */
     GR_DATATYPE_8 = 8,          /* legacy alias */
+    GR_DATATYPE_MAX = 9,        /* pinned from CodeView @enum$3702oglFast_c */
     GR_DATATYPE_DESCRIPTOR = 9, /* size 0 (packed pixel formats) */
     GR_DATATYPE_9 = 9,          /* legacy alias */
     GR_DATATYPE_10 = 10,        /* size 0 */
-    GR_DATATYPE_11 = 11,        /* size 0 */
-    GR_DATATYPE_MAX = 12
+    GR_DATATYPE_11 = 11         /* size 0 */
 };
 
 extern const char grGetDataTypeSize_dataTypeSizes[12];

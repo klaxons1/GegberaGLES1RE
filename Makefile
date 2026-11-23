@@ -60,6 +60,8 @@ src/gerbera/grrTexture.c \
     src/gerbera/api_opengl/oglUtil.c \
     src/gerbera/api_opengl/oglContext.c \
     src/gerbera/api_opengl/oglGetter.c \
+    src/gerbera/api_opengl/oglFast.c \
+    src/gerbera/api_opengl/oglApi.c \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
     src/imath/IUnitScalar.c \

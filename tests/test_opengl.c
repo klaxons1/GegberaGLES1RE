@@ -559,6 +559,706 @@ static void test_ogl_context(void)
     oglDestroyContext(ctx1);
 }
 
+/* Helper: initialize an RGBA8888 (R at byte 0, G at 1, B at 2, A at 3 on LE)
+ * + 32-bit depth + 8-bit stencil surface descriptor. */
+static void init_rgba8_surface(oglSurfaceDescriptor_s *desc,
+                               int w, int h,
+                               unsigned int *colorBuf,
+                               unsigned int *depthBuf,
+                               unsigned char *stencilBuf)
+{
+    memset(desc, 0, sizeof(*desc));
+    desc->width               = w;
+    desc->height              = h;
+    desc->colorBuffer         = colorBuf;
+    desc->depthBuffer         = depthBuf;
+    desc->stencilBuffer       = stencilBuf;
+    desc->colorBufferStride   = w * 4;
+    desc->depthBufferStride   = w * 4;
+    desc->stencilBufferStride = w;
+    desc->colorBytes          = 4;
+    desc->depthBytes          = 4;
+    desc->stencilBytes        = 1;
+    desc->redBits             = 8;
+    desc->redOffset           = 0;
+    desc->greenBits           = 8;
+    desc->greenOffset         = 8;
+    desc->blueBits            = 8;
+    desc->blueOffset          = 16;
+    desc->alphaBits           = 8;
+    desc->alphaOffset         = 24;
+}
+
+static void test_gl_strings_errors_and_state(void)
+{
+    oglContext_s *ctx;
+    unsigned int colorBuf[16 * 16];
+    unsigned int depthBuf[16 * 16];
+    unsigned char stencilBuf[16 * 16];
+    oglSurfaceDescriptor_s surf;
+    GLboolean bval[4];
+    GLint ival[4];
+    GLfloat fval[4];
+    GLfixed xval[4];
+
+    /* Without current context, glGetError returns GL_INVALID_OPERATION and glGetString NULL */
+    egliSetCurrentContext(NULL);
+    CHECK(glGetError() == GL_INVALID_OPERATION);
+    CHECK(glGetString(GL_VENDOR) == NULL);
+
+    ctx = oglCreateContext(NULL, NULL);
+    CHECK(ctx != NULL);
+    init_rgba8_surface(&surf, 16, 16, colorBuf, depthBuf, stencilBuf);
+    oglSetBuffers(ctx, &surf, &surf);
+    egliSetCurrentContext(ctx);
+
+    CHECK(glGetError() == GL_NO_ERROR);
+    CHECK(strcmp((const char *)glGetString(GL_VENDOR), "Nokia") == 0);
+    CHECK(strcmp((const char *)glGetString(GL_RENDERER), "1.1.0") == 0);
+    CHECK(strcmp((const char *)glGetString(GL_VERSION), "OpenGL ES-CM 1.1") == 0);
+    CHECK(strstr((const char *)glGetString(GL_EXTENSIONS), "GL_OES_draw_texture") != NULL);
+    CHECK(strstr((const char *)glGetString(GL_EXTENSIONS), "GL_OES_matrix_palette") != NULL);
+    CHECK(glGetString(0xDEADu) == NULL);
+    CHECK(glGetError() == GL_INVALID_ENUM);
+    CHECK(glGetError() == GL_NO_ERROR);
+
+    /* Enable / Disable / IsEnabled */
+    CHECK(glIsEnabled(GL_DITHER) == GL_TRUE);
+    CHECK(glIsEnabled(GL_DEPTH_TEST) == GL_FALSE);
+    glEnable(GL_DEPTH_TEST);
+    CHECK(glIsEnabled(GL_DEPTH_TEST) == GL_TRUE);
+    glDisable(GL_DEPTH_TEST);
+    CHECK(glIsEnabled(GL_DEPTH_TEST) == GL_FALSE);
+    glEnable(0xDEADu);
+    CHECK(glGetError() == GL_INVALID_ENUM);
+
+    /* Hints, ShadeModel, CullFace, FrontFace, PolygonOffset, SampleCoverage */
+    glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
+    glGetIntegerv(GL_PERSPECTIVE_CORRECTION_HINT, ival);
+    CHECK(ival[0] == GL_NICEST);
+    glHint(GL_FOG_HINT, 0xDEADu);
+    CHECK(glGetError() == GL_INVALID_ENUM);
+
+    glShadeModel(GL_FLAT);
+    glGetIntegerv(GL_SHADE_MODEL, ival);
+    CHECK(ival[0] == GL_FLAT);
+    glShadeModel(GL_SMOOTH);
+
+    glFrontFace(GL_CW);
+    glCullFace(GL_FRONT);
+    glGetIntegerv(GL_FRONT_FACE, ival);
+    CHECK(ival[0] == GL_CW);
+    glGetIntegerv(GL_CULL_FACE_MODE, ival);
+    CHECK(ival[0] == GL_FRONT);
+    glFrontFace(GL_CCW);
+    glCullFace(GL_BACK);
+
+    glPolygonOffset(2.0f, 4.0f);
+    glGetFloatv(GL_POLYGON_OFFSET_FACTOR, fval);
+    CHECK(NEAR_F(fval[0], 2.0f, 1e-5f));
+    glGetFloatv(GL_POLYGON_OFFSET_UNITS, fval);
+    CHECK(NEAR_F(fval[0], 4.0f, 1e-5f));
+
+    glSampleCoverage(0.5f, GL_TRUE);
+    glGetFloatv(GL_SAMPLE_COVERAGE_VALUE, fval);
+    CHECK(NEAR_F(fval[0], 0.5f, 1e-5f));
+    glGetBooleanv(GL_SAMPLE_COVERAGE_INVERT, bval);
+    CHECK(bval[0] == GL_TRUE);
+
+    /* ClipPlane round-trip (identity modelview -> eye plane == object plane) */
+    {
+        GLfloat eq[4] = { 1.0f, 0.0f, -0.5f, 2.0f };
+        GLfloat outEq[4] = { 0 };
+        GLfixed outEqX[4] = { 0 };
+        glClipPlanef(GL_CLIP_PLANE0, eq);
+        glGetClipPlanef(GL_CLIP_PLANE0, outEq);
+        CHECK(NEAR_F(outEq[0], 1.0f, 1e-4f) && NEAR_F(outEq[2], -0.5f, 1e-4f) && NEAR_F(outEq[3], 2.0f, 1e-4f));
+        glGetClipPlanex(GL_CLIP_PLANE0, outEqX);
+        CHECK(outEqX[0] == 0x10000 && outEqX[3] == 0x20000);
+    }
+
+    /* Light, Material, PointParameter, Fog queries */
+    {
+        GLfloat diff[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+        GLfloat outDiff[4] = { 0 };
+        GLfloat attn[3] = { 1.0f, 0.5f, 0.25f };
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, diff);
+        glGetLightfv(GL_LIGHT0, GL_DIFFUSE, outDiff);
+        CHECK(NEAR_F(outDiff[0], 0.25f, 1e-4f) && NEAR_F(outDiff[2], 0.75f, 1e-4f));
+
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, diff);
+        glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 32.0f);
+        glGetMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, outDiff);
+        CHECK(NEAR_F(outDiff[1], 0.5f, 1e-4f));
+        glGetMaterialfv(GL_FRONT, GL_SHININESS, fval);
+        CHECK(NEAR_F(fval[0], 32.0f, 1e-4f));
+        glMaterialf(GL_FRONT, GL_SHININESS, 16.0f); /* only GL_FRONT_AND_BACK valid in ES 1.1 */
+        CHECK(glGetError() == GL_INVALID_ENUM);
+
+        glPointSize(4.0f);
+        glPointParameterf(GL_POINT_SIZE_MIN, 2.0f);
+        glPointParameterf(GL_POINT_SIZE_MAX, 16.0f);
+        glPointParameterfv(GL_POINT_DISTANCE_ATTENUATION, attn);
+        glGetFloatv(GL_POINT_SIZE, fval);
+        CHECK(NEAR_F(fval[0], 4.0f, 1e-4f));
+        glGetFixedv(GL_POINT_SIZE_MAX, xval);
+        CHECK(xval[0] == (16 << 16));
+
+        glFogf(GL_FOG_MODE, (GLfloat)GL_LINEAR);
+        glFogf(GL_FOG_START, 1.0f);
+        glFogf(GL_FOG_END, 10.0f);
+        glGetIntegerv(GL_FOG_MODE, ival);
+        CHECK(ival[0] == GL_LINEAR);
+    }
+
+    glFlush();
+    glFinish();
+    CHECK(glGetError() == GL_NO_ERROR);
+
+    egliSetCurrentContext(NULL);
+    oglDestroyContext(ctx);
+}
+
+static void test_gl_matrices_and_buffers(void)
+{
+    oglContext_s *ctx = oglCreateContext(NULL, NULL);
+    GLfloat m[16];
+    GLfixed mantissa[16];
+    GLint exponent[16];
+    GLuint bufs[2] = { 0, 0 };
+    GLint bparam = 0;
+    void *ptr = NULL;
+    const float vboData[6] = { -1.0f, -1.0f, 1.0f, -1.0f, 0.0f, 1.0f };
+    const float subData[2] = { 0.5f, 0.75f };
+    int i;
+
+    egliSetCurrentContext(ctx);
+
+    /* Modelview stack push/pop, translate/scale/rotate, overflow & underflow */
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glTranslatef(3.0f, -2.0f, 5.0f);
+    glScalef(2.0f, 4.0f, 1.0f);
+    glGetFloatv(GL_MODELVIEW_MATRIX, m);
+    CHECK(NEAR_F(m[0], 2.0f, 1e-5f) && NEAR_F(m[5], 4.0f, 1e-5f));
+    CHECK(NEAR_F(m[12], 3.0f, 1e-5f) && NEAR_F(m[13], -2.0f, 1e-5f) && NEAR_F(m[14], 5.0f, 1e-5f));
+
+    CHECK(glQueryMatrixxOES(mantissa, exponent) == 0u);
+
+    glPushMatrix();
+    glRotatef(90.0f, 0.0f, 0.0f, 1.0f);
+    glPopMatrix();
+    glGetFloatv(GL_MODELVIEW_MATRIX, m);
+    CHECK(NEAR_F(m[0], 2.0f, 1e-5f) && NEAR_F(m[12], 3.0f, 1e-5f));
+
+    /* Pop at bottom -> GL_STACK_UNDERFLOW */
+    glPopMatrix();
+    CHECK(glGetError() == GL_STACK_UNDERFLOW);
+
+    /* Projection stack depth is 2 -> 2nd push overflows */
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrthof(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
+    glPushMatrix();
+    CHECK(glGetError() == GL_NO_ERROR);
+    glPushMatrix();
+    CHECK(glGetError() == GL_STACK_OVERFLOW);
+    glPopMatrix();
+    glLoadIdentity();
+
+    /* Frustum validation (zNear <= 0 -> GL_INVALID_VALUE) */
+    glFrustumf(-1.0f, 1.0f, -1.0f, 1.0f, 0.0f, 10.0f);
+    CHECK(glGetError() == GL_INVALID_VALUE);
+    glFrustumf(-1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 10.0f);
+    CHECK(glGetError() == GL_NO_ERROR);
+
+    /* Matrix palette mode & LoadPaletteFromModelViewMatrixOES */
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glTranslatef(7.0f, 0.0f, 0.0f);
+    glMatrixMode(GL_MATRIX_PALETTE_OES);
+    glCurrentPaletteMatrixOES(2);
+    glLoadPaletteFromModelViewMatrixOES();
+    glPushMatrix(); /* palette matrix stack depth is 1 -> GL_STACK_OVERFLOW */
+    CHECK(glGetError() == GL_STACK_OVERFLOW);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    (void)i;
+
+    /* VBO / EBO lifecycle, BufferData, BufferSubData, GetBufferParameteriv, GetPointerv */
+    CHECK(glIsBuffer(9999u) == GL_FALSE);
+    glGenBuffers(2, bufs);
+    CHECK(bufs[0] != 0 && bufs[1] != 0 && bufs[0] != bufs[1]);
+    CHECK(glIsBuffer(bufs[0]) == GL_TRUE);
+    glBindBuffer(GL_ARRAY_BUFFER, bufs[0]);
+    CHECK(glIsBuffer(bufs[0]) == GL_TRUE);
+
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(vboData), vboData, GL_STATIC_DRAW);
+    CHECK(glGetError() == GL_NO_ERROR);
+    glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE, &bparam);
+    CHECK(bparam == (GLint)sizeof(vboData));
+    glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_USAGE, &bparam);
+    CHECK(bparam == GL_STATIC_DRAW);
+
+    glBufferSubData(GL_ARRAY_BUFFER, 4 * (GLintptr)sizeof(float), (GLsizeiptr)sizeof(subData), subData);
+    CHECK(glGetError() == GL_NO_ERROR);
+    /* Out-of-bounds subdata -> GL_INVALID_VALUE */
+    glBufferSubData(GL_ARRAY_BUFFER, 5 * (GLintptr)sizeof(float), (GLsizeiptr)sizeof(subData), subData);
+    CHECK(glGetError() == GL_INVALID_VALUE);
+
+    /* LP64-safe VBO byte offset in glVertexPointer + glGetPointerv */
+    glVertexPointer(2, GL_FLOAT, 0, (const GLvoid *)(uintptr_t)8);
+    glGetPointerv(GL_VERTEX_ARRAY_POINTER, &ptr);
+    CHECK((uintptr_t)ptr == 8u);
+
+    /* Deleting currently bound buffer unbinds it */
+    glDeleteBuffers(2, bufs);
+    CHECK(glIsBuffer(bufs[0]) == GL_FALSE);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &bparam);
+    CHECK(bparam == 0);
+    CHECK(glGetError() == GL_NO_ERROR);
+
+    egliSetCurrentContext(NULL);
+    oglDestroyContext(ctx);
+}
+
+static void test_gl_clear_and_readpixels(void)
+{
+    oglContext_s *ctx = oglCreateContext(NULL, NULL);
+    unsigned int colorBuf[8 * 8];
+    unsigned int depthBuf[8 * 8];
+    unsigned char stencilBuf[8 * 8];
+    unsigned short rgb565Buf[8 * 8];
+    oglSurfaceDescriptor_s rgbaSurf, rgb565Surf;
+    unsigned char px[8 * 8 * 4];
+    unsigned short px565[4];
+    GLint fmt = 0, type = 0;
+
+    init_rgba8_surface(&rgbaSurf, 8, 8, colorBuf, depthBuf, stencilBuf);
+    oglSetBuffers(ctx, &rgbaSurf, &rgbaSurf);
+    egliSetCurrentContext(ctx);
+
+    glViewport(0, 0, 8, 8);
+    glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    glClearDepthf(1.0f);
+    glClearStencil(0x5A);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    CHECK(glGetError() == GL_NO_ERROR);
+
+    /* Scissored clear of top-right 4x4 to green */
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(4, 4, 4, 4);
+    glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+
+    memset(px, 0, sizeof(px));
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(glGetError() == GL_NO_ERROR);
+    /* (1, 1) is red */
+    CHECK(px[(1 * 8 + 1) * 4 + 0] == 255 &&
+          px[(1 * 8 + 1) * 4 + 1] == 0 &&
+          px[(1 * 8 + 1) * 4 + 2] == 0 &&
+          px[(1 * 8 + 1) * 4 + 3] == 255);
+    /* (6, 6) is green */
+    CHECK(px[(6 * 8 + 6) * 4 + 0] == 0 &&
+          px[(6 * 8 + 6) * 4 + 1] == 255 &&
+          px[(6 * 8 + 6) * 4 + 2] == 0 &&
+          px[(6 * 8 + 6) * 4 + 3] == 255);
+    CHECK(stencilBuf[0] == 0x5Au);
+
+    /* Switch to RGB565 surface and verify GL_IMPLEMENTATION_COLOR_READ_*_OES */
+    memset(&rgb565Surf, 0, sizeof(rgb565Surf));
+    rgb565Surf.width             = 8;
+    rgb565Surf.height            = 8;
+    rgb565Surf.colorBuffer       = rgb565Buf;
+    rgb565Surf.colorBufferStride = 8 * 2;
+    rgb565Surf.colorBytes        = 2;
+    rgb565Surf.redBits           = 5;
+    rgb565Surf.redOffset         = 11;
+    rgb565Surf.greenBits         = 6;
+    rgb565Surf.greenOffset       = 5;
+    rgb565Surf.blueBits          = 5;
+    rgb565Surf.blueOffset        = 0;
+    oglSetBuffers(ctx, &rgb565Surf, &rgb565Surf);
+
+    glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT_OES, &fmt);
+    glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE_OES, &type);
+    CHECK(fmt == GL_RGBA && type == GL_UNSIGNED_BYTE);
+
+    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    memset(px, 0, 16);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(glGetError() == GL_NO_ERROR);
+    CHECK(rgb565Buf[0] == 0x001Fu);
+    CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255 && px[3] == 255);
+    (void)px565;
+
+    egliSetCurrentContext(NULL);
+    oglDestroyContext(ctx);
+}
+
+static void test_gl_rendering_pipeline(void)
+{
+    oglContext_s *ctx = oglCreateContext(NULL, NULL);
+    unsigned int colorBuf[16 * 16];
+    unsigned int depthBuf[16 * 16];
+    unsigned char stencilBuf[16 * 16];
+    oglSurfaceDescriptor_s surf;
+    unsigned char px[4];
+
+    static const GLfloat fullQuadZ0[12] = {
+        -1.0f, -1.0f,  0.0f,
+         1.0f, -1.0f,  0.0f,
+        -1.0f,  1.0f,  0.0f,
+         1.0f,  1.0f,  0.0f
+    };
+    static const GLfloat fullQuadZFar[12] = {
+        -1.0f, -1.0f,  0.6f,
+         1.0f, -1.0f,  0.6f,
+        -1.0f,  1.0f,  0.6f,
+         1.0f,  1.0f,  0.6f
+    };
+    static const GLfloat innerQuad[8] = {
+        -0.5f, -0.5f,
+         0.5f, -0.5f,
+        -0.5f,  0.5f,
+         0.5f,  0.5f
+    };
+    static const GLushort quadIdx[6] = { 0, 1, 2, 2, 1, 3 };
+
+    init_rgba8_surface(&surf, 16, 16, colorBuf, depthBuf, stencilBuf);
+    oglSetBuffers(ctx, &surf, &surf);
+    egliSetCurrentContext(ctx);
+
+    glViewport(0, 0, 16, 16);
+    glDisable(GL_DITHER);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+    /* 1. Basic flat color quad via glDrawArrays + glDrawElements */
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, fullQuadZFar);
+    glColor4f(1.0f, 0.0f, 0.0f, 1.0f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK(glGetError() == GL_NO_ERROR);
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0 && px[3] == 255);
+
+    /* 2. Depth test: clear depth=1.0, draw red at z=0.6 (NDC->winZ=0.8),
+     *    draw blue at z=0.0 (winZ=0.5, nearer -> passes), then green at z=0.6 (fails GL_LESS). */
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glVertexPointer(3, GL_FLOAT, 0, fullQuadZFar);
+    glColor4f(1.0f, 0.0f, 0.0f, 1.0f);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, quadIdx);
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0);
+
+    glVertexPointer(3, GL_FLOAT, 0, fullQuadZ0);
+    glColor4f(0.0f, 0.0f, 1.0f, 1.0f);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, quadIdx);
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255);
+
+    glVertexPointer(3, GL_FLOAT, 0, fullQuadZFar);
+    glColor4f(0.0f, 1.0f, 0.0f, 1.0f);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, quadIdx);
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255); /* nearer blue preserved */
+    glDisable(GL_DEPTH_TEST);
+
+    /* 3. Alpha blending: 50% green over solid red -> ~(127, 128, 0) */
+    glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glVertexPointer(3, GL_FLOAT, 0, fullQuadZ0);
+    glColor4ub(0, 255, 0, 128);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_BLEND);
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] >= 125 && px[0] <= 129 && px[1] >= 126 && px[1] <= 130 && px[2] == 0);
+
+    /* 4. Alpha test: GL_GREATER 0.5 rejects alpha=64, accepts alpha=200 */
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_ALPHA_TEST);
+    glAlphaFunc(GL_GREATER, 0.5f);
+    glColor4ub(255, 255, 0, 64);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 0 && px[1] == 0);
+    glColor4ub(255, 255, 0, 200);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 255 && px[1] == 255 && px[2] == 0);
+    glDisable(GL_ALPHA_TEST);
+
+    /* 5. Stencil mask: mark inner [-0.5..0.5]^2 (pixels 4..11) with stencil=1,
+     *    then draw full-screen cyan where stencil==1 */
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClearStencil(0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(GL_ALWAYS, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glVertexPointer(2, GL_FLOAT, 0, innerQuad);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilFunc(GL_EQUAL, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    glVertexPointer(3, GL_FLOAT, 0, fullQuadZ0);
+    glColor4ub(0, 255, 255, 255);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_STENCIL_TEST);
+
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px); /* inside innerQuad */
+    CHECK(px[0] == 0 && px[1] == 255 && px[2] == 255);
+    glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px); /* outside innerQuad */
+    CHECK(px[0] == 0 && px[1] == 0 && px[2] == 0);
+
+    /* 6. VBO + EBO rendering with non-zero byte offsets on 64-bit LP64 */
+    {
+        GLuint vbo = 0, ebo = 0;
+        /* Pad first 16 bytes so vertex data starts at byte offset 16,
+         * and first 4 bytes of index buffer so indices start at byte offset 4. */
+        struct {
+            float pad[4];
+            float pos[8];
+        } vboPayload = {
+            { 0, 0, 0, 0 },
+            { -1.0f, -1.0f,  1.0f, -1.0f,  -1.0f, 1.0f,  1.0f, 1.0f }
+        };
+        const GLushort eboPayload[8] = { 99, 99,  0, 1, 2, 2, 1, 3 };
+
+        glGenBuffers(1, &vbo);
+        glGenBuffers(1, &ebo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(vboPayload), &vboPayload, GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)sizeof(eboPayload), eboPayload, GL_STATIC_DRAW);
+
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glVertexPointer(2, GL_FLOAT, 0, (const GLvoid *)(uintptr_t)16);
+        glColor4ub(200, 100, 50, 255);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (const GLvoid *)(uintptr_t)4);
+        CHECK(glGetError() == GL_NO_ERROR);
+        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] == 200 && px[1] == 100 && px[2] == 50);
+
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        glDeleteBuffers(1, &vbo);
+        glDeleteBuffers(1, &ebo);
+    }
+
+    /* 7. Directional lighting on a +Z normal quad */
+    {
+        const GLfloat ambZero[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        const GLfloat lightDir[4] = { 0.0f, 0.0f, 1.0f, 0.0f };
+        const GLfloat lightDiff[4] = { 0.0f, 0.8f, 0.0f, 1.0f };
+        const GLfloat matDiff[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glEnable(GL_LIGHTING);
+        glEnable(GL_LIGHT0);
+        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambZero);
+        glLightfv(GL_LIGHT0, GL_AMBIENT, ambZero);
+        glLightfv(GL_LIGHT0, GL_POSITION, lightDir);
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, lightDiff);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, ambZero);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, matDiff);
+        glNormal3f(0.0f, 0.0f, 1.0f);
+        glVertexPointer(3, GL_FLOAT, 0, fullQuadZ0);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisable(GL_LIGHT0);
+        glDisable(GL_LIGHTING);
+
+        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] == 0 && px[1] >= 200 && px[1] <= 208 && px[2] == 0);
+    }
+
+    glDisableClientState(GL_VERTEX_ARRAY);
+    egliSetCurrentContext(NULL);
+    oglDestroyContext(ctx);
+}
+
+static void test_gl_textures_and_drawtex(void)
+{
+    oglContext_s *ctx = oglCreateContext(NULL, NULL);
+    unsigned int colorBuf[16 * 16];
+    unsigned int depthBuf[16 * 16];
+    unsigned char stencilBuf[16 * 16];
+    oglSurfaceDescriptor_s surf;
+    GLuint tex[3] = { 0, 0, 0 };
+    unsigned char px[4];
+
+    /* 2x2 RGBA8 texture:
+     * (0,0)=Red, (1,0)=Green, (0,1)=Blue, (1,1)=Yellow */
+    static const unsigned char rgba2x2[4 * 4] = {
+        255,   0,   0, 255,     0, 255,   0, 255,
+          0,   0, 255, 255,   255, 255,   0, 255
+    };
+    static const GLfloat quadPos[8] = {
+        -1.0f, -1.0f,
+         1.0f, -1.0f,
+        -1.0f,  1.0f,
+         1.0f,  1.0f
+    };
+    static const GLfloat quadUV[8] = {
+        0.0f, 0.0f,
+        1.0f, 0.0f,
+        0.0f, 1.0f,
+        1.0f, 1.0f
+    };
+
+    init_rgba8_surface(&surf, 16, 16, colorBuf, depthBuf, stencilBuf);
+    oglSetBuffers(ctx, &surf, &surf);
+    egliSetCurrentContext(ctx);
+
+    glViewport(0, 0, 16, 16);
+    glDisable(GL_DITHER);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+    /* 1. Standard 2D RGBA texture + auto-mipmap + GL_REPLACE / GL_MODULATE / GL_COMBINE */
+    glGenTextures(3, tex);
+    glBindTexture(GL_TEXTURE_2D, tex[0]);
+    CHECK(glIsTexture(tex[0]) == GL_TRUE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba2x2);
+    CHECK(glGetError() == GL_NO_ERROR);
+
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, quadPos);
+    glTexCoordPointer(2, GL_FLOAT, 0, quadUV);
+
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK(glGetError() == GL_NO_ERROR);
+
+    /* Quadrant checks: (2,2)->Red, (13,2)->Green, (2,13)->Blue, (13,13)->Yellow */
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0);
+    glReadPixels(13, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 0 && px[1] == 255 && px[2] == 0);
+    glReadPixels(2, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255);
+    glReadPixels(13, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 255 && px[1] == 255 && px[2] == 0);
+
+    /* GL_COMBINE with GL_RGB_SCALE = 2.0f: 0.4 * 1.0 * 2.0 = 0.8 (~204) on Red quadrant */
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_MODULATE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_RGB, GL_TEXTURE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SRC1_RGB, GL_PRIMARY_COLOR);
+    glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE, 2.0f);
+    glColor4ub(100, 100, 100, 255);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] >= 198 && px[0] <= 202 && px[1] == 0 && px[2] == 0);
+    glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE, 1.0f);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+    /* 2. OES_compressed_paletted_texture: GL_PALETTE4_RGBA8_OES (16-entry palette + 2x2 nibbles) */
+    {
+        unsigned char palData[16 * 4 + 2];
+        memset(palData, 0, sizeof(palData));
+        /* Palette entry 1 = Magenta (255, 0, 255, 255), entry 2 = Cyan (0, 255, 255, 255) */
+        palData[1 * 4 + 0] = 255; palData[1 * 4 + 2] = 255; palData[1 * 4 + 3] = 255;
+        palData[2 * 4 + 1] = 255; palData[2 * 4 + 2] = 255; palData[2 * 4 + 3] = 255;
+        /* 4 texels packed in 2 bytes: texel0=1 (low), texel1=2 (high), texel2=2, texel3=1 */
+        palData[64] = (unsigned char)(1 | (2 << 4));
+        palData[65] = (unsigned char)(2 | (1 << 4));
+
+        glBindTexture(GL_TEXTURE_2D, tex[1]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_PALETTE4_RGBA8_OES, 2, 2, 0,
+                               (GLsizei)sizeof(palData), palData);
+        CHECK(glGetError() == GL_NO_ERROR);
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] == 255 && px[1] == 0 && px[2] == 255);
+        glReadPixels(13, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] == 0 && px[1] == 255 && px[2] == 255);
+    }
+
+    /* 3. glCopyTexImage2D + OES_draw_texture (glDrawTexiOES) */
+    {
+        GLint crop[4] = { 0, 0, 8, 8 };
+        /* Clear framebuffer to solid orange, copy 8x8 into tex[2], clear to black,
+         * then draw tex[2] into (4, 4, 8, 8) using glDrawTexiOES! */
+        glDisable(GL_TEXTURE_2D);
+        glClearColor(1.0f, 0.5f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glBindTexture(GL_TEXTURE_2D, tex[2]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, 8, 8, 0);
+        CHECK(glGetError() == GL_NO_ERROR);
+
+        glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_CROP_RECT_OES, crop);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glEnable(GL_TEXTURE_2D);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+        glDrawTexiOES(4, 4, 0, 8, 8);
+        CHECK(glGetError() == GL_NO_ERROR);
+
+        /* Inside (4..11, 4..11): orange; outside (1, 1): black */
+        glReadPixels(6, 6, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] == 255 && px[1] >= 126 && px[1] <= 129 && px[2] == 0);
+        glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] == 0 && px[1] == 0 && px[2] == 0);
+
+        /* Also verify 4-quadrant orientation of glDrawTexiOES on tex[0] (2x2 RGBA):
+         * crop = {0, 0, 2, 2} -> bottom-left=Red, bottom-right=Green, top-left=Blue, top-right=Yellow */
+        {
+            GLint crop2[4] = { 0, 0, 2, 2 };
+            glBindTexture(GL_TEXTURE_2D, tex[0]);
+            glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_CROP_RECT_OES, crop2);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawTexiOES(0, 0, 0, 16, 16);
+            glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0);
+            glReadPixels(13, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            CHECK(px[0] == 0 && px[1] == 255 && px[2] == 0);
+            glReadPixels(2, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255);
+            glReadPixels(13, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            CHECK(px[0] == 255 && px[1] == 255 && px[2] == 0);
+        }
+    }
+
+    glDeleteTextures(3, tex);
+    CHECK(glIsTexture(tex[0]) == GL_FALSE);
+    CHECK(glGetError() == GL_NO_ERROR);
+
+    egliSetCurrentContext(NULL);
+    oglDestroyContext(ctx);
+}
+
 int main(void)
 {
     test_error_and_descriptor();
@@ -568,6 +1268,11 @@ int main(void)
     test_getters();
     test_ogl_util();
     test_ogl_context();
+    test_gl_strings_errors_and_state();
+    test_gl_matrices_and_buffers();
+    test_gl_clear_and_readpixels();
+    test_gl_rendering_pipeline();
+    test_gl_textures_and_drawtex();
 
     printf("opengl tests: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

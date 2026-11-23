@@ -428,6 +428,7 @@ void                oglBindBuffer(oglContext_s *context, OGL_BUFOBJTARGET bufObj
 /* --- oglUtil.inl ----------------------------------------------------------- */
 int            oglBinarySearch(int key, int length, const unsigned short *keys);
 int            oglMapDataType(unsigned int type);
+int            oglGetPrimitiveType(int primitive);
 void           oglUpdateCoreMatrices(oglContext_s *context);
 int            oglSetupRendering(oglContext_s *context, int primitive, int count);
 int            oglMapPrimitive(unsigned int mode);
@@ -541,6 +542,32 @@ void                  oglSetGetterValueInt(oglContext_s *context, int offs, unsi
 void                  oglSetGetterValueEnum(oglContext_s *context, int offs, unsigned int pname, const unsigned int *val);
 void                  oglSetGetterValueFloat(oglContext_s *context, int offs, unsigned int pname, const float *val);
 void                  oglGetInternal(oglContext_s *context, unsigned int pname, void *params, OGL_OUTPUTTYPE dataType);
+
+/* --- oglApi.inl ------------------------------------------------------------ */
+void oglSetCapability(oglContext_s *context, unsigned int target, int status);
+void oglGetTexParameterInternal(oglContext_s *context, unsigned int target, unsigned int pname,
+                                void *params, OGL_OUTPUTTYPE dataType);
+void oglGetTexEnvInternal(oglContext_s *context, unsigned int target, unsigned int pname,
+                          void *params, OGL_OUTPUTTYPE dataType);
+void oglGetMaterialInternal(oglContext_s *context, unsigned int face, unsigned int pname,
+                            void *params, OGL_OUTPUTTYPE dataType);
+void oglGetLightInternal(oglContext_s *context, unsigned int light, unsigned int pname,
+                         void *params, OGL_OUTPUTTYPE dataType);
+void oglFogInternal(oglContext_s *context, unsigned int pname, const void *params, OGL_INPUTTYPE inputType);
+void oglPointParameterInternal(oglContext_s *context, unsigned int pname, const void *param, OGL_INPUTTYPE inputType);
+int  oglIsValidSrcFactor(int factor);
+int  oglIsValidDstFactor(int factor);
+void oglPointerInternal(oglContext_s *context, int size, int type, int stride,
+                        const void *pointer, int arrayType);
+void oglLightModelInternal(oglContext_s *context, unsigned int pname, const void *params, OGL_INPUTTYPE inputType);
+void oglTexEnvInternal(oglContext_s *context, unsigned int target, unsigned int pname,
+                       const void *params, OGL_INPUTTYPE inputType);
+void oglTexParameterInternal(oglContext_s *context, unsigned int target, unsigned int pname,
+                             const void *params, OGL_INPUTTYPE inputType);
+int  oglGetPalettedFormatDescriptor(_grSurfaceDescriptor *desc, unsigned int internalFormat);
+void oglUpdateShareListTextures(oglContext_s *context);
+void oglShareListRemoveTexture(oglContext_s *context, unsigned int texIndex);
+void oglShareListRemoveBufObj(oglContext_s *context, unsigned int bufObjIndex);
 
 HG_EXTERN_C_END
 

@@ -75,7 +75,7 @@ static void test_formats(void)
     CHECK(grGetDataTypeSize(6) == 4);
     CHECK(grGetDataTypeSize(7) == 4);
     CHECK(grGetDataTypeSize(8) == 1);
-    CHECK(grGetDataTypeSize(9) == 0);
+    CHECK(GR_DATATYPE_MAX == 9);
     /* image format component counts: {1,3,4,1,2,3,4} */
     CHECK(grGetImageFormatNumComponents(GR_IMAGEFORMAT_ALPHA) == 1);
     CHECK(grGetImageFormatNumComponents(GR_IMAGEFORMAT_RGB) == 3);
@@ -4919,7 +4919,7 @@ static void test_hccompiler(void)
         static HCInstr_s emuIr[512];
         unsigned char memRef[2048];
         unsigned char memRun[2048];
-        unsigned char mutableMask[2] = { 0xFFu, 0xFFu };
+        unsigned char mutableMask[4] = { 0xFFu, 0xFFu, 0xFFu, 0xFFu };
         int n = 0;
         int r;
         int bIdx;

@@ -27,6 +27,630 @@ static unsigned char g_mutableParamsMask[10] = {
 
 /* --- grExecutePixelPipeline (grPixelPipeline.h 153; DLL 24757-24775) --------- */
 
+static int grEvalCompareFunc64(int func, unsigned int lhs, unsigned int rhs)
+{
+    switch (func)
+    {
+    case GR_FUNC_NEVER:    return 0;
+    case GR_FUNC_LESS:     return lhs < rhs;
+    case GR_FUNC_EQUAL:    return lhs == rhs;
+    case GR_FUNC_LEQUAL:   return lhs <= rhs;
+    case GR_FUNC_GREATER:  return lhs > rhs;
+    case GR_FUNC_NOTEQUAL: return lhs != rhs;
+    case GR_FUNC_GEQUAL:   return lhs >= rhs;
+    case GR_FUNC_ALWAYS:
+    default:               return 1;
+    }
+}
+
+static unsigned char grApplyStencilOp64(int op, unsigned char cur, unsigned char ref)
+{
+    switch (op)
+    {
+    case GR_STENCILOP_KEEP:    return cur;
+    case GR_STENCILOP_REPLACE: return ref;
+    case GR_STENCILOP_INCR:    return (cur < 255u) ? (unsigned char)(cur + 1u) : 255u;
+    case GR_STENCILOP_DECR:    return (cur > 0u) ? (unsigned char)(cur - 1u) : 0u;
+    case GR_STENCILOP_ZERO:    return 0u;
+    case GR_STENCILOP_INVERT:  return (unsigned char)~cur;
+    default:                   return cur;
+    }
+}
+
+static unsigned int grSampleTexel64(const _grTexture *texObj,
+                                    const _grPixelPipeTextureUnit *tu,
+                                    int sVal, int tVal,
+                                    const _grSurfaceDescriptor *desc)
+{
+    int coords[2];
+    int raw[2];
+    int masks[2];
+    int i;
+    int idx;
+    unsigned int packed = 0;
+
+    raw[0] = sVal;
+    raw[1] = tVal;
+    masks[0] = tu->sMask;
+    masks[1] = tu->tMask;
+
+    for (i = 0; i < 2; ++i)
+    {
+        if (masks[i] <= 0)
+        {
+            coords[i] = 0;
+        }
+        else if (texObj->wrapMode[i] == GR_WRAPMODE_CLAMP_TO_EDGE)
+        {
+            coords[i] = hgClamp32_0_x(raw[i] >> tu->rShift[i], masks[i]);
+        }
+        else if (texObj->wrapMode[i] == GR_WRAPMODE_MIRRORED_REPEAT)
+        {
+            unsigned int v = (unsigned int)raw[i] >> tu->rShift[i];
+            if (raw[i] < 0)
+                v = ~v;
+            coords[i] = (int)(v & (unsigned int)masks[i]);
+        }
+        else
+        {
+            coords[i] = (int)(((unsigned int)raw[i] >> tu->rShift[i]) & (unsigned int)masks[i]);
+        }
+    }
+
+    idx = (coords[1] << tu->log2DimS) + coords[0];
+    if (desc->paletteFormat == GR_PALETTEFORMAT_4BIT)
+    {
+        const unsigned char *bytes = (const unsigned char *)tu->pixels;
+        int palIdx = (bytes[idx >> 1] >> ((idx & 1) ? 0 : 4)) & 0xF;
+        /* GL_OES_compressed_paletted_texture packs low nibble first or high?
+         * Check byte nibble order: in GLES1 OES paletted4, low nibble = first texel (even idx), high nibble = second texel (odd idx) */
+        palIdx = (bytes[idx >> 1] >> ((idx & 1) ? 4 : 0)) & 0xF;
+        if (desc->colorBytes == 2)
+            packed = ((const unsigned short *)tu->palette)[palIdx];
+        else
+            packed = ((const unsigned int *)tu->palette)[palIdx];
+    }
+    else if (desc->paletteFormat == GR_PALETTEFORMAT_8BIT)
+    {
+        int palIdx = ((const unsigned char *)tu->pixels)[idx];
+        if (desc->colorBytes == 2)
+            packed = ((const unsigned short *)tu->palette)[palIdx];
+        else
+            packed = ((const unsigned int *)tu->palette)[palIdx];
+    }
+    else
+    {
+        if (desc->colorBytes == 1)
+            packed = ((const unsigned char *)tu->pixels)[idx];
+        else if (desc->colorBytes == 2)
+            packed = ((const unsigned short *)tu->pixels)[idx];
+        else
+            packed = ((const unsigned int *)tu->pixels)[idx];
+    }
+    return grUnpackColor(packed, (_grSurfaceDescriptor *)desc);
+}
+
+static void grApplyTexEnv64(const Gerbera_s *state, int unit,
+                            unsigned int primaryRGBA, unsigned int texRGBA,
+                            int curRGBA[4])
+{
+    const _grTextureUnitState *us = &state->textureUnit[2 * unit];
+    const _grTexture *texObj = (const _grTexture *)us->texture;
+    int baseFormat = (texObj != NULL) ? texObj->mipmap[0].texFormat : GR_TEXTUREFORMAT_RGBA8;
+    int envRGBA[4];
+    int texC[4];
+    int priC[4];
+    int prevC[4];
+    int c;
+
+    for (c = 0; c < 4; ++c)
+    {
+        prevC[c] = curRGBA[c];
+        priC[c]  = (int)((primaryRGBA >> (8 * c)) & 0xFFu);
+        texC[c]  = (int)((texRGBA >> (8 * c)) & 0xFFu);
+        envRGBA[c] = (int)((us->envColor >> (8 * c)) & 0xFFu);
+    }
+    if (baseFormat == GR_TEXTUREFORMAT_LUMINANCE8)
+    {
+        texC[1] = texC[0];
+        texC[2] = texC[0];
+        texC[3] = 255;
+    }
+    else if (baseFormat == GR_TEXTUREFORMAT_LUMINANCE8_ALPHA8)
+    {
+        texC[1] = texC[0];
+        texC[2] = texC[0];
+    }
+    else if (baseFormat == GR_TEXTUREFORMAT_ALPHA8)
+    {
+        texC[0] = 0;
+        texC[1] = 0;
+        texC[2] = 0;
+    }
+    else if (baseFormat == GR_TEXTUREFORMAT_RGB8 ||
+             baseFormat == GR_TEXTUREFORMAT_RGB565 ||
+             baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGB8 ||
+             baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGB565 ||
+             baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGB8 ||
+             baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGB565)
+    {
+        texC[3] = 255;
+    }
+
+    switch (us->envMode)
+    {
+    case GR_TEXENVMODE_REPLACE:
+        if (baseFormat == GR_TEXTUREFORMAT_ALPHA8)
+        {
+            curRGBA[3] = texC[3];
+        }
+        else if (baseFormat == GR_TEXTUREFORMAT_LUMINANCE8 ||
+                 baseFormat == GR_TEXTUREFORMAT_RGB8 ||
+                 baseFormat == GR_TEXTUREFORMAT_RGB565 ||
+                 baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGB8 ||
+                 baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGB565 ||
+                 baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGB8 ||
+                 baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGB565)
+        {
+            curRGBA[0] = texC[0];
+            curRGBA[1] = texC[1];
+            curRGBA[2] = texC[2];
+        }
+        else
+        {
+            for (c = 0; c < 4; ++c)
+                curRGBA[c] = texC[c];
+        }
+        break;
+
+    case GR_TEXENVMODE_DECAL:
+        if (baseFormat == GR_TEXTUREFORMAT_RGB8 ||
+            baseFormat == GR_TEXTUREFORMAT_RGB565 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGB8 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGB565 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGB8 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGB565)
+        {
+            curRGBA[0] = texC[0];
+            curRGBA[1] = texC[1];
+            curRGBA[2] = texC[2];
+        }
+        else
+        {
+            for (c = 0; c < 3; ++c)
+                curRGBA[c] = (prevC[c] * (255 - texC[3]) + texC[c] * texC[3] + 127) / 255;
+        }
+        break;
+
+    case GR_TEXENVMODE_BLEND:
+        if (baseFormat != GR_TEXTUREFORMAT_ALPHA8)
+        {
+            for (c = 0; c < 3; ++c)
+                curRGBA[c] = (prevC[c] * (255 - texC[c]) + envRGBA[c] * texC[c] + 127) / 255;
+        }
+        if (baseFormat == GR_TEXTUREFORMAT_ALPHA8 ||
+            baseFormat == GR_TEXTUREFORMAT_LUMINANCE8_ALPHA8 ||
+            baseFormat == GR_TEXTUREFORMAT_RGBA8 ||
+            baseFormat == GR_TEXTUREFORMAT_RGBA4444 ||
+            baseFormat == GR_TEXTUREFORMAT_RGBA5551 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGBA8 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGBA4 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGBA5551 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA8 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA4 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA5551)
+        {
+            curRGBA[3] = (prevC[3] * texC[3] + 127) / 255;
+        }
+        break;
+
+    case GR_TEXENVMODE_ADD:
+        if (baseFormat != GR_TEXTUREFORMAT_ALPHA8)
+        {
+            for (c = 0; c < 3; ++c)
+                curRGBA[c] = hgClamp32_0_x(prevC[c] + texC[c], 255);
+        }
+        if (baseFormat == GR_TEXTUREFORMAT_ALPHA8 ||
+            baseFormat == GR_TEXTUREFORMAT_LUMINANCE8_ALPHA8 ||
+            baseFormat == GR_TEXTUREFORMAT_RGBA8 ||
+            baseFormat == GR_TEXTUREFORMAT_RGBA4444 ||
+            baseFormat == GR_TEXTUREFORMAT_RGBA5551 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGBA8 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGBA4 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGBA5551 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA8 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA4 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA5551)
+        {
+            curRGBA[3] = (prevC[3] * texC[3] + 127) / 255;
+        }
+        break;
+
+    case GR_TEXENVMODE_COMBINE:
+    {
+        int argRGB[3][3];
+        int argA[3];
+        int k;
+
+        for (k = 0; k < 3; ++k)
+        {
+            const int *srcV = prevC;
+            if (us->envSrcRGB[k] == GR_TEXENVCOMBSRC_TEXTURE)            srcV = texC;
+            else if (us->envSrcRGB[k] == GR_TEXENVCOMBSRC_CONSTANT)      srcV = envRGBA;
+            else if (us->envSrcRGB[k] == GR_TEXENVCOMBSRC_PRIMARY_COLOR) srcV = priC;
+
+            for (c = 0; c < 3; ++c)
+            {
+                int v = srcV[c];
+                if (us->envOpRGB[k] == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_COLOR)
+                    v = 255 - srcV[c];
+                else if (us->envOpRGB[k] == GR_TEXENVCOMBOPERAND_SRC_ALPHA)
+                    v = srcV[3];
+                else if (us->envOpRGB[k] == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA)
+                    v = 255 - srcV[3];
+                argRGB[k][c] = v;
+            }
+
+            srcV = prevC;
+            if (us->envSrcAlpha[k] == GR_TEXENVCOMBSRC_TEXTURE)            srcV = texC;
+            else if (us->envSrcAlpha[k] == GR_TEXENVCOMBSRC_CONSTANT)      srcV = envRGBA;
+            else if (us->envSrcAlpha[k] == GR_TEXENVCOMBSRC_PRIMARY_COLOR) srcV = priC;
+            argA[k] = (us->envOpAlpha[k] == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA) ? (255 - srcV[3]) : srcV[3];
+        }
+
+        if (us->envFuncRGB == GR_TEXENVCOMBFUNC_DOT3_RGB ||
+            us->envFuncRGB == GR_TEXENVCOMBFUNC_DOT3_RGBA)
+        {
+            int dot = 4 * ((argRGB[0][0] - 128) * (argRGB[1][0] - 128) +
+                           (argRGB[0][1] - 128) * (argRGB[1][1] - 128) +
+                           (argRGB[0][2] - 128) * (argRGB[1][2] - 128)) / 255;
+            dot = hgClamp32_0_x(dot * (int)us->envScaleRGB, 255);
+            curRGBA[0] = curRGBA[1] = curRGBA[2] = dot;
+            if (us->envFuncRGB == GR_TEXENVCOMBFUNC_DOT3_RGBA)
+            {
+                curRGBA[3] = dot;
+                break;
+            }
+        }
+        else
+        {
+            for (c = 0; c < 3; ++c)
+            {
+                int r = argRGB[0][c];
+                if (us->envFuncRGB == GR_TEXENVCOMBFUNC_MODULATE)
+                    r = (argRGB[0][c] * argRGB[1][c] + 127) / 255;
+                else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_ADD)
+                    r = argRGB[0][c] + argRGB[1][c];
+                else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_ADD_SIGNED)
+                    r = argRGB[0][c] + argRGB[1][c] - 128;
+                else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_SUBTRACT)
+                    r = argRGB[0][c] - argRGB[1][c];
+                else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_INTERPOLATE)
+                    r = (argRGB[0][c] * argRGB[2][c] + argRGB[1][c] * (255 - argRGB[2][c]) + 127) / 255;
+                curRGBA[c] = hgClamp32_0_x(r * (int)us->envScaleRGB, 255);
+            }
+        }
+
+        {
+            int ra = argA[0];
+            if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_MODULATE)
+                ra = (argA[0] * argA[1] + 127) / 255;
+            else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_ADD)
+                ra = argA[0] + argA[1];
+            else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_ADD_SIGNED)
+                ra = argA[0] + argA[1] - 128;
+            else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_SUBTRACT)
+                ra = argA[0] - argA[1];
+            else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_INTERPOLATE)
+                ra = (argA[0] * argA[2] + argA[1] * (255 - argA[2]) + 127) / 255;
+            curRGBA[3] = hgClamp32_0_x(ra * (int)us->envScaleAlpha, 255);
+        }
+        break;
+    }
+
+    case GR_TEXENVMODE_MODULATE:
+    default:
+        if (baseFormat != GR_TEXTUREFORMAT_ALPHA8)
+        {
+            for (c = 0; c < 3; ++c)
+                curRGBA[c] = (prevC[c] * texC[c] + 127) / 255;
+        }
+        if (baseFormat == GR_TEXTUREFORMAT_ALPHA8 ||
+            baseFormat == GR_TEXTUREFORMAT_LUMINANCE8_ALPHA8 ||
+            baseFormat == GR_TEXTUREFORMAT_RGBA8 ||
+            baseFormat == GR_TEXTUREFORMAT_RGBA4444 ||
+            baseFormat == GR_TEXTUREFORMAT_RGBA5551 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGBA8 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGBA4 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGBA5551 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA8 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA4 ||
+            baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA5551)
+        {
+            curRGBA[3] = (prevC[3] * texC[3] + 127) / 255;
+        }
+        break;
+    }
+}
+
+static void grComputeBlendWeights64(int factor, const int src[4], const int dst[4], int out[4])
+{
+    int fA;
+    switch (factor)
+    {
+    case GR_BLENDFACTOR_ZERO:
+        out[0] = out[1] = out[2] = out[3] = 0;
+        break;
+    case GR_BLENDFACTOR_ONE:
+        out[0] = out[1] = out[2] = out[3] = 255;
+        break;
+    case GR_BLENDFACTOR_SRC_COLOR:
+        out[0] = src[0]; out[1] = src[1]; out[2] = src[2]; out[3] = src[3];
+        break;
+    case GR_BLENDFACTOR_ONE_MINUS_SRC_COLOR:
+        out[0] = 255 - src[0]; out[1] = 255 - src[1]; out[2] = 255 - src[2]; out[3] = 255 - src[3];
+        break;
+    case GR_BLENDFACTOR_SRC_ALPHA:
+        out[0] = out[1] = out[2] = out[3] = src[3];
+        break;
+    case GR_BLENDFACTOR_ONE_MINUS_SRC_ALPHA:
+        out[0] = out[1] = out[2] = out[3] = 255 - src[3];
+        break;
+    case GR_BLENDFACTOR_DST_ALPHA:
+        out[0] = out[1] = out[2] = out[3] = dst[3];
+        break;
+    case GR_BLENDFACTOR_ONE_MINUS_DST_ALPHA:
+        out[0] = out[1] = out[2] = out[3] = 255 - dst[3];
+        break;
+    case GR_BLENDFACTOR_DST_COLOR:
+        out[0] = dst[0]; out[1] = dst[1]; out[2] = dst[2]; out[3] = dst[3];
+        break;
+    case GR_BLENDFACTOR_ONE_MINUS_DST_COLOR:
+        out[0] = 255 - dst[0]; out[1] = 255 - dst[1]; out[2] = 255 - dst[2]; out[3] = 255 - dst[3];
+        break;
+    case GR_BLENDFACTOR_SRC_ALPHA_SATURATE:
+        fA = hgMin32(src[3], 255 - dst[3]);
+        out[0] = out[1] = out[2] = fA;
+        out[3] = 255;
+        break;
+    default:
+        out[0] = out[1] = out[2] = out[3] = 255;
+        break;
+    }
+}
+
+static unsigned int grApplyLogicOp64(int op, unsigned int s, unsigned int d)
+{
+    switch (op)
+    {
+    case GR_LOGICOP_CLEAR:         return 0u;
+    case GR_LOGICOP_AND:           return s & d;
+    case GR_LOGICOP_AND_REVERSE:   return s & ~d;
+    case GR_LOGICOP_COPY:          return s;
+    case GR_LOGICOP_AND_INVERTED:  return ~s & d;
+    case GR_LOGICOP_NOOP:          return d;
+    case GR_LOGICOP_XOR:           return s ^ d;
+    case GR_LOGICOP_OR:            return s | d;
+    case GR_LOGICOP_NOR:           return ~(s | d);
+    case GR_LOGICOP_EQUIV:         return ~(s ^ d);
+    case GR_LOGICOP_INVERT:        return ~d;
+    case GR_LOGICOP_OR_REVERSE:    return s | ~d;
+    case GR_LOGICOP_COPY_INVERTED: return ~s;
+    case GR_LOGICOP_OR_INVERTED:   return ~s | d;
+    case GR_LOGICOP_NAND:          return ~(s & d);
+    case GR_LOGICOP_SET:           return 0xFFFFFFFFu;
+    default:                       return s;
+    }
+}
+
+static void grExecutePixelPipeline64(Gerbera_s *state)
+{
+    _grPixelPipe *pp = state->pixelPipeline;
+    _grDrawSurface *surf = &state->drawSurface;
+    unsigned char *colorRow = (unsigned char *)pp->colorRow;
+    unsigned char *depthRow = (unsigned char *)pp->depthRow;
+    unsigned char *stencilRow = (unsigned char *)pp->stencilRow;
+    int rowRef[GR_GRADIENT_MAX];
+    _grSurfaceDescriptor texDesc[2];
+    int unitActive[2];
+    int gradMask = state->activeGradientMask;
+    int colorBpp = surf->colorBytes;
+    int depthBpp = surf->depthBytes;
+    int stencilBpp = surf->stencilBytes;
+    int alphaTest = grTestCapability(state, GR_CAPABILITY_ALPHA_TEST);
+    int stencilTest = grTestCapability(state, GR_CAPABILITY_STENCIL_TEST) && (stencilBpp > 0 && stencilRow != NULL);
+    int depthTest = grTestCapability(state, GR_CAPABILITY_DEPTH_TEST) && (depthBpp > 0 && depthRow != NULL);
+    int fogEnabled = grTestCapability(state, GR_CAPABILITY_FOG);
+    int blendEnabled = grTestCapability(state, GR_CAPABILITY_BLEND);
+    int logicEnabled = grTestCapability(state, GR_CAPABILITY_COLOR_LOGIC_OP);
+    int ditherEnabled = grTestCapability(state, GR_CAPABILITY_DITHER);
+    unsigned int writeMask = 0xFFFFFFFFu;
+    int g, u, s;
+
+    if (surf->colorMask != (unsigned char)(state->colorMask & surf->colorMask))
+        writeMask = grGetPackedColorWriteMask((_grSurfaceDescriptor *)surf, (unsigned char)state->colorMask);
+
+    for (g = 0; g < GR_GRADIENT_MAX; ++g)
+        rowRef[g] = pp->reference[g];
+
+    for (u = 0; u < 2; ++u)
+    {
+        const _grTexture *texObj = (const _grTexture *)state->textureUnit[2 * u].texture;
+        unitActive[u] = (state->useTexUnit[u] != 0 || state->textureUnitEnabled[u] != 0) &&
+                        texObj != NULL && pp->textureUnit[u].pixels != NULL;
+        if (unitActive[u])
+        {
+            int mip = 0;
+            int m;
+            for (m = 0; m < texObj->numMipLevels; ++m)
+            {
+                if (texObj->mipmap[m].pixels == pp->textureUnit[u].pixels)
+                {
+                    mip = m;
+                    break;
+                }
+            }
+            grrGetTextureFormatDescriptor(&texDesc[u], texObj->mipmap[mip].texFormat);
+        }
+    }
+
+    for (s = 0; s < pp->numScanlines; ++s)
+    {
+        unsigned int spanWord = pp->scanlineInfo[s];
+        int xStart = (int)(spanWord & 0xFFFFu);
+        int count  = (int)(spanWord >> 16);
+        int cur[GR_GRADIENT_MAX];
+        int yScreen = pp->yStart + s;
+        int x;
+
+        for (g = 0; g < GR_GRADIENT_MAX; ++g)
+            cur[g] = rowRef[g] + pp->xAdder[g] * xStart;
+
+        for (x = xStart; x < xStart + count; ++x)
+        {
+            int rgba[4];
+            unsigned int primaryRGBA;
+            int c;
+
+            for (c = 0; c < 4; ++c)
+            {
+                if ((gradMask & (4 << c)) != 0)
+                    rgba[c] = hgClamp32_0_x(cur[2 + c] >> 16, 255);
+                else
+                    rgba[c] = hgClamp32_0_x((state->defaultColorRGBA[c] + 128) >> 8, 255);
+            }
+            primaryRGBA = grSetRGBA(rgba[0], rgba[1], rgba[2], rgba[3]);
+
+            for (u = 0; u < 2; ++u)
+            {
+                if (unitActive[u])
+                {
+                    const _grTexture *texObj = (const _grTexture *)state->textureUnit[2 * u].texture;
+                    unsigned int texel = grSampleTexel64(texObj, &pp->textureUnit[u],
+                                                         cur[6 + 2 * u], cur[7 + 2 * u], &texDesc[u]);
+                    grApplyTexEnv64(state, u, primaryRGBA, texel, rgba);
+                }
+            }
+
+            if (fogEnabled)
+            {
+                int fog8 = ((gradMask & 2) != 0) ? hgClamp32_0_x(cur[1] >> 16, 255) : 255;
+                for (c = 0; c < 3; ++c)
+                {
+                    int fc = (int)((state->fogColor >> (8 * c)) & 0xFFu);
+                    rgba[c] = (fog8 * rgba[c] + (255 - fog8) * fc + 127) / 255;
+                }
+            }
+
+            if (alphaTest && !grEvalCompareFunc64(state->alphaFunc, (unsigned int)rgba[3],
+                                                  (unsigned int)state->alphaReference))
+            {
+                goto step_pixel;
+            }
+
+            if (stencilTest)
+            {
+                unsigned char sCur = stencilRow[x];
+                unsigned char sRef = (unsigned char)(state->stencilReference & 0xFFu);
+                unsigned char sMask = (unsigned char)(state->stencilTestMask & 0xFFu);
+                unsigned char wMask = (unsigned char)(state->stencilWriteMask & 0xFFu);
+                if (!grEvalCompareFunc64(state->stencilFunc,
+                                         (unsigned int)(sRef & sMask),
+                                         (unsigned int)(sCur & sMask)))
+                {
+                    unsigned char sNew = grApplyStencilOp64(state->stencilFail, sCur, sRef);
+                    stencilRow[x] = (unsigned char)((sCur & ~wMask) | (sNew & wMask));
+                    goto step_pixel;
+                }
+            }
+
+            if (depthTest)
+            {
+                unsigned int z30 = (unsigned int)hgClamp32_0_x(cur[0], 0x3FFFFFFF);
+                unsigned int zVal = (depthBpp == 4) ? z30 : (z30 >> (30 - 8 * depthBpp));
+                unsigned int zDst = (depthBpp == 1) ? depthRow[x]
+                                  : (depthBpp == 2) ? ((unsigned short *)depthRow)[x]
+                                                    : ((unsigned int *)depthRow)[x];
+                if (!grEvalCompareFunc64(state->depthFunc, zVal, zDst))
+                {
+                    if (stencilTest)
+                    {
+                        unsigned char sCur = stencilRow[x];
+                        unsigned char sRef = (unsigned char)(state->stencilReference & 0xFFu);
+                        unsigned char wMask = (unsigned char)(state->stencilWriteMask & 0xFFu);
+                        unsigned char sNew = grApplyStencilOp64(state->stencilZFail, sCur, sRef);
+                        stencilRow[x] = (unsigned char)((sCur & ~wMask) | (sNew & wMask));
+                    }
+                    goto step_pixel;
+                }
+                if (state->depthMask != 0)
+                {
+                    if (depthBpp == 1)      depthRow[x] = (unsigned char)zVal;
+                    else if (depthBpp == 2) ((unsigned short *)depthRow)[x] = (unsigned short)zVal;
+                    else                    ((unsigned int *)depthRow)[x] = zVal;
+                }
+            }
+
+            if (stencilTest)
+            {
+                unsigned char sCur = stencilRow[x];
+                unsigned char sRef = (unsigned char)(state->stencilReference & 0xFFu);
+                unsigned char wMask = (unsigned char)(state->stencilWriteMask & 0xFFu);
+                unsigned char sNew = grApplyStencilOp64(state->stencilZPass, sCur, sRef);
+                stencilRow[x] = (unsigned char)((sCur & ~wMask) | (sNew & wMask));
+            }
+
+            if (colorBpp > 0 && colorRow != NULL && state->colorMask != 0)
+            {
+                unsigned int dstPacked = (colorBpp == 1) ? colorRow[x]
+                                       : (colorBpp == 2) ? ((unsigned short *)colorRow)[x]
+                                                         : ((unsigned int *)colorRow)[x];
+                unsigned int outRGBA;
+                unsigned int outPacked;
+
+                if (blendEnabled && !logicEnabled)
+                {
+                    unsigned int dstRGBA = grUnpackColor(dstPacked, (_grSurfaceDescriptor *)surf);
+                    int dstC[4], sw[4], dw[4];
+                    for (c = 0; c < 4; ++c)
+                        dstC[c] = (int)((dstRGBA >> (8 * c)) & 0xFFu);
+                    if (surf->rgbaSizes[3] == 0)
+                        dstC[3] = 255;
+                    grComputeBlendWeights64(state->srcBlendFactor, rgba, dstC, sw);
+                    grComputeBlendWeights64(state->dstBlendFactor, rgba, dstC, dw);
+                    for (c = 0; c < 4; ++c)
+                        rgba[c] = hgClamp32_0_x((rgba[c] * sw[c] + dstC[c] * dw[c] + 127) / 255, 255);
+                }
+
+                outRGBA = grSetRGBA(rgba[0], rgba[1], rgba[2], rgba[3]);
+                outPacked = ditherEnabled
+                          ? grDitherColor(outRGBA, (_grSurfaceDescriptor *)surf, x, yScreen)
+                          : grPackColor(outRGBA, (_grSurfaceDescriptor *)surf);
+
+                if (logicEnabled)
+                    outPacked = grApplyLogicOp64(state->logicOp, outPacked, dstPacked);
+
+                if (writeMask != 0xFFFFFFFFu)
+                    outPacked = (dstPacked & ~writeMask) | (outPacked & writeMask);
+
+                if (colorBpp == 1)      colorRow[x] = (unsigned char)outPacked;
+                else if (colorBpp == 2) ((unsigned short *)colorRow)[x] = (unsigned short)outPacked;
+                else                    ((unsigned int *)colorRow)[x] = outPacked;
+            }
+
+step_pixel:
+            for (g = 0; g < GR_GRADIENT_MAX; ++g)
+                cur[g] += pp->xAdder[g];
+        }
+
+        for (g = 0; g < GR_GRADIENT_MAX; ++g)
+            rowRef[g] += pp->yAdder[g];
+        if (colorRow != NULL)   colorRow += surf->buffers[0].stride;
+        if (depthRow != NULL)   depthRow += surf->buffers[1].stride;
+        if (stencilRow != NULL) stencilRow += surf->buffers[2].stride;
+    }
+}
+
 void grExecutePixelPipeline(Gerbera_s *state)
 {
     grPixelPipelineCode_fn pixelPipelineCode = state->pixelPipelineCode;
@@ -40,6 +664,17 @@ void grExecutePixelPipeline(Gerbera_s *state)
     if (state->pixelPipeline == NULL &&
         grAssert("state->renderStack->pixelPipelineStack", "grPixelPipeline.h", 154) != 0)
         grDie(0);
+    if (sizeof(void *) != 4 && state->pipelineCache != NULL)
+    {
+        uintptr_t codeAddr = (uintptr_t)pixelPipelineCode;
+        uintptr_t arenaStart = (uintptr_t)state->pipelineCache->arena;
+        uintptr_t arenaEnd = arenaStart + (uintptr_t)state->pipelineCache->arenaSize;
+        if (codeAddr >= arenaStart && codeAddr < arenaEnd)
+        {
+            grExecutePixelPipeline64(state);
+            return;
+        }
+    }
     pixelPipelineCode(state->pixelPipeline);
 }
 
