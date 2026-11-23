@@ -215,6 +215,40 @@ semantics line-for-line (verified against the session-4b port): big-endian
      `ofs > 0`; harmless for its sole caller `minColor` (`length == nHardRegs
      <= 14`, single word, where `ofs + (32 - ofs) == 32 >= length` returns `-1`).
 
+### `hcCompiler.c`, `hcPanicRegalloc.inl`, & `_grSignature` (`TI=0x18AA`) (session 4g)
+
+- **`_grSignature` layout (`TI=0x18AA`)**: `grExecuteProgram` (`g_pixelPipeBytecode.c`)
+  indexes `_grSignature` by raw byte offset (`+16..+48` + `texture[2][44]`).
+  Dumping CodeView `TI=0x18AA` (`144` bytes) and `TI=0x18A7` (`44` bytes) from
+  `sstGlobalTypes` recovered the exact byte order (`+16` `isValid`, `+17`
+  `colorMask`, `+18` `depthTest`, `+19` `alphaTest`, `+20` `alphaFunc`, `+21`
+  `depthMask`, `+22` `depthFunc`, `+23..24` `depthClampMin/Max`, `+25`
+  `logicOpEnabled`, `+26` `logicOp`, `+27` `blendEnabled`, `+28..29`
+  `srcFactor/dstFactor`, `+30` `flatShading`, `+31..39` stencil fields,
+  `+40..41` `fogEnabled/monochromeFog`, `+42..48` `writeColor`,
+  `constantWriteColor`, `applyColorWriteMask`, `dither`, `constantDepth`,
+  `perPixelPack`, `screenRectGradients`), matching `s_mainBitCounts[56]` bit-for-bit.
+- **`hcCompiler.c` static tables & x87 disassembly corrections**:
+  - `swap[12]` (`VA 0x47E50C`), `rewrites[52]` (`VA 0x47E518`, `1352` bytes,
+    `TI=0x1A7D`), and `dbl_48E070` (`VA 0x48E070` = `(double)0x7FFFFFFF`) dumped
+    directly from PE `.rdata`.
+  - In `pruneGraph` (`VA 0x459CCE..0x459D3B`), Hex-Rays inverted the x87 `fcomp`
+    (`fnstsw ax; test ah, 1`) overflow checks at `hcCompiler.c:4422` and `4423`:
+    the real machine code asserts `(double)spCost * (double)spillNeigh < (double)0x7FFFFFFF`
+    and `(double)spillCost * (double)nNeigh < (double)0x7FFFFFFF`.
+  - Three additional original Gerbera C quirks verified in x86 machine code and
+    preserved faithfully:
+    1. `findLabel` (`VA 0x453560`) returns instruction index `i >= 0` (or `-1`),
+       while `validateProgramInternal` (`VA 0x4537CB`, `hcCompiler.c:542`)
+       asserts `findLabel(lst, target) != 0` (`test eax, eax; jnz`), so a
+       branched-to `LABEL` at instruction index `0` triggers line 542.
+    2. `computeDominators` (`VA 0x454144`) ends its `do ... while` loop with
+       `cmp [ebp+changed], 0; jz` (`while (!changed)`), terminating after the
+       first forward RPO pass whenever `changed == 1`.
+    3. `pruneGraph` (`VA 0x459D5F..0x459DDD`) updates `spillNode/spillCost/spillNeigh`
+       *before* calling `HCRandom_get` and testing `spillNeigh * spCost == nNeigh * spillCost`,
+       so ties (`<=`) always enter the tie-break RNG check.
+
 ## Strategy for full reconstruction
 
 1. Port leaf libraries first (hg done, imath next) - no struct unknowns.

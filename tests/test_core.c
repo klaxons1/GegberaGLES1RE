@@ -145,6 +145,7 @@ static void test_interpreter(void);
 static void test_hcx86backend(void);
 static void test_hcarmbackend(void);
 static void test_hcdatastructs_and_emulator(void);
+static void test_hccompiler(void);
 static void test_gradients(void);
 
 int main(void)
@@ -190,6 +191,7 @@ int main(void)
     test_hcx86backend();
     test_hcarmbackend();
     test_hcdatastructs_and_emulator();
+    test_hccompiler();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -3335,12 +3337,12 @@ static void test_signature(void)
         CHECK(sig.texture[1][40] == 1);
         CHECK(sig.texture[1][41] == 1);
 
-        /* compress: pinned 10-word key for this signature */
+        /* compress: pinned 10-word key for this TI=0x18AA signature */
         grCompressSignature(&cs, &sig);
         {
             static const unsigned int want[10] =
             {
-                0x82018888u, 0x8F804833u, 0x77C8EA94u, 0xF82C100Cu,
+                0x82018888u, 0x8F804FF3u, 0x4048DE94u, 0xCA5C100Cu,
                 0x44447C02u, 0x98446584u, 0x15087040u, 0x011100F0u,
                 0x08611091u, 0x001022BFu
             };
@@ -3716,8 +3718,8 @@ static void test_interpreter(void)
     count = grExecuteProgram(prog, &sig, 4096);
     CHECK(count > 0);
     CHECK(count < 4096);
-    /* deterministic output for this signature (pinned regression guard) */
-    CHECK(count == 200);
+    /* deterministic output for this TI=0x18AA signature (pinned regression guard) */
+    CHECK(count == 173);
     /* last instruction must be EOP */
     CHECK(HC_getOpcodeOper(&prog[count - 1]) == HCOP_EOP);
     /* first instruction should not be EOP */
@@ -4535,5 +4537,494 @@ static void test_hcdatastructs_and_emulator(void)
         CHECK(HC_getOpcodeOper(&out) == HCOP_NOP);
     }
 }
+
+/* --- test_hccompiler (4g): HC_compile / HC_compilePriv / pipeline cache --- */
+#include "gerbera/hc/hcCompiler.h"
+#include <setjmp.h>
+
+static int hc_test_setjmpWrap(void *jmpbuf, int (*func)(void *), void *args)
+{
+    jmp_buf *jb = (jmp_buf *)jmpbuf;
+    if (setjmp(*jb) != 0)
+        return -1;
+    return func(args);
+}
+
+static void hc_test_longjmp(void *jmpbuf, int value)
+{
+    jmp_buf *jb = (jmp_buf *)jmpbuf;
+    longjmp(*jb, value);
+}
+
+/* Portable HC IR interpreter for verifying optimizer + regalloc equivalence
+ * on 64-bit hosts without executing 32-bit IA-32/ARM32 machine code.
+ * Register 0 holds offset 0 into `mem` (`memSize` bytes). */
+static void eval_hc_ir(HCInstr_s *lst, unsigned char *mem, unsigned int memSize)
+{
+    unsigned int regs[512];
+    int pc = 0;
+    int guard = 0;
+
+    memset(regs, 0, sizeof(regs));
+    while (guard++ < 100000)
+    {
+        HCInstr_s *in = &lst[pc];
+        HCOP_e op = HC_getOpcodeOper(in);
+
+        if (op == HCOP_EOP)
+            return;
+        if (op == HCOP_LABEL || op == HCOP_NOP)
+        {
+            ++pc;
+            continue;
+        }
+        if (HC_getOpcodeType(in) == HCOP_TYPE_ALUOP)
+        {
+            int dst = HC_getOpcodeDst(in);
+            int argc = HC_getOpcodeArgCountOp(op);
+            unsigned int s0 = 0;
+            unsigned int s1 = 0xFFFFFFFFu;
+
+            if (argc == 2)
+            {
+                s0 = HC_opcodeHasImm(in)
+                    ? (unsigned int)HC_getOpcodeImm(in)
+                    : regs[HC_getOpcodeSrc0(in)];
+            }
+            else if (argc == 3)
+            {
+                s0 = regs[HC_getOpcodeSrc0(in)];
+                s1 = HC_opcodeHasImm(in)
+                    ? (unsigned int)HC_getOpcodeImm(in)
+                    : regs[HC_getOpcodeSrc1(in)];
+            }
+            regs[dst] = (unsigned int)emulator_evalALUOp(op, s0, s1);
+            regs[0] = 0;
+            ++pc;
+            continue;
+        }
+        if (HC_isLoadOp(op) || HC_isStoreOp(op))
+        {
+            int scale = HC_getMemOpIndexSize(in);
+            unsigned int base = regs[HC_getOpcodeSrc0(in)];
+            int off = HC_opcodeHasImm(in)
+                ? HC_getOpcodeImm(in)
+                : scale * (int)regs[HC_getOpcodeSrc1(in)];
+            unsigned int addr = (unsigned int)((int)base + off);
+            int dst = HC_getOpcodeDst(in);
+
+            CHECK(addr + 4u <= memSize);
+            if (HC_isLoadOp(op))
+            {
+                unsigned int v = 0;
+                if (op == HCOP_LBU)
+                    v = mem[addr];
+                else if (op == HCOP_LBS)
+                    v = (unsigned int)(int)(signed char)mem[addr];
+                else if (op == HCOP_LWU || op == HCOP_LW2U)
+                {
+                    unsigned short w;
+                    memcpy(&w, &mem[addr], 2);
+                    v = w;
+                }
+                else if (op == HCOP_LWS || op == HCOP_LW2S)
+                {
+                    short w;
+                    memcpy(&w, &mem[addr], 2);
+                    v = (unsigned int)(int)w;
+                }
+                else
+                {
+                    memcpy(&v, &mem[addr], 4);
+                }
+                regs[dst] = v;
+                regs[0] = 0;
+            }
+            else
+            {
+                unsigned int v = regs[dst];
+                if (op == HCOP_SB)
+                    mem[addr] = (unsigned char)v;
+                else if (op == HCOP_SW || op == HCOP_SW2)
+                {
+                    unsigned short w = (unsigned short)v;
+                    memcpy(&mem[addr], &w, 2);
+                }
+                else
+                {
+                    memcpy(&mem[addr], &v, 4);
+                }
+            }
+            ++pc;
+            continue;
+        }
+        if (op == HCOP_BRA)
+        {
+            int target = HC_getOpcodeDst(in);
+            int k = 0;
+            while (HC_getOpcodeOper(&lst[k]) != HCOP_EOP)
+            {
+                if (HC_getOpcodeOper(&lst[k]) == HCOP_LABEL
+                    && HC_getOpcodeLabel(&lst[k]) == target)
+                {
+                    pc = k;
+                    break;
+                }
+                ++k;
+            }
+            continue;
+        }
+        if (HC_isCondBranchOp(op))
+        {
+            unsigned int s0 = regs[HC_getOpcodeSrc0(in)];
+            unsigned int s1 = HC_opcodeHasImm(in)
+                ? (unsigned int)HC_getOpcodeImm(in)
+                : regs[HC_getOpcodeSrc1(in)];
+            if (emulator_evalConditional(op, s0, s1) != 0)
+            {
+                int target = HC_getOpcodeDst(in);
+                int k = 0;
+                while (HC_getOpcodeOper(&lst[k]) != HCOP_EOP)
+                {
+                    if (HC_getOpcodeOper(&lst[k]) == HCOP_LABEL
+                        && HC_getOpcodeLabel(&lst[k]) == target)
+                    {
+                        pc = k;
+                        break;
+                    }
+                    ++k;
+                }
+            }
+            else
+            {
+                ++pc;
+            }
+            continue;
+        }
+        CHECK(0 && "unhandled opcode in eval_hc_ir");
+        return;
+    }
+    CHECK(0 && "eval_hc_ir step limit exceeded");
+}
+
+static unsigned int rd_u32(const unsigned char *mem, unsigned int off)
+{
+    unsigned int v;
+    memcpy(&v, &mem[off], 4);
+    return v;
+}
+
+static void wr_u32(unsigned char *mem, unsigned int off, unsigned int v)
+{
+    memcpy(&mem[off], &v, 4);
+}
+
+static void test_hccompiler(void)
+{
+    static unsigned char scratch[131072];
+    HCSetjmpConfig_s sjCfg;
+    HCBackend_s *x86Be = HCX86Backend_create();
+    HCBackend_s *armBe = HCARMBackend_create();
+
+    sjCfg.setjmpWrap = hc_test_setjmpWrap;
+    sjCfg.longjmp    = hc_test_longjmp;
+    sjCfg.jmpbufSize = (unsigned int)((sizeof(jmp_buf) + 7u) & ~7u);
+
+    /* 1. HC_extraStackSpace + grGetBackend wiring */
+    CHECK(HC_extraStackSpace(NULL) == 0);
+    CHECK(HC_extraStackSpace(x86Be) == 44); /* 40 + 4 */
+    CHECK(HC_extraStackSpace(armBe) == 64); /* 60 + 4 */
+    CHECK(grGetBackend() == (void *)x86Be);
+    CHECK(HC_containsInt((const int[]){ 3, 7, 11 }, 3, 7) == 1);
+    CHECK(HC_containsInt((const int[]){ 3, 7, 11 }, 3, 9) == 0);
+
+    /* 2. Out-of-scratch-memory escape via setjmpWrap / longjmp -> -1 */
+    {
+        HCInstr_s tinyProg[4];
+        void *outPtr = NULL;
+
+        tinyProg[0] = HC_genOp3Imm(HCOP_LD, 1, 0, 4);
+        tinyProg[1] = HC_genOp3Imm(HCOP_ADD, 1, 1, 1);
+        tinyProg[2] = HC_genOp3Imm(HCOP_SD, 1, 0, 8);
+        tinyProg[3] = HC_genOp0(HCOP_EOP);
+
+        /* Arena smaller than jmpbufSize immediately returns -1 */
+        CHECK(HC_compile(scratch, (int)sjCfg.jmpbufSize, &sjCfg, &outPtr,
+                         tinyProg, x86Be, HC_OPT_ALL, NULL, NULL, 4) == -1);
+        /* Arena slightly above jmpbufSize exhausts HCArena and longjmps -1 */
+        CHECK(HC_compile(scratch, (int)sjCfg.jmpbufSize + 64, &sjCfg, &outPtr,
+                         tinyProg, x86Be, HC_OPT_ALL, NULL, NULL, 4) == -1);
+    }
+
+    /* 3. Optimizer pass suite + IR-mode (backend == NULL) + inputParamsUsed */
+    {
+        HCInstr_s prog[64];
+        unsigned char memRef[1024];
+        unsigned char memOpt[1024];
+        unsigned char paramUsed[4];
+        void *optCode = NULL;
+        int n = 0;
+        int optBytes;
+        int optInstrs;
+
+        /* Stack params: slot 2 (off 8) = 0x12345678, slot 5 (off 20) = 7,
+         * slot 6 (off 24, dead load) = 999, output at off 128..160. */
+        prog[n++] = HC_genOp3Imm(HCOP_LD,   1, 0, 8);     /* param 2 (used)   */
+        prog[n++] = HC_genOp3Imm(HCOP_LD,   2, 0, 20);    /* param 5 (used)   */
+        prog[n++] = HC_genOp3Imm(HCOP_LD,   3, 0, 24);    /* param 6 (dead!)  */
+        /* Constant propagation + algebraic peepholes */
+        prog[n++] = HC_genOp2Imm(HCOP_MOV,  4, 10);
+        prog[n++] = HC_genOp3Imm(HCOP_ADD,  5, 4, 5);     /* -> MOV 15        */
+        prog[n++] = HC_genOp2(HCOP_MOV,     6, 5);        /* copy prop        */
+        prog[n++] = HC_genOp3Imm(HCOP_ADD,  7, 1, 0);     /* peephole -> MOV  */
+        prog[n++] = HC_genOp3Imm(HCOP_AND,  7, 7, -1);    /* peephole -> MOV  */
+        prog[n++] = HC_genOp3Imm(HCOP_MULU, 8, 2, 8);     /* peephole -> LSL3 */
+        prog[n++] = HC_genOp3(HCOP_ADD,     9, 7, 8);
+        prog[n++] = HC_genOp3(HCOP_ADD,     9, 9, 6);
+        /* Shift-chain & shift-logical-and combine */
+        prog[n++] = HC_genOp3Imm(HCOP_LSR,  10, 1, 16);
+        prog[n++] = HC_genOp3Imm(HCOP_LSR,  11, 10, 8);   /* -> LSR r1, 24    */
+        prog[n++] = HC_genOp3Imm(HCOP_AND,  12, 11, 0xFF);/* -> redundant AND */
+        /* Branch inversion (CBEQ L1; BRA L2; LABEL L1) + unreachable code */
+        prog[n++] = HC_genOp3ImmRaw(HCOP_CBEQ, 1, 2, 7);
+        prog[n++] = HC_genOp1(HCOP_BRA, 2);
+        prog[n++] = HC_genOp2Imm(HCOP_MOV,  9, 0xDEAD);   /* unreachable!     */
+        prog[n++] = HC_genOp1Imm(HCOP_LABEL, 1);
+        prog[n++] = HC_genOp3Imm(HCOP_ADD,  9, 9, 100);
+        prog[n++] = HC_genOp1Imm(HCOP_LABEL, 2);
+        prog[n++] = HC_genOp2Imm(HCOP_MOV,  13, 424242);  /* dead code!       */
+        prog[n++] = HC_genOp3Imm(HCOP_SD,   9,  0, 128);
+        prog[n++] = HC_genOp3Imm(HCOP_SD,   12, 0, 132);
+        prog[n++] = HC_genOp0(HCOP_EOP);
+
+        memset(memRef, 0, sizeof(memRef));
+        memset(memOpt, 0, sizeof(memOpt));
+        wr_u32(memRef, 8,  0x12345678u);
+        wr_u32(memRef, 20, 7u);
+        wr_u32(memRef, 24, 999u);
+        memcpy(memOpt, memRef, sizeof(memRef));
+
+        eval_hc_ir(prog, memRef, sizeof(memRef));
+        CHECK(rd_u32(memRef, 128) == 0x12345678u + 56u + 15u + 100u);
+        CHECK(rd_u32(memRef, 132) == 0x12u);
+
+        memset(paramUsed, 0xFF, sizeof(paramUsed));
+        optBytes = HC_compile(scratch, (int)sizeof(scratch), &sjCfg, &optCode,
+                              prog, NULL, HC_OPT_ALL, paramUsed, NULL, 16);
+        CHECK(optBytes > 0);
+        CHECK(optCode != NULL);
+        optInstrs = optBytes / (int)sizeof(HCInstr_s);
+        CHECK(optInstrs < n);
+        /* Only params 2 and 5 survive DCE (param 6 at offset 24 was eliminated) */
+        CHECK(paramUsed[0] == ((1u << 2) | (1u << 5)));
+        CHECK(paramUsed[1] == 0u);
+
+        eval_hc_ir((HCInstr_s *)optCode, memOpt, sizeof(memOpt));
+        CHECK(rd_u32(memOpt, 128) == rd_u32(memRef, 128));
+        CHECK(rd_u32(memOpt, 132) == rd_u32(memRef, 132));
+    }
+
+    /* 4. peepholeFills + inlineFills: loop fill recognition & 8x unroll */
+    {
+        HCInstr_s fillProg[16];
+        unsigned char memRef[512];
+        unsigned char memOpt[512];
+        void *optCode = NULL;
+        int n = 0;
+        int optBytes;
+        int k;
+
+        /* Fill 11 dwords starting at byte offset 128:
+         * dst = 128 + 11*4 = 172, cnt = -11; loop stores dst[cnt] and ++cnt */
+        fillProg[n++] = HC_genOp2Imm(HCOP_MOV,   1, 0xCAFEBABEu);
+        fillProg[n++] = HC_genOp2Imm(HCOP_MOV,   2, 128 + 11 * 4);
+        fillProg[n++] = HC_genOp2Imm(HCOP_MOV,   3, -11);
+        fillProg[n++] = HC_genOp1Imm(HCOP_LABEL, 5);
+        fillProg[n++] = HC_genOp3(HCOP_SD4,      1, 2, 3);
+        fillProg[n++] = HC_genOp3Imm(HCOP_ADD,   3, 3, 1);
+        fillProg[n++] = HC_genOp3ImmRaw(HCOP_CBNEQ, 5, 3, 0);
+        fillProg[n++] = HC_genOp0(HCOP_EOP);
+
+        memset(memRef, 0x11, sizeof(memRef));
+        memset(memOpt, 0x11, sizeof(memOpt));
+        eval_hc_ir(fillProg, memRef, sizeof(memRef));
+
+        optBytes = HC_compile(scratch, (int)sizeof(scratch), &sjCfg, &optCode,
+                              fillProg, NULL, HC_OPT_INLINE_FILLS | HC_OPT_PEEPHOLE,
+                              NULL, NULL, 4);
+        CHECK(optBytes > (int)(n * sizeof(HCInstr_s))); /* expanded 8x unroll */
+        eval_hc_ir((HCInstr_s *)optCode, memOpt, sizeof(memOpt));
+        for (k = 0; k < 11; ++k)
+        {
+            CHECK(rd_u32(memRef, 128u + 4u * (unsigned int)k) == 0xCAFEBABEu);
+            CHECK(rd_u32(memOpt, 128u + 4u * (unsigned int)k) == 0xCAFEBABEu);
+        }
+        CHECK(rd_u32(memOpt, 124u) == 0x11111111u);
+        CHECK(rd_u32(memOpt, 128u + 44u) == 0x11111111u);
+    }
+
+    /* 5. High-pressure register allocation (spilling!) + panic regalloc on
+     *    BOTH x86 (7 hard regs) and ARM (13 hard regs), verifying semantic
+     *    equivalence via HC_compilePriv's emuDst! */
+    {
+        HCInstr_s pressureProg[128];
+        static HCInstr_s emuIr[512];
+        unsigned char memRef[2048];
+        unsigned char memRun[2048];
+        unsigned char mutableMask[2] = { 0xFFu, 0xFFu };
+        int n = 0;
+        int r;
+        int bIdx;
+        HCBackend_s *backends[2];
+
+        backends[0] = x86Be;
+        backends[1] = armBe;
+
+        /* 16 simultaneously live values across a loop (> 7 x86 & > 13 ARM
+         * hard regs), forcing pruneGraph + genSpillCode + multi-round coloring */
+        for (r = 1; r <= 16; ++r)
+            pressureProg[n++] = HC_genOp3Imm(HCOP_LD, r, 0, 4 * r);
+        pressureProg[n++] = HC_genOp2Imm(HCOP_MOV, 17, 3); /* 3 loop iters */
+        pressureProg[n++] = HC_genOp1Imm(HCOP_LABEL, 1);
+        for (r = 1; r <= 16; ++r)
+            pressureProg[n++] = HC_genOp3Imm(HCOP_ADD, r, r, r);
+        pressureProg[n++] = HC_genOp3Imm(HCOP_SUB, 17, 17, 1);
+        pressureProg[n++] = HC_genOp3ImmRaw(HCOP_CBNEQ, 1, 17, 0);
+        pressureProg[n++] = HC_genOp2Imm(HCOP_MOV, 18, 0);
+        for (r = 1; r <= 16; ++r)
+            pressureProg[n++] = HC_genOp3(HCOP_ADD, 18, 18, r);
+        pressureProg[n++] = HC_genOp3Imm(HCOP_SD, 18, 0, 4 * 17);
+        pressureProg[n++] = HC_genOp0(HCOP_EOP);
+
+        memset(memRef, 0, sizeof(memRef));
+        for (r = 1; r <= 16; ++r)
+            wr_u32(memRef, 4u * (unsigned int)r, (unsigned int)(10 * r));
+        eval_hc_ir(pressureProg, memRef, sizeof(memRef));
+        /* Sum_{r=1..16} (10*r + 3*r) = 13 * 136 = 1768 */
+        CHECK(rd_u32(memRef, 4 * 17) == 1768u);
+
+        for (bIdx = 0; bIdx < 2; ++bIdx)
+        {
+            HCBackend_s *be = backends[bIdx];
+            int extra = HC_extraStackSpace(be);
+            unsigned int masks[2] = { HC_OPT_ALL, HC_OPT_ALL & ~HC_OPT_REGALLOC };
+            int mIdx;
+
+            for (mIdx = 0; mIdx < 2; ++mIdx)
+            {
+                void *jitCode = NULL;
+                int codeBytes;
+
+                memset(emuIr, 0, sizeof(emuIr));
+                codeBytes = HC_compilePriv(
+                    scratch, (int)sizeof(scratch), &sjCfg,
+                    &jitCode, emuIr, pressureProg, be,
+                    masks[mIdx], NULL, mutableMask, 20);
+                CHECK(codeBytes > 0);
+                CHECK(jitCode != NULL);
+
+                if (be == armBe)
+                {
+                    const unsigned int *w = (const unsigned int *)jitCode;
+                    CHECK((codeBytes & 3) == 0);
+                    /* ARM prologue: STMFD sp!, {r0..r12, lr} = 0xE92D5FFF */
+                    CHECK(w[0] == 0xE92D5FFFu);
+                    /* ARM epilogue ends with LDMFD sp!, {r0..r12, pc} = 0xE8BD9FFF */
+                    CHECK(w[(codeBytes / 4) - 1] == 0xE8BD9FFFu);
+                }
+                else
+                {
+                    const unsigned char *b = (const unsigned char *)jitCode;
+                    /* IA-32 epilogue ends with RET (0xC3) */
+                    CHECK(b[codeBytes - 1] == 0xC3u);
+                }
+
+                /* Execute post-regalloc emuDst with stack shifted by extraStack! */
+                memset(memRun, 0, sizeof(memRun));
+                for (r = 1; r <= 16; ++r)
+                    wr_u32(memRun, (unsigned int)extra + 4u * (unsigned int)r,
+                           (unsigned int)(10 * r));
+                eval_hc_ir(emuIr, memRun, sizeof(memRun));
+                CHECK(rd_u32(memRun, (unsigned int)extra + 4u * 17u) == 1768u);
+            }
+        }
+    }
+
+    /* 6. End-to-end Gerbera pixel pipeline compilation + caching via
+     *    grEnsureValidPixelPipeline (cache miss -> grExecuteProgram ->
+     *    HC_compile -> grIsGradientUsed -> grCacheInsert -> cache hit)! */
+    {
+        static Gerbera_s st;
+        static unsigned char cacheArena[32768];
+        static unsigned char pipeScratch[131072];
+        static unsigned short dummyColor[64 * 64];
+        static unsigned int dummyDepth[64 * 64];
+        _grPipelineCache cache;
+        _grCacheEntry entries[8];
+        void *firstCode;
+
+        memset(&st, 0, sizeof(st));
+        /* Configure a valid RGB565 Gouraud + depth-test pixel pipeline state */
+        st.drawSurface.colorMask       = 0x07;
+        st.drawSurface.colorBytes      = 2;
+        st.drawSurface.depthBytes      = 4;
+        st.drawSurface.pixelFormat     = 4; /* RGB565 -> GR_PIXELFORMAT_RGB */
+        st.drawSurface.rgbaSizes[0]    = 5;
+        st.drawSurface.rgbaSizes[1]    = 6;
+        st.drawSurface.rgbaSizes[2]    = 5;
+        st.drawSurface.rgbaOffsets[0]  = 11;
+        st.drawSurface.rgbaOffsets[1]  = 5;
+        st.drawSurface.rgbaOffsets[2]  = 0;
+        st.drawSurface.width           = 64;
+        st.drawSurface.height          = 64;
+        st.drawSurface.buffers[0].data = dummyColor;
+        st.drawSurface.buffers[1].data = dummyDepth;
+        st.colorMask                 = 0x0F;
+        st.depthMask                 = 1;
+        st.depthFunc                 = GR_FUNC_LESS;
+        st.viewportScale.normal[2]   = 0x10000000;
+        grSetCapability(&st, GR_CAPABILITY_DEPTH_TEST, 1);
+        grSetCapability(&st, GR_CAPABILITY_SMOOTH_SHADING, 1);
+
+        grCacheInit(&cache, cacheArena, entries, (int)sizeof(cacheArena), 8);
+        st.pipelineCache     = &cache;
+        st.scratchMemory     = pipeScratch;
+        st.scratchMemorySize = (int)sizeof(pipeScratch);
+        st.setjmpConfig      = &sjCfg;
+
+        /* Cache miss #1 (RGB565 + depth, no fog): activates depth (0) + R,G,B (2,3,4) */
+        grEnsureValidPixelPipeline(&st);
+        CHECK(st.compilationFailed == 0);
+        CHECK(st.pixelPipelineCode != NULL);
+        CHECK(st.activeGradientMask == 0x1D);
+        CHECK(st.numActiveGradients == 4);
+        CHECK(st.activeGradientIndex[0] == 0);
+        CHECK(st.activeGradientIndex[1] == 2);
+        CHECK(st.activeGradientIndex[2] == 3);
+        CHECK(st.activeGradientIndex[3] == 4);
+
+        firstCode = (void *)st.pixelPipelineCode;
+        st.pixelPipelineDirty = 0;
+        grCheckPixelPipeConsistency(&st);
+
+        /* Second call hits grCacheFind and returns the exact cached entry */
+        st.pixelPipelineCode = NULL;
+        grEnsureValidPixelPipeline(&st);
+        CHECK(st.compilationFailed == 0);
+        CHECK((void *)st.pixelPipelineCode == firstCode);
+
+        /* Cache miss #2: enable GR_CAPABILITY_FOG -> compiles a new shader
+         * and activates fog gradient (bit 1) alongside depth + R,G,B (0x1F)! */
+        st.fogColor = 0x11223344u;
+        grSetCapability(&st, GR_CAPABILITY_FOG, 1);
+        grEnsureValidPixelPipeline(&st);
+        CHECK(st.compilationFailed == 0);
+        CHECK(st.pixelPipelineCode != NULL);
+        CHECK((void *)st.pixelPipelineCode != firstCode);
+        CHECK(st.activeGradientMask == 0x1F);
+        CHECK(st.numActiveGradients == 5);
+    }
+}
+
 
 

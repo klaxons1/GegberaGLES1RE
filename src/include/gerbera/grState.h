@@ -354,42 +354,42 @@ typedef struct _grPipelineCache
  * decompile never recovered their fields; the pipeline session pins them). */
 typedef struct _grSignature
 {
-    _grSurfaceDescriptor descriptor;    /* +0: 16 bytes */
+    _grSurfaceDescriptor descriptor;    /* +0: 16 bytes (TI=0x18AA) */
     unsigned char isValid;              /* +16 */
-    unsigned char logicOp;              /* +17 (4 bits) */
-    unsigned char logicOpEnabled;       /* +18 */
-    unsigned char blendEnabled;         /* +19 */
+    unsigned char colorMask;            /* +17 (4 bits) */
+    unsigned char depthTest;            /* +18 */
+    unsigned char alphaTest;            /* +19 */
     unsigned char alphaFunc;            /* +20 (3 bits) */
-    unsigned char alphaTest;            /* +21 */
+    unsigned char depthMask;            /* +21 */
     unsigned char depthFunc;            /* +22 (3 bits) */
-    unsigned char depthTest;            /* +23 */
-    unsigned char depthMask;            /* +24 */
-    unsigned char constantDepth;        /* +25 */
-    unsigned char colorMask;            /* +26 (4 bits) */
-    unsigned char writeColor;           /* +27 */
+    unsigned char depthClampMin;        /* +23 */
+    unsigned char depthClampMax;        /* +24 */
+    unsigned char logicOpEnabled;       /* +25 */
+    unsigned char logicOp;              /* +26 (4 bits) */
+    unsigned char blendEnabled;         /* +27 */
     unsigned char srcFactor;            /* +28 (4 bits) */
     unsigned char dstFactor;            /* +29 (4 bits) */
-    unsigned char fogEnabled;           /* +30 */
-    unsigned char monochromeFog;        /* +31 */
-    unsigned char dither;               /* +32 */
-    unsigned char depthClampMin;        /* +33 */
+    unsigned char flatShading;          /* +30 */
+    unsigned char stencilTest;          /* +31 */
+    unsigned char stencilTestMaskFull;  /* +32 */
+    unsigned char stencilWriteMaskFull; /* +33 */
     unsigned char stencilFunc;          /* +34 (3 bits) */
     unsigned char stencilFail;          /* +35 (3 bits) */
     unsigned char stencilZFail;         /* +36 (3 bits) */
     unsigned char stencilZPass;         /* +37 (3 bits) */
-    unsigned char stencilTest;          /* +38 */
-    unsigned char stencilTestMaskFull;  /* +39 */
-    unsigned char stencilWriteMaskFull; /* +40 */
-    unsigned char stencilAllOpsEqual;   /* +41 */
-    unsigned char stencilZOpsEqual;     /* +42 */
-    unsigned char depthClampMax;        /* +43 */
-    unsigned char flatShading;          /* +44 */
-    unsigned char constantWriteColor;   /* +45 */
-    unsigned char perPixelPack;         /* +46 */
-    unsigned char applyColorWriteMask;  /* +47 */
+    unsigned char stencilZOpsEqual;     /* +38 */
+    unsigned char stencilAllOpsEqual;   /* +39 */
+    unsigned char fogEnabled;           /* +40 */
+    unsigned char monochromeFog;        /* +41 */
+    unsigned char writeColor;           /* +42 */
+    unsigned char constantWriteColor;   /* +43 */
+    unsigned char applyColorWriteMask;  /* +44 */
+    unsigned char dither;               /* +45 */
+    unsigned char constantDepth;        /* +46 */
+    unsigned char perPixelPack;         /* +47 */
     unsigned char screenRectGradients;  /* +48 (0/1 flag) */
-    unsigned char reserved[7];          /* +49..55 (zero bit counts) */
-    unsigned char texture[2][44];       /* +56: per-unit records (raw) */
+    unsigned char padding[7];           /* +49..55 (zero bit counts) */
+    unsigned char texture[2][44];       /* +56: per-unit records (TI=0x18A7) */
 } _grSignature;                         /* 144 bytes */
 
 /* triangle tessellation status (grClassifyTriangle) */

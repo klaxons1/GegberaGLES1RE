@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 4f)
+Last updated: 2026-11-22 (session 4g)
 
 ## Legend
 
@@ -14,10 +14,10 @@ Last updated: 2026-11-22 (session 4f)
 |---|---|---|---|
 | hg | renderer/libs/hg | 105 | **DONE** (session 1) |
 | imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar + vector/matrix layers done (sessions 2-3) |
-| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z) - all functions ported, 1088 checks green |
+| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z, 4g) - all functions + `HC_compile` pipeline wired |
 | gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z) - clears, blit, texture rect |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
-| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - ALL leaf modules (`hcOpcode`, `hcMemory`, `hcBitSet`, `hcAdjMtx`, `hcAdjList`, `hcBucketDefs`, `hcDUChain`, `hcBasicBlock`, `hcQueue`, `hcStack`, `hcEmulator`, `hcBackendInfo`), `grInterpreter`, and **BOTH x86 & ARM32 JIT backends** done (4a-4f, 1653 core checks); ONLY `hcCompiler.c` + `grrStubs.c` wiring left in `hc`! |
+| gerbera/hc | .../gerbera/hc | 296 | **DONE** (sessions 4a-4g) - ALL 17 TUs ported (`hcCompiler.c` + `hcPanicRegalloc.inl`, x86 & ARM32 JIT backends, optimizer, regalloc, interpreter, bytecode; 2,254 core checks) |
 | egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
 | egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
 | crt/platform | Symbian + MSL runtime | 44 | n/a (reference) |
@@ -1627,5 +1627,57 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
   `HC_extraStackSpace`, CFG/dominators/liveness/SSA-optimizations/graph-coloring
   & panic register allocation) + `grrStubs.c` wiring (`grGetBackend`,
   `grScratchGrowMemory`) to complete the entire `hc` module!
+
+## Session 4g - `hcCompiler.c` + `hcPanicRegalloc.inl` & Gerbera pipeline integration (**`gerbera/hc` DONE!**)
+
+- **Ported `src/include/gerbera/hc/hcCompiler.h` & `src/gerbera/hc/hcCompiler.c`**
+  (~1,860 lines, **0 compiler warnings** across all 51 `src/` TUs):
+  - Program validation (`validateInstruction`, `validateProgramInternal`), CFG
+    construction (`buildControlFlowGraph`, `splitBlock`, `linkControlFlowGraph`,
+    `removeUnreachableBlocks`, `compactFlowGraph`, `validateControlFlowGraph`),
+    post-order / dominators (`computeDominators`, `blockDominates`, `findLoops`),
+    def/use & liveness (`computeDefUse`, `computeLiveInOut`, `computeChains`),
+    copy propagation & constant folding (`propagateConstantsAndCopies`,
+    `applyPeepholeOptimizations` with `swap[12]` @ `0x47E50C` & `rewrites[52]`
+    @ `0x47E518` verified from PE `.rdata`), dead-code / redundant-branch /
+    NOP-label elimination (`eliminateDeadCode`, `eliminateRedundantBranches`,
+    `compactLabels`, `removeNopsAndUnreferencedLabels`), loop-invariant code
+    motion (`hoistLoopInvariants`), stack-invariant scalar replacement
+    (`promoteStackInvariants`, `lowerStackInvariantStores`), web splitting
+    (`splitWebs`), Chaitin-Briggs graph-coloring register allocation with spill
+    code insertion (`buildInterferenceGraph`, `estimateSpillCosts`,
+    `pruneGraph` with x87 `fcomp` asserts `4422/4423` corrected from raw x86
+    asm, `assignColors`, `insertSpillCode`, `allocateRegisters`), linear-scan /
+    per-instruction fallback allocator (`panicRegisterAllocation` /
+    `hcPanicRegalloc.inl`), post-regalloc cleanup (`defaultPostRegallocFixer`,
+    `removeRedundantMoves`), and entrypoints (`HC_extraStackSpace`,
+    `HC_compilePriv`, `HC_compile`).
+- **Fixed `_grSignature` (`src/include/gerbera/grState.h`) from CodeView
+  `TI=0x18AA`** (`144` bytes) & verified `TI=0x18A7` (`texture[2][44]`):
+  aligned bytes `+16..+48` (`isValid`, `colorMask`, `depthTest`, `alphaTest`,
+  `alphaFunc`, ..., `writeColor`, ..., `constantDepth`, `perPixelPack`,
+  `screenRectGradients`) to the exact binary layout expected by
+  `g_pixelPipeBytecode.c` (`grExecuteProgram`) and `s_mainBitCounts[56]`.
+- **Wired Gerbera core -> `HC_compile` end-to-end**:
+  - `src/gerbera/grrStubs.c`: `grGetBackend()` returns `HCX86Backend_create()`.
+  - `src/gerbera/grApiFast.c`: `grInitState` sets `extraStack = HC_extraStackSpace(grGetBackend())`.
+  - `src/gerbera/grPixelPipeline.c`: `grEnsureValidPixelPipeline` runs
+    `grEvaluatePixelPipeline` -> `grCompressSignature` -> `grCacheFind` ->
+    `grExecuteProgram` -> `HC_compile` (`g_mutableParamsMask[10]` @ `0x4785B4`)
+    -> `grIsGradientUsed` -> `grCacheNewEntry`, with `setjmp`/`longjmp` OOM
+    recovery via `grScratchGrowMemory`.
+- **`test_hccompiler`** (`tests/test_core.c`): +601 checks covering
+  `HC_extraStackSpace`, algebraic peepholes/constant folding/DCE/loop-invariant
+  hoisting, semantic equivalence before/after `HC_compilePriv` on both x86 and
+  ARM32 backends via `eval_hc_ir`, 16-live-register spilling under both
+  graph-coloring (`HC_OPT_ALL`) and `panicRegisterAllocation`
+  (`HC_OPT_ALL & ~HC_OPT_REGALLOC`), OOM `longjmp` recovery, and end-to-end
+  `grEnsureValidPixelPipeline` cache miss/hit + `activeGradientMask` (`0x1D` ->
+  `0x1F` with fog).
+- **Totals**: `hg`: 295 checks, `imath`: 311 checks, `core`: 2,254 checks ->
+  **2,860 checks, 0 failures, 0 warnings across `src/`**.
+- **Next up**: `gerbera/api_opengl` (`ogl*.inl`, `oglFast.c`), remaining `imath`
+  gaps (if any), and `egl` (`eglApi.inl`, `eglBase.inl`, `eglUtil.inl`).
+
 
 

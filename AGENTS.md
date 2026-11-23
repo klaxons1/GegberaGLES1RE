@@ -73,7 +73,7 @@ the binary) was `E:\3d_opengl_es_1_1\`:
 | `src/imath`   | `renderer/libs/imath/` (imApi, IScalar, IVector3/4, IMatrix3/4, INormal3, IUnitScalar, imInline) | in progress (scalar + vector/matrix done) |
 | `src/gerbera` | `renderer/products/gerbera/core/implementation/` (gr*.inl, grSmall.c, rasterizer/grr*.inl) | DONE (core + grr) |
 | `src/gerbera/api_opengl` | `renderer/products/gerbera/api_opengl/implementation/` (ogl*.inl, oglFast.c) | todo |
-| `src/gerbera/hc` | `renderer/products/gerbera/hc/` (pixel-pipe JIT compiler, x86 & ARM32 backends, interpreter) | in progress (all leaf TUs + x86 & ARM backends done; `hcCompiler.c` next) |
+| `src/gerbera/hc` | `renderer/products/gerbera/hc/` (pixel-pipe JIT compiler, optimizer, regalloc, x86 & ARM32 backends, interpreter) | DONE |
 | `src/egl`     | `src/` of the original project (eglApi.inl, eglBase.inl, eglUtil.inl)  | todo |
 | `src/symbian` | `inc/symbian/eglSymbian.inl` + Symbian glue (grSymbian.cpp)            | todo |
 | `src/platform`| CRT / C++ support / Symbian runtime pieces (reference only)            | n/a   |

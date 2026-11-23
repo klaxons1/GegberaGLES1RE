@@ -7,7 +7,19 @@
  */
 #include "gerbera/grState.h"
 #include "gerbera/grDefs.h"
+#include "gerbera/grRGBA.h"
+#include "gerbera/hc/hcCompiler.h"
+#include "hg/hgFill.h"
 #include "hg/hgInt32.h"
+
+#include <stdint.h>
+#include <string.h>
+
+/* g_mutableParamsMask (VA 0x4785B4): bitmask of mutable pixel-pipe stack
+ * parameters among the 78 words (params 0..77). */
+static unsigned char g_mutableParamsMask[10] = {
+    0xFEu, 0xFFu, 0xFEu, 0xFFu, 0x00u, 0xFCu, 0xFFu, 0xFFu, 0xFFu, 0xFFu
+};
 
 /* stack canary words kept by the decompile's locals (grSmall.c 86) */
 #define GR_STACK_CHECK_MAGIC0 (-559038737)
@@ -708,7 +720,8 @@ void grEvaluatePixelPipeline(Gerbera_s *state, _grSignature *signature)
                  combinedMask[7].pixelFormat == 5) &&
                 grMaskedDescriptorsEqual(
                     *(unsigned int *)&combinedMask[6].colorMask,
-                    &state->drawSurface, &combinedMask[7]) != 0)
+                    (_grSurfaceDescriptor *)&state->drawSurface,
+                    &combinedMask[7]) != 0)
             {
                 if (!(combinedMask[5].colorMask == 0u &&
                       combinedMask[5].colorBytes == 0u &&
@@ -787,48 +800,95 @@ void grEnsureValidPixelPipeline(Gerbera_s *state)
     unsigned int magic0 = GR_STACK_CHECK_MAGIC0;
     unsigned int magic1 = GR_STACK_CHECK_MAGIC1;
 
-    (void)magic0;
-    (void)magic1;
-
     grEvaluatePixelPipeline(state, &signature);
     grCompressSignature(&compressed, &signature);
     entry = grCacheFind(state->pipelineCache, &compressed, &gradientMask);
     if (entry == NULL)
     {
-        /* --- compile path (pending the hc module): --------------------------
-         *   backend = grGetBackend();
-         *   state->compilationFailed = 1;
-         *   if (!state->scratchMemory) { assert(!scratchMemorySize, 1099);
-         *       grScratchGrowMemory(state);
-         *       if (!state->scratchMemory) { stack check 1105; return; } }
-         *   do {
-         *       scratch = state->scratchMemory;
-         *       scratchSize = state->scratchMemorySize;
-         *       instrCount = grExecuteProgram(scratch, &signature,
-         *                                     scratchSize >> 3);
-         *       scratch += 8*instrCount; scratchSize -= 8*instrCount;
-         *       assert scratch && scratchSize > 0 && instrCount > 0, 1124;
-         *       assert !((HGuint32)scratch & (GR_MEMORY_ALIGNMENT-1)), 1125;
-         *       lengthInBytes = HC_compile(scratch, scratchSize,
-         *                                  state->setjmpConfig, &code,
-         *                                  scratchStart, backend, 0x3FF,
-         *                                  paramMask, &g_mutableParamsMask, 78);
-         *   } while (lengthInBytes == -1 && grScratchGrowMemory(state) != 0);
-         *   if (lengthInBytes != -1) state->compilationFailed = 0;
-         *   if (state->compilationFailed) { stack check 1149; return; }
-         *   assert lengthInBytes > 0, 1153;
-         *   gradientMask = 0; for g in 0..9: mask |= grIsGradientUsed(
-         *       paramMask, g) << g;
-         *   entry = grCacheInsert(state->pipelineCache, &compressed,
-         *                         gradientMask, code, lengthInBytes); */
+        HCBackend_s *backend = (HCBackend_s *)grGetBackend();
+        void *code = NULL;
+        int lengthInBytes;
+        int g;
+
         state->compilationFailed = 1;
-        if ((magic0 != (unsigned int)GR_STACK_CHECK_MAGIC0 ||
-             magic1 != (unsigned int)GR_STACK_CHECK_MAGIC1) &&
-            grAssert(
-                "__grMemoryCheck[0]==GR_STACK_CHECK_MAGIC0 && __grMemoryCheck[1]==GR_STACK_CHECK_MAGIC1",
-                "grPixelPipeline.inl", 1149) != 0)
+        if (state->scratchMemory == NULL)
+        {
+            if (state->scratchMemorySize != 0 &&
+                grAssert("!state->scratchMemorySize",
+                         "grPixelPipeline.inl", 1099) != 0)
+                grDie(0);
+            grScratchGrowMemory(state);
+            if (state->scratchMemory == NULL)
+            {
+                if ((magic0 != (unsigned int)GR_STACK_CHECK_MAGIC0 ||
+                     magic1 != (unsigned int)GR_STACK_CHECK_MAGIC1) &&
+                    grAssert(
+                        "__grMemoryCheck[0]==GR_STACK_CHECK_MAGIC0 && __grMemoryCheck[1]==GR_STACK_CHECK_MAGIC1",
+                        "grPixelPipeline.inl", 1105) != 0)
+                    grDie(0);
+                return;
+            }
+        }
+
+        for (;;)
+        {
+            char *scratch = (char *)state->scratchMemory;
+            int scratchSize = state->scratchMemorySize;
+            HCInstr_s *hcTmpCode = (HCInstr_s *)scratch;
+            int instrCount = grExecuteProgram(hcTmpCode, &signature,
+                                              scratchSize >> 3);
+
+            scratch += 8 * instrCount;
+            scratchSize -= 8 * instrCount;
+            if (!(scratch != NULL && scratchSize > 0 && instrCount > 0 && hcTmpCode != NULL) &&
+                grAssert("scratch && scratchSize > 0 && instrCount > 0 && hcTmpCode",
+                         "grPixelPipeline.inl", 1124) != 0)
+                grDie(0);
+            if (((uintptr_t)scratch & 3u) != 0 &&
+                grAssert("!((HGuint32)scratch & (GR_MEMORY_ALIGNMENT-1))",
+                         "grPixelPipeline.inl", 1125) != 0)
+                grDie(0);
+
+            lengthInBytes = HC_compile(
+                scratch,
+                scratchSize,
+                (HCSetjmpConfig_s *)state->setjmpConfig,
+                &code,
+                hcTmpCode,
+                backend,
+                0x3FFu,
+                paramMask,
+                g_mutableParamsMask,
+                78);
+            if (lengthInBytes != -1)
+            {
+                state->compilationFailed = 0;
+                break;
+            }
+            if (grScratchGrowMemory(state) == 0)
+                break;
+        }
+
+        if (state->compilationFailed != 0)
+        {
+            if ((magic0 != (unsigned int)GR_STACK_CHECK_MAGIC0 ||
+                 magic1 != (unsigned int)GR_STACK_CHECK_MAGIC1) &&
+                grAssert(
+                    "__grMemoryCheck[0]==GR_STACK_CHECK_MAGIC0 && __grMemoryCheck[1]==GR_STACK_CHECK_MAGIC1",
+                    "grPixelPipeline.inl", 1149) != 0)
+                grDie(0);
+            return;
+        }
+        if (lengthInBytes <= 0 &&
+            grAssert("lengthInBytes > 0", "grPixelPipeline.inl", 1153) != 0)
             grDie(0);
-        return;
+
+        gradientMask = 0;
+        for (g = 0; g < 10; ++g)
+            gradientMask += (unsigned int)(grIsGradientUsed(paramMask, g) << g);
+
+        entry = grCacheInsert(state->pipelineCache, &compressed,
+                              gradientMask, code, lengthInBytes);
     }
     {
         int index = 0;

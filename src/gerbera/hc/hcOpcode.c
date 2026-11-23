@@ -467,3 +467,19 @@ int HC_bsf(unsigned int x)
     }
     return ((x & 1u) == 0) + bits;
 }
+
+int HC_isAbsBranchOp(int op)
+{
+    return op == HCOP_BRA;
+}
+
+int HC_isAbsBranch(HCInstr_s *instr)
+{
+    return HC_isAbsBranchOp(HC_getOpcodeOper(instr));
+}
+
+int HC_min(int a, int b)
+{
+    return (a > b) ? b : a;
+}
+

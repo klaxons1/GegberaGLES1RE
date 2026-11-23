@@ -5,6 +5,7 @@
  * lives in grTessellator.c and grUpdateVertexPipeline in grVertexPipeline.c.
  */
 #include "gerbera/grState.h"
+#include "gerbera/hc/hcBackend.h"
 
 
 
@@ -50,21 +51,13 @@ void grSetupTextureUnit(Gerbera_s *state, int texIndex, int (*pairs)[2],
     (void)v0sy;
 }
 
-/* --- hc/egl stubs (pending the hc and egl modules) -------------------------
- * grGetBackend / HC_extraStackSpace / grScratchGrowMemory are hc-module
- * entry points; grLockSurface / grReleaseSurface are egl-module entry
- * points. Until those modules land they are inert: no backend, no extra
- * stack space, no scratch growth, no surface locking. grSetupRendering
- * still runs its full state bookkeeping against them. */
+/* --- hc/egl integration & stubs -------------------------------------------
+ * grGetBackend (grSymbian.cpp; DLL 24751-24754) returns the active JIT
+ * backend (x86 WINSCW reference backend). grScratchGrowMemory awaits the
+ * egl allocator (eglAlloc/eglFree). */
 void *grGetBackend(void)
 {
-    return NULL;
-}
-
-int HC_extraStackSpace(void *backend)
-{
-    (void)backend;
-    return 0;
+    return HCX86Backend_create();
 }
 
 int grScratchGrowMemory(Gerbera_s *state)

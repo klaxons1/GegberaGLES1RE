@@ -147,13 +147,16 @@ void HC_setOpcodeSrc1(HCInstr_s *instr, int v);
 int HC_getOpcodeType(HCInstr_s *instr);
 int HC_isLoadOp(int op);
 int HC_isCondBranchOp(int op);
+int HC_isAbsBranchOp(int op);
 int HC_isBranch(HCInstr_s *instr);
+int HC_isAbsBranch(HCInstr_s *instr);
 void HC_setOpcodeImm(HCInstr_s *instr, int v);
 int HC_opcodeDstFlagsOp(int op);
 void HC_setOpcodeDst(HCInstr_s *instr, int v);
 void HC_setOpcodeNoImm(HCInstr_s *instr);
 void HC_setOpcodeSrc0(HCInstr_s *instr, int v);
 int HC_isBranchOp(int op);
+int HC_min(int a, int b);
 
 int HC_getMemOpIndexSizeOp(int op);
 int HC_getMemOpIndexSize(HCInstr_s *instr);

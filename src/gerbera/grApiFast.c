@@ -968,7 +968,6 @@ LABEL_24:
             void *backend = grGetBackend();
 
             extraStack = (void *)(long)HC_extraStackSpace(backend);
-            (void)extraStack;
             if (state->scratchMemory == NULL)
             {
                 ok = 1;
@@ -988,9 +987,8 @@ LABEL_24:
             state->renderStack = grStackAllocate(&state->scratchAllocator, 23860);
             /* the decompile renders this as (char*)extraStack +
              * &renderStack[1830].whichPool; the +14644 offset is the pixel
-             * pipe within the render stack allocation (grExecutePixelPipeline
-             * passes renderStack+14644 to the program) */
-            state->pixelPipeline = (char *)state->renderStack + 14644;
+             * pipe within the render stack allocation */
+            state->pixelPipeline = (char *)state->renderStack + 14644 + (long)extraStack;
             state->vertexCache = state->renderStack;
         }
         pixelPipe = (_grPixelPipe *)state->pixelPipeline;

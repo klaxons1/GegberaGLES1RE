@@ -25,7 +25,9 @@ make test      # builds src/ and runs the unit tests
 ```
 
 Status: `hg` (295 checks), `imath` scalar/vector/matrix layers (311 checks),
-`gerbera/core` + `grr` rasterizer, and all `gerbera/hc` leaf modules,
-interpreter, and BOTH x86 & ARM32 JIT backends (1,653 core checks) are ported
-and green (`2,259` total checks, 0 failures). Next up: `hcCompiler.c`
-(`HC_compile`), `api_opengl`, and `egl`. See `PROGRESS.md`.
+`gerbera/core` + `grr` rasterizer, and the **complete `gerbera/hc` JIT
+compiler** (`hcCompiler`, CFG/dominators/liveness/SSA-optimizations,
+graph-coloring & panic register allocators, interpreter, and BOTH x86 & ARM32
+JIT backends; 2,254 core checks) are ported and green (`2,860` total checks,
+0 failures, 0 warnings across `src/`). Next up: `api_opengl` and `egl`. See
+`PROGRESS.md`.
