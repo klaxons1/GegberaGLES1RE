@@ -534,11 +534,13 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
 
             if (fogEnabled)
             {
-                int fog8 = ((gradMask & 2) != 0) ? hgClamp32_0_x(cur[1] >> 16, 255) : 255;
+                int fog8 = ((gradMask & 2) != 0)
+                         ? hgClamp32_0_x(cur[1] >> 16, 255)
+                         : hgClamp32_0_x((int)(state->fogAtZero + 128u) >> 8, 255);
                 for (c = 0; c < 3; ++c)
                 {
                     int fc = (int)((state->fogColor >> (8 * c)) & 0xFFu);
-                    rgba[c] = (fog8 * rgba[c] + (255 - fog8) * fc + 127) / 255;
+                    rgba[c] = ((255 - fog8) * rgba[c] + fog8 * fc + 127) / 255;
                 }
             }
 

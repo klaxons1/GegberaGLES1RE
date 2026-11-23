@@ -287,7 +287,7 @@ int grClipper(Gerbera_s *state, unsigned char *outputFan, unsigned int indices)
     _grClipVertex *swap;
     unsigned short clipMask = 0;
     int numVertices = 3;
-    int i, plane, sign, dist[3], tempCount, dot[3];
+    int i, plane, sign, dist[3], tempCount, dot[GR_MAX_CLIPPER_VERTICES];
     int allInside, allOutside, foundZeros, numSignChanges, ok;
 
     for (i = 2; i >= 0; --i)
@@ -558,7 +558,7 @@ void grClipPrimitive(Gerbera_s *state, unsigned int origIndices, int numVertices
         HGint64 area64 = hgZero64();
         HGint64 area;
 
-        triSide = 0;
+        k = 0;
         for (j = 0; j < numTriangles; ++j)
             area64 = hgAdd64(area64,
                              grComputeTriangleArea(vertexBuffer,
@@ -574,7 +574,7 @@ void grClipPrimitive(Gerbera_s *state, unsigned int origIndices, int numVertices
                    grTestCapability(state, GR_CAPABILITY_CULL_FACE);
             if (sign != 1 && hgIsZero64(area) == 0)
             {
-                for (k = triSide; k < j + 3; ++k)
+                for (; k < j + 3; ++k)
                 {
                     _grVertex *v = &vertexBuffer[fan[k]];
 

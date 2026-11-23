@@ -1,0 +1,121 @@
+diff --git a/src/Graphics_GL1.c b/src/Graphics_GL1.c
+index f50e140..c6d5ef9 100644
+--- a/src/Graphics_GL1.c
++++ b/src/Graphics_GL1.c
+@@ -24,11 +24,16 @@
+ /* e.g. GLAPI void APIENTRY glFunction(int value); */
+ #define GL_FUNC(retType, name, args) GLAPI retType APIENTRY name args;
+ #include "../misc/opengl/GL1Funcs.h"
+-#if defined CC_BUILD_SYMBIAN
+-#include "../misc/opengl/GL2Funcs.h"
+-
+-static cc_bool mbx;
+-#endif
++#if defined CC_BUILD_SYMBIAN || defined CC_BUILD_GLES
++#include "../misc/opengl/GL2Funcs.h"
++#endif
++#if defined CC_BUILD_SYMBIAN
++static cc_bool mbx;
++#elif defined CC_BUILD_GLES
++static void APIENTRY es1_glBindBuffer(GLenum target, GfxResourceID buffer) {
++	glBindBuffer(target, (GLuint)(cc_uintptr)buffer);
++}
++#endif
+ 
+ #if CC_BUILD_MAXSTACK <= (64 * 1024)
+ static cc_uint16 gl_indices[GFX_MAX_INDICES];
+@@ -413,10 +418,10 @@ static void Gfx_RestoreState(void) {
+ 	gfx_fogDensity = -1.0f;
+ 	gfx_fogMode    = -1;
+ 
+-	_glHint(GL_FOG_HINT, GL_NICEST);
+-#if defined CC_BUILD_SYMBIAN
+-	_glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
+-#endif
++	_glHint(GL_FOG_HINT, GL_NICEST);
++#if defined CC_BUILD_SYMBIAN || defined CC_BUILD_GLES
++	_glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
++#endif
+ 
+ 	_glAlphaFunc(GL_GREATER, 0.5f);
+ 	_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+@@ -662,8 +667,15 @@ static void GLBackend_Init(void) {
+ 	_glBufferData    = glBufferData;
+ 	_glBufferSubData = glBufferSubData;
+ 	
+-	convert_rgba = PIXEL_FORMAT != GL_RGBA && !has_ext_bgra && !has_sym_bgra;
+-#else
++	convert_rgba = PIXEL_FORMAT != GL_RGBA && !has_ext_bgra && !has_sym_bgra;
++#elif defined CC_BUILD_GLES
++	_glGenBuffers    = glGenBuffers;
++	_glDeleteBuffers = glDeleteBuffers;
++	_glBindBuffer    = es1_glBindBuffer;
++	_glBufferData    = glBufferData;
++	_glBufferSubData = glBufferSubData;
++	convert_rgba     = PIXEL_FORMAT != GL_RGBA;
++#else
+ 	static const struct DynamicLibSym coreVboFuncs[] = {
+ 		DynamicLib_ReqSym2("glBindBuffer",    glBindBuffer), DynamicLib_ReqSym2("glDeleteBuffers", glDeleteBuffers),
+ 		DynamicLib_ReqSym2("glGenBuffers",    glGenBuffers), DynamicLib_ReqSym2("glBufferData",    glBufferData),
+diff --git a/src/Server.c b/src/Server.c
+index c9b9a87..f95d3d9 100644
+--- a/src/Server.c
++++ b/src/Server.c
+@@ -148,10 +148,16 @@ static void SPConnection_BeginConnect(void) {
+ 	gen = &NotchyGen;
+ #endif
+ 
+-	Random_SeedFromCurrentTime(&rnd);
+-	seed = Random_Next(&rnd, Int32_MaxValue);
+-
+-	Gen_Start(gen, seed, horSize, verSize, horSize);
++	Random_SeedFromCurrentTime(&rnd);
++	seed = Random_Next(&rnd, Int32_MaxValue);
++	{
++		extern char* getenv(const char*);
++		extern int atoi(const char*);
++		const char* env_seed = getenv("CC_SEED");
++		if (env_seed && *env_seed) seed = atoi(env_seed);
++	}
++
++	Gen_Start(gen, seed, horSize, verSize, horSize);
+ }
+ 
+ static char sp_lastCol;
+diff --git a/src/_GLShared.h b/src/_GLShared.h
+index 242b585..2d84719 100644
+--- a/src/_GLShared.h
++++ b/src/_GLShared.h
+@@ -338,19 +338,19 @@ cc_result Gfx_TakeScreenshot(struct Stream* output) {
+ 
+ 	bmp.scan0  = (BitmapCol*)Mem_TryAlloc(bmp.width * bmp.height, BITMAPCOLOR_SIZE);
+ 	if (!bmp.scan0) return ERR_OUT_OF_MEMORY;
+-#if defined CC_BUILD_SYMBIAN
+-	_glReadPixels(0, 0, bmp.width, bmp.height, GL_RGBA, TRANSFER_FORMAT, bmp.scan0);
+-	/* ??? */
+-	if (convert_rgba) {
+-		BitmapCol* tmp = (BitmapCol*)Mem_TryAlloc(bmp.width * bmp.height, BITMAPCOLOR_SIZE);
+-		if (!tmp) return ERR_OUT_OF_MEMORY;
+-		
+-		ConvertRGBA(tmp, bmp.scan0, bmp.width * bmp.height);
+-		
+-		Mem_Free(bmp.scan0);
+-		bmp.scan0 = tmp;
+-	}
+-#else
++#if defined CC_BUILD_SYMBIAN || defined CC_BUILD_GLES
++	_glReadPixels(0, 0, bmp.width, bmp.height, GL_RGBA, TRANSFER_FORMAT, bmp.scan0);
++	/* ??? */
++	if (convert_rgba) {
++		BitmapCol* tmp = (BitmapCol*)Mem_TryAlloc(bmp.width * bmp.height, BITMAPCOLOR_SIZE);
++		if (!tmp) return ERR_OUT_OF_MEMORY;
++		
++		ConvertRGBA(tmp, bmp.scan0, bmp.width * bmp.height);
++		
++		Mem_Free(bmp.scan0);
++		bmp.scan0 = tmp;
++	}
++#else
+ 	_glReadPixels(0, 0, bmp.width, bmp.height, PIXEL_FORMAT, TRANSFER_FORMAT, bmp.scan0);
+ #endif
+ 

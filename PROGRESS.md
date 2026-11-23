@@ -1830,6 +1830,22 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
   - **177 / 177 non-`_E32Dll` PE ordinal exports** in `docs/libGLES_CM.dll` verified present in `build/libgerbera.a` across 66 `.c` files (`0` missing).
   - **4,413 / 4,413 checks passing, 0 failures, 0 warnings, 0 ASan/LSan errors** (`hg`: 295, `imath`: 311, `core`: 2,327, `opengl`: 405, `egl`: 1,075).
 
+## DONE session 7 (Real-world 3D game validation: ClassiCube on Gerbera OpenGL ES 1.1 + EGL 1.1)
+
+- **ClassiCube OpenGL ES 1.1 + EGL 1.1 port & 6-scene showcase (`demo/`)**:
+  - Built [**ClassiCube**](https://github.com/ClassiCube/ClassiCube) (`CC_GFX_BACKEND_GL1` + `CC_BUILD_GLES` + `CC_BUILD_EGL`) linked solely against `build/libgerbera.a` via a self-contained hosted EGL 1.1 window backend (`demo/Window_Gerbera.c`, `demo/classicube_gles1.patch`, `demo/build_and_capture.sh`).
+  - Captured and verified 6 `960x540` screenshots (`demo/01_overworld_landscape.png` .. `demo/06_sunset_fog_atmosphere.png`) exercising 120k-vertex chunk VBOs, `/client gpuinfo` (`Vendor: Nokia / Renderer: 1.1.0 / GL version: OpenGL ES-CM 1.1 / EGL: 1.1`), mipmapped `GL_RGBA` textures, `GL_PERSPECTIVE_CORRECTION_HINT = GL_NICEST` perspective subdivision, multi-plane frustum clipping, `GL_DEPTH_TEST(GL_LEQUAL)` 16-bit depth buffering, `GL_ALPHA_TEST(GL_GREATER, 0.5f)` vegetation cutouts, `GL_BLEND` water/glass/GUI, hierarchical 3D player character matrix stack, and `GL_FOG(GL_LINEAR)` sunset horizon fog.
+- **7 real-world driver fixes verified against `docs/libGLES_CM.dll.c` + regression tests (`tests/test_opengl.c`)**:
+  1. `IFVector4_dp4l_fast` (`src/imath/IMatrix4.c:796`, DLL `55248`): `hgSet64(m, maxE)` word order fix for `glLoadMatrixf` general 4x4 matrix classification.
+  2. `IVertexTransform_mulfv4` (`src/imath/IMatrix4.c:1466`, DLL `55665`): `maxE + 2 - (clz + 127)` exponent renormalization fix.
+  3. `glBufferData` (`src/gerbera/api_opengl/oglApi.c:2806`): refreshes bound `ctx->vertexArray[i].data` pointers on `GL_ARRAY_BUFFER` reallocation.
+  4. `enum GR_FUNC_e` (`src/include/gerbera/grState.h:456`, DLL `18330-18424`): `0=NEVER, 1=LESS, 2=EQUAL, 3=LEQUAL, 4=GREATER, 5=NOTEQUAL, 6=GEQUAL, 7=ALWAYS`.
+  5. `grExecutePixelPipeline64` (`src/gerbera/grPixelPipeline.c:537`): `1 - f` fog polarity (`((255 - fog8) * rgba[c] + fog8 * fc + 127) / 255`) + `state->fogAtZero` fallback.
+  6. `grClipPrimitive` (`src/gerbera/grClipper.c:561,577`, DLL `31384,31418`): `k = 0` outside fan loop + `for (; k < j + 3; ++k)` so back-facing `fan[0]` clip vertices interpolate gradients before `grTriangleTessellator`.
+  7. `grClipper` (`src/gerbera/grClipper.c:290`): `dot[GR_MAX_CLIPPER_VERTICES]` (`15`) for multi-plane clipped polygons.
+- **Tests (`make test`)**: **4,422 / 4,422 checks passing, 0 failures, 0 warnings, 0 ASan/LSan errors**.
+
+
 
 
 

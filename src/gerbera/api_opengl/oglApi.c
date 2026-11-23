@@ -2805,6 +2805,17 @@ GL_API void GL_APIENTRY glBufferData(GLenum target, GLsizeiptr size,
                 OGL_ASSERT_AT("oglApi.inl", 3564, "bufObj", bufObj != NULL);
                 if (oglSetupBufObj(bufObj, bu, (int)size) != 0)
                 {
+                    if (bt == OGL_BUFOBJTARGET_ARRAY && context->gerbera != NULL)
+                    {
+                        int i;
+                        unsigned int activeName = context->activeBufObjs[bt];
+                        for (i = 0; i < GR_VERTEXARRAY_MAX; ++i)
+                        {
+                            _grVertexArray *arr = &context->gerbera->vertexArray[i];
+                            if (arr->binding == activeName)
+                                arr->data = (char *)bufObj->buffer + (uintptr_t)arr->origPointer;
+                        }
+                    }
                     glBufferSubData(target, 0, size, data);
                     if (data == NULL && bt == OGL_BUFOBJTARGET_ELEMENT_ARRAY)
                         hgMemSet(bufObj->buffer, 0, (unsigned int)size);

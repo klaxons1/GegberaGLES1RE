@@ -1089,6 +1089,124 @@ static void test_gl_rendering_pipeline(void)
         CHECK(px[0] == 0 && px[1] >= 200 && px[1] <= 208 && px[2] == 0);
     }
 
+    /* 8. Non-identity ortho & perspective transforms + linear fog with GL_FLOAT VBO/IBO */
+    {
+        typedef struct { GLfloat x, y, z; unsigned char r, g, b, a; } FloatColVtx;
+        static const FloatColVtx orthoQuad[4] = {
+            {  4.0f,  4.0f, 0.0f, 255, 0, 0, 255 },
+            { 12.0f,  4.0f, 0.0f, 255, 0, 0, 255 },
+            { 12.0f, 12.0f, 0.0f, 255, 0, 0, 255 },
+            {  4.0f, 12.0f, 0.0f, 255, 0, 0, 255 }
+        };
+        static const FloatColVtx perspQuad[4] = {
+            { -4.0f, -4.0f, 0.0f, 255, 0, 0, 255 },
+            {  4.0f, -4.0f, 0.0f, 255, 0, 0, 255 },
+            {  4.0f,  4.0f, 0.0f, 255, 0, 0, 255 },
+            { -4.0f,  4.0f, 0.0f, 255, 0, 0, 255 }
+        };
+        static const GLushort idx6[6] = { 0, 1, 2, 2, 3, 0 };
+        static const GLfloat fogBlue[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+        GLuint vbo = 0, ibo = 0;
+
+        glGenBuffers(1, &vbo);
+        glGenBuffers(1, &ibo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(orthoQuad), orthoQuad, GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)sizeof(idx6), idx6, GL_STATIC_DRAW);
+
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrthof(0.0f, 16.0f, 16.0f, 0.0f, -100.0f, 1000.0f);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+
+        glEnableClientState(GL_COLOR_ARRAY);
+        glVertexPointer(3, GL_FLOAT, (GLsizei)sizeof(FloatColVtx), (const GLvoid *)(uintptr_t)0);
+        glColorPointer(4, GL_UNSIGNED_BYTE, (GLsizei)sizeof(FloatColVtx), (const GLvoid *)(uintptr_t)12);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (const GLvoid *)(uintptr_t)0);
+        CHECK(glGetError() == GL_NO_ERROR);
+
+        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0);
+        glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] == 0 && px[1] == 0 && px[2] == 0);
+
+        /* Perspective + modelview z=-5 + 50% linear fog [start=2, end=8] -> purple ~(127, 0, 127) */
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(perspQuad), perspQuad, GL_DYNAMIC_DRAW);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glFrustumf(-1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 20.0f);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        glTranslatef(0.0f, 0.0f, -5.0f);
+        glEnable(GL_FOG);
+        glFogf(GL_FOG_MODE, (GLfloat)GL_LINEAR);
+        glFogf(GL_FOG_START, 2.0f);
+        glFogf(GL_FOG_END, 8.0f);
+        glFogfv(GL_FOG_COLOR, fogBlue);
+        glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
+
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (const GLvoid *)(uintptr_t)0);
+        CHECK(glGetError() == GL_NO_ERROR);
+        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] >= 115 && px[0] <= 140 && px[1] == 0 && px[2] >= 115 && px[2] <= 140);
+
+        /* Near z=-2.5 in [2, 8] -> mostly un-fogged red (px[0] > 200, px[2] < 40),
+         * plus GL_LEQUAL / GL_GREATER depthFunc enum order & back-facing near-clipped quad */
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glLoadIdentity();
+        glTranslatef(0.0f, 0.0f, -2.5f);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (const GLvoid *)(uintptr_t)0);
+        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] > 200 && px[1] == 0 && px[2] < 40);
+
+        /* GL_GREATER against closer depth should reject */
+        glDepthFunc(GL_GREATER);
+        glLoadIdentity();
+        glTranslatef(0.0f, 0.0f, -2.0f);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (const GLvoid *)(uintptr_t)0);
+        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        CHECK(px[0] > 200 && px[2] < 40);
+
+        /* Back-facing (CW) near-plane-clipped floor quad with perspective tessellation */
+        {
+            static const FloatColVtx clipBackQuad[4] = {
+                { -6.0f, -1.0f,  1.0f, 0, 255, 0, 255 },
+                { -6.0f, -1.0f, -8.0f, 0, 255, 0, 255 },
+                {  6.0f, -1.0f, -8.0f, 0, 255, 0, 255 },
+                {  6.0f, -1.0f,  1.0f, 0, 255, 0, 255 }
+            };
+            glDepthFunc(GL_LEQUAL);
+            glDisable(GL_FOG);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glLoadIdentity();
+            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(clipBackQuad), clipBackQuad, GL_DYNAMIC_DRAW);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (const GLvoid *)(uintptr_t)0);
+            CHECK(glGetError() == GL_NO_ERROR);
+            glReadPixels(8, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            CHECK(px[0] == 0 && px[1] == 255 && px[2] == 0);
+        }
+        glDisable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+
+        glDisable(GL_FOG);
+        glDisableClientState(GL_COLOR_ARRAY);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        glDeleteBuffers(1, &vbo);
+        glDeleteBuffers(1, &ibo);
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+    }
+
     glDisableClientState(GL_VERTEX_ARRAY);
     egliSetCurrentContext(NULL);
     oglDestroyContext(ctx);

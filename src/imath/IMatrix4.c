@@ -793,7 +793,7 @@ HGint64 IFVector4_dp4l_fast(_IFVector4 *pA, _IFVector4 *pB)
     m += hgMul64h(pA->m[3], pB->m[3]) >> hgMin32(maxE - e[3], 31);
     if (m == 0)
         maxE = 0;
-    return hgSet64(maxE, m);
+    return hgSet64(m, maxE);
 }
 
 HGint32 IFVector4_dp4l(_IFVector4 *pA, _IFVector4 *pB)
@@ -1463,7 +1463,7 @@ void IVertexTransform_mulfv4(_IVector4 *pD, _IVertexTransform *pT, _IFVector4 *p
         if (probe != 0)
         {
             int clz = hgClz32(probe) - 2;
-            int newExp = (int)maxE + 2 - (clz - 1 + 127);
+            int newExp = (int)maxE + 2 - (clz + 127);
 
             if (newExp > 0)
             {

@@ -14,6 +14,7 @@ What is in this repository:
 | `generated/`      | tool output (fragments + manifest), regenerable, not committed    |
 | `src/`            | complete C99 reconstruction (`hg`, `imath`, `gerbera/core`, `grr`, `hc`, `api_opengl`, `egl`) |
 | `tests/`          | automated unit & integration test suites (`test_hg`, `test_imath`, `test_core`, `test_opengl`, `test_egl`) |
+| `demo/`           | end-to-end **ClassiCube** OpenGL ES 1.1 + EGL 1.1 showcase & 6 captured 960x540 screenshots |
 | `AGENTS.md`       | how to work on this repo (agent guide)                            |
 | `PROGRESS.md`     | module-by-module reconstruction log & verification status         |
 | `docs/analysis.md`| reverse engineering findings: original tree, module map, artifacts|
@@ -30,6 +31,14 @@ ordinal exports of `libGLES_CM.dll` are ported and verified**:
 - `hg`: 295 checks
 - `imath`: 311 checks
 - `gerbera/core` + `grr` + `hc` JIT compiler (x86 & ARM32 backends): 2,327 checks
-- `gerbera/api_opengl` (158 `gl*` OpenGL ES 1.1 + OES entry points in `<GLES/gl.h>`): 405 checks
+- `gerbera/api_opengl` (158 `gl*` OpenGL ES 1.1 + OES entry points in `<GLES/gl.h>`): 414 checks
 - `gerbera/egl` + `eglSymbian` (27 `egl*` EGL 1.1 entry points in `<GLES/egl.h>` & `<EGL/egl.h>`, incl. render-to-texture): 1,075 checks
-- Total: **4,413 / 4,413 checks passing**, `0` failures, `0` compiler warnings, `0` AddressSanitizer / LeakSanitizer errors across 66 `.c` files. See `PROGRESS.md`.
+- Total: **4,422 / 4,422 checks passing**, `0` failures, `0` compiler warnings, `0` AddressSanitizer / LeakSanitizer errors across 66 `.c` files. See `PROGRESS.md`.
+
+## Real-World OpenGL ES 1.1 + EGL 1.1 Showcase (`demo/`)
+
+[**ClassiCube**](https://github.com/ClassiCube/ClassiCube) running its native OpenGL ES 1.1 + EGL 1.1 renderer linked solely against `build/libgerbera.a` (zero system GL/Mesa/SDL libraries). See [`demo/README.md`](demo/README.md) and `./demo/build_and_capture.sh` for all 6 scenes:
+
+| Overworld & GLES 1.1 HUD | Block Showcase Pavilion | Sunset & `GL_LINEAR` Fog |
+|--------------------------|-------------------------|--------------------------|
+| ![GLES 1.1 HUD](demo/02_gles1_gpuinfo_hud.png) | ![Pavilion](demo/03_block_showcase_pavilion.png) | ![Sunset Fog](demo/06_sunset_fog_atmosphere.png) |
