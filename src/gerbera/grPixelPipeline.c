@@ -25,6 +25,7 @@ extern const unsigned char g_mutableParamsMask[12];
 
 /* --- grExecutePixelPipeline (grPixelPipeline.h 153; DLL 24757-24775) --------- */
 
+#if !defined(__SYMBIAN32__) && !(defined(__arm__) && UINTPTR_MAX == 0xFFFFFFFFu)
 static int grEvalCompareFunc64(int func, unsigned int lhs, unsigned int rhs)
 {
     switch (func)
@@ -836,6 +837,7 @@ step_pixel:
         if (stencilRow != NULL) stencilRow += surf->buffers[2].stride;
     }
 }
+#endif /* !__SYMBIAN32__ && !32-bit __arm__ */
 
 void grExecutePixelPipeline(Gerbera_s *state)
 {
@@ -844,12 +846,15 @@ void grExecutePixelPipeline(Gerbera_s *state)
     if (pixelPipelineCode == NULL &&
         grAssert("pixelPipelineCode", "grPixelPipeline.h", 153) != 0)
         grDie(0);
-    /* the decompile reaches this through renderStack->pixelPipelineStack -
-     * the pixel-pipe pointer living at renderStack+14644 (the same address
-     * passed to the program); state->pixelPipeline is that pointer */
     if (state->pixelPipeline == NULL &&
         grAssert("state->renderStack->pixelPipelineStack", "grPixelPipeline.h", 154) != 0)
         grDie(0);
+#if defined(__SYMBIAN32__) || (defined(__arm__) && UINTPTR_MAX == 0xFFFFFFFFu)
+    /* Native 32-bit ARM JIT execution (matches docs/libgles_cm.dll.epoc:
+     * r0 = renderStack + 14644, with [r0..r0+63] reserved for HCARMBackend
+     * scratch spills and [r0+64..r0+375] == state->pixelPipeline). */
+    pixelPipelineCode((char *)state->renderStack + 14644);
+#else
     if (state->pipelineCache != NULL)
     {
         uintptr_t codeAddr = (uintptr_t)pixelPipelineCode;
@@ -862,6 +867,7 @@ void grExecutePixelPipeline(Gerbera_s *state)
         }
     }
     pixelPipelineCode(state->pixelPipeline);
+#endif
 }
 
 /* --- grIsGradientUsed (grPixelPipeline.inl 702; DLL 36949-36959) --------------

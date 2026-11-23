@@ -140,8 +140,8 @@ UNITY_C="${BUILD_DIR}/gerbera_symbian_unity.c"
     done < <(find "${REPO_ROOT}/src" -name '*.c' | sort)
 } > "${UNITY_C}"
 
-echo "[symbian] Compiling Gerbera Whole-Program Unity TU (-march=armv5t -mtune=arm1136jf-s -O2 -fwhole-program)..."
-"${CC}" "${COMMON_FLAGS[@]}" -O2 -fwhole-program \
+echo "[symbian] Compiling Gerbera Whole-Program Unity TU (-march=armv5t -mtune=arm1136jf-s -O2 -finline-functions -fgcse-after-reload -fpredictive-commoning -funswitch-loops -fwhole-program)..."
+"${CC}" "${COMMON_FLAGS[@]}" -O2 -finline-functions -fgcse-after-reload -fpredictive-commoning -funswitch-loops -fwhole-program \
     -c "${UNITY_C}" -o "${BUILD_DIR}/obj/gerbera_unity.o"
 
 # 5. Link Symbian ELF shared object with Zero-WSD & --no-undefined enforcement
@@ -198,5 +198,18 @@ echo "[symbian] Running elf2e32 -> libgles_cm.dll & libgles_cm.dso..."
 
 cp -f "${OUT_DIR}/libgles_cm{000a0000}.dso" "${OUT_DIR}/libgles_cm.dso"
 
+python3 - "${OUT_DIR}" "${REPO_ROOT}" <<'PY'
+import os, sys, zipfile
+out_dir, repo_root = sys.argv[1], sys.argv[2]
+zip_path = os.path.join(out_dir, "Gerbera-GLES1-Symbian-EKA2-ARMv5.zip")
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    zf.write(os.path.join(out_dir, "libgles_cm.dll"), "sys/bin/libgles_cm.dll")
+    zf.write(os.path.join(out_dir, "libgles_cm.dso"), "epoc32/release/armv5/lib/libgles_cm.dso")
+    zf.write(os.path.join(out_dir, "libgles_cm{000a0000}.dso"), "epoc32/release/armv5/lib/libgles_cm{000a0000}.dso")
+    zf.write(os.path.join(out_dir, "libgles_cm.def"), "epoc32/include/def/eabi/libgles_cmU.def")
+    zf.write(os.path.join(repo_root, "src/include/GLES/gl.h"), "epoc32/include/GLES/gl.h")
+    zf.write(os.path.join(repo_root, "src/include/GLES/egl.h"), "epoc32/include/GLES/egl.h")
+PY
+
 echo "[symbian] Build complete:"
-ls -lh "${OUT_DIR}/libgles_cm.dll" "${OUT_DIR}/libgles_cm.dso" "${OUT_DIR}/libgles_cm{000a0000}.dso"
+ls -lh "${OUT_DIR}/libgles_cm.dll" "${OUT_DIR}/libgles_cm.dso" "${OUT_DIR}/Gerbera-GLES1-Symbian-EKA2-ARMv5.zip"

@@ -264,19 +264,18 @@ typedef struct _grPixelPipe
     int numScanlines;                         /* +180 (grScanConvertTriangle) */
     unsigned int *scanlineInfo;               /* +184 renderStack+15668 */
     int yStart;                               /* +188 */
-    int pipeTailPad[3];                       /* +192 sentinel pad (reference
-                                               * must start here) */
-    int reference[GR_GRADIENT_MAX];           /* +192 */
-    int xAdder[GR_GRADIENT_MAX];              /* +232 */
-    int yAdder[GR_GRADIENT_MAX];              /* +272 */
-    int mutableParams[78];                    /* +312: cv_anon_1722.m[0][]
-                                               * poison target (offset
-                                               * UNPINNED until the inter-
-                                               * preter session pins m) */
-    unsigned char tail[8028];                 /* +624..9215: pinned by the
-                                               * pixel-pipeline/interpreter
-                                               * sessions */
+    int reference[GR_GRADIENT_MAX];           /* +192 (word 48) */
+    int xAdder[GR_GRADIENT_MAX];              /* +232 (word 58) */
+    int yAdder[GR_GRADIENT_MAX];              /* +272 (word 68) */
+    int mutableParams[78];                    /* debug poison scratch */
+    unsigned char tail[8040];                 /* +624..9215 */
 } _grPixelPipe;                               /* 9216 bytes */
+
+#if defined(__SYMBIAN32__) || (defined(__arm__) && UINTPTR_MAX == 0xFFFFFFFFu)
+typedef char _grPixelPipe_check_ref_offset[(offsetof(_grPixelPipe, reference) == 192) ? 1 : -1];
+typedef char _grPixelPipe_check_xadd_offset[(offsetof(_grPixelPipe, xAdder) == 232) ? 1 : -1];
+typedef char _grPixelPipe_check_yadd_offset[(offsetof(_grPixelPipe, yAdder) == 272) ? 1 : -1];
+#endif
 
 /* texture-rect gradient setup info (grSetupTextureRectGradients,
  * grApiFast.inl 1687; DLL 33077-33172). The caller builds this on its
