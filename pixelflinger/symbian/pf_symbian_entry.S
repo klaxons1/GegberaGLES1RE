@@ -83,3 +83,42 @@ sym_DllFreeTls:
 .L_e32dll_freetls:
     .word   _E32Dll
     .size sym_DllFreeTls, . - sym_DllFreeTls
+
+/* --- ARM RTABI 64-bit integer division (__aeabi_uldivmod / __aeabi_ldivmod) */
+
+    .section .text.__aeabi_uldivmod, "ax", %progbits
+    .align 2
+    .global __aeabi_uldivmod
+    .hidden __aeabi_uldivmod
+    .type __aeabi_uldivmod, %function
+__aeabi_uldivmod:
+    sub     sp, sp, #16
+    add     ip, sp, #8
+    str     ip, [sp, #0]
+    str     lr, [sp, #4]
+    bl      pf_udivmod64
+    ldr     lr, [sp, #4]
+    ldr     r2, [sp, #8]
+    ldr     r3, [sp, #12]
+    add     sp, sp, #16
+    bx      lr
+    .size __aeabi_uldivmod, . - __aeabi_uldivmod
+
+    .section .text.__aeabi_ldivmod, "ax", %progbits
+    .align 2
+    .global __aeabi_ldivmod
+    .hidden __aeabi_ldivmod
+    .type __aeabi_ldivmod, %function
+__aeabi_ldivmod:
+    sub     sp, sp, #16
+    add     ip, sp, #8
+    str     ip, [sp, #0]
+    str     lr, [sp, #4]
+    bl      pf_sdivmod64
+    ldr     lr, [sp, #4]
+    ldr     r2, [sp, #8]
+    ldr     r3, [sp, #12]
+    add     sp, sp, #16
+    bx      lr
+    .size __aeabi_ldivmod, . - __aeabi_ldivmod
+

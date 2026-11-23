@@ -358,7 +358,7 @@ void compute_iterators_t::iterators0032(int64_t* it,
     it[ 2] = dcdy;
 }
 
-#if defined(__arm__) && !defined(__thumb__)
+#if 0 && defined(__arm__) && !defined(__thumb__)
 inline void compute_iterators_t::iterators0032(int32_t* it,
         int32_t c0, int32_t c1, int32_t c2) const
 {

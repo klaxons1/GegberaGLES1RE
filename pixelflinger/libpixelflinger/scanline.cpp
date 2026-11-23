@@ -33,6 +33,26 @@
 #include "buffer.h"
 #include "scanline.h"
 
+// ----------------------------------------------------------------------------
+
+#define ANDROID_CODEGEN_GENERIC     0   // force generic pixel pipeline
+#define ANDROID_CODEGEN_C           1   // hand-written C, fallback generic 
+#define ANDROID_CODEGEN_ASM         2   // hand-written asm, fallback generic
+#define ANDROID_CODEGEN_GENERATED   3   // hand-written asm, fallback codegen
+
+/* JIT disabled on Symbian OS EKA2: use pure verified C++ fast-paths + full
+ * generic C++ scanline pipeline (matching platform_system_core). */
+#ifdef NDEBUG
+#   define ANDROID_RELEASE
+#   define ANDROID_CODEGEN      ANDROID_CODEGEN_C
+#else
+#   define ANDROID_DEBUG
+#   define ANDROID_CODEGEN      ANDROID_CODEGEN_C
+#endif
+
+#define ANDROID_ARM_CODEGEN     0
+
+#if ANDROID_ARM_CODEGEN
 #include "codeflinger/CodeCache.h"
 #include "codeflinger/GGLAssembler.h"
 #if defined(__arm__)
@@ -42,27 +62,6 @@
 #elif defined(__mips__) && !defined(__LP64__)
 #include "codeflinger/MIPSAssembler.h"
 #endif
-//#include "codeflinger/ARMAssemblerOptimizer.h"
-
-// ----------------------------------------------------------------------------
-
-#define ANDROID_CODEGEN_GENERIC     0   // force generic pixel pipeline
-#define ANDROID_CODEGEN_C           1   // hand-written C, fallback generic 
-#define ANDROID_CODEGEN_ASM         2   // hand-written asm, fallback generic
-#define ANDROID_CODEGEN_GENERATED   3   // hand-written asm, fallback codegen
-
-#ifdef NDEBUG
-#   define ANDROID_RELEASE
-#   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
-#else
-#   define ANDROID_DEBUG
-#   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
-#endif
-
-#if defined(__arm__) || (defined(__mips__) && !defined(__LP64__)) || defined(__aarch64__)
-#   define ANDROID_ARM_CODEGEN  1
-#else
-#   define ANDROID_ARM_CODEGEN  0
 #endif
 
 #define DEBUG__CODEGEN_ONLY     0

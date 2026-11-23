@@ -15,30 +15,8 @@
 #include <GLES/gl.h>
 #include <GLES/glext.h>
 
-#include <pf_symbian_tls.h>
 #include <private/pixelflinger/ggl_context.h>
-#include "../libpixelflinger/codeflinger/ARMAssembler.h"
-#include "../libpixelflinger/codeflinger/CodeCache.h"
-#include "../libpixelflinger/codeflinger/GGLAssembler.h"
 #include "../libagl/context.h"
-
-/* Headless window/pixmap structs matching egl_symbian.cpp */
-struct PfHeadlessWindow {
-    int      width;
-    int      height;
-    int      strideBytes;
-    int      displayMode; /* 8 = EColor64K (RGB565), 12 = EColor16MA (BGRA8888) */
-    void*    pixels;
-    uint32_t swapCount;
-};
-
-struct PfHeadlessPixmap {
-    int      width;
-    int      height;
-    int      strideBytes;
-    int      displayMode;
-    void*    pixels;
-};
 
 static void set_perspective(float fovyDeg, float aspect, float zNear, float zFar)
 {
@@ -47,95 +25,90 @@ static void set_perspective(float fovyDeg, float aspect, float zNear, float zFar
     glFrustumf(-fW, fW, -fH, fH, zNear, zFar);
 }
 
-static void test_codeflinger_armv5_jit(void)
+static void test_nonjit_formats_and_config_attrs(void)
 {
-    using namespace android;
+    EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    assert(dpy != EGL_NO_DISPLAY);
+    assert(eglInitialize(dpy, NULL, NULL) == EGL_TRUE);
 
-    const size_t arenaBytes = 128 * 1024;
-    void* rawMem = malloc(arenaBytes);
-    assert(rawMem != NULL);
+    /* Verify EGL 1.2+ attributes & stencil fallback accepted by S60/Symbian^3 apps */
+    const EGLint s60GameAttribs[] = {
+        0x3040 /* EGL_RENDERABLE_TYPE */, 1,
+        0x303F /* EGL_COLOR_BUFFER_TYPE */, 0x308E,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_DEPTH_SIZE, 16,
+        EGL_STENCIL_SIZE, 8,
+        EGL_NONE
+    };
+    EGLConfig cfg32 = 0;
+    EGLint num = 0;
+    assert(eglChooseConfig(dpy, s60GameAttribs, &cfg32, 1, &num) == EGL_TRUE && num >= 1);
 
-    PfExecArena arena;
-    pf_exec_arena_init(&arena, rawMem, arenaBytes);
-    CodeCache cache(32 * 1024);
-
-    /* Synthesize 3 distinct ARMv5TE scanline kernels via GGLAssembler + ARMAssembler */
-    needs_t configs[3];
-    memset(configs, 0, sizeof(configs));
-
-    /* Kernel 0: Gouraud-shaded RGB565 + Z-test LESS + Z-write */
-    configs[0].n = GGL_BUILD_NEEDS(GGL_PIXEL_FORMAT_RGB_565, CB_FORMAT) |
-                   GGL_BUILD_NEEDS(1, SHADE);
-    configs[0].p = GGL_BUILD_NEEDS(1, P_DITHER) |
-                   GGL_BUILD_NEEDS(1, P_MASK_Z) |
-                   GGL_BUILD_NEEDS(GGL_LESS & 7, P_DEPTH_TEST);
-
-    /* Kernel 1: Perspective-correct RGBA8888 modulated texture + fog -> RGB565 */
-    configs[1].n = GGL_BUILD_NEEDS(GGL_PIXEL_FORMAT_RGB_565, CB_FORMAT) |
-                   GGL_BUILD_NEEDS(1, SHADE) |
-                   GGL_BUILD_NEEDS(1, W);
-    configs[1].p = GGL_BUILD_NEEDS(1, P_DITHER) |
-                   GGL_BUILD_NEEDS(1, P_MASK_Z) |
-                   GGL_BUILD_NEEDS(GGL_LEQUAL & 7, P_DEPTH_TEST) |
-                   GGL_BUILD_NEEDS(1, P_FOG);
-    configs[1].t[0] = GGL_BUILD_NEEDS(GGL_PIXEL_FORMAT_RGBA_8888, T_FORMAT) |
-                      GGL_BUILD_NEEDS(ggl_env_to_needs(GGL_MODULATE), T_ENV) |
-                      GGL_BUILD_NEEDS(1, T_LINEAR);
-
-    /* Kernel 2: Alpha-blended SRC_ALPHA / ONE_MINUS_SRC_ALPHA -> BGRA8888 */
-    configs[2].n = GGL_BUILD_NEEDS(GGL_PIXEL_FORMAT_BGRA_8888, CB_FORMAT) |
-                   GGL_BUILD_NEEDS(ggl_blendfactor_to_needs(GGL_SRC_ALPHA), BLEND_SRC) |
-                   GGL_BUILD_NEEDS(ggl_blendfactor_to_needs(GGL_ONE_MINUS_SRC_ALPHA), BLEND_DST) |
-                   GGL_BUILD_NEEDS(ggl_blendfactor_to_needs(GGL_SRC_ALPHA), BLEND_SRCA) |
-                   GGL_BUILD_NEEDS(ggl_blendfactor_to_needs(GGL_ONE_MINUS_SRC_ALPHA), BLEND_DSTA) |
-                   GGL_BUILD_NEEDS(1, SHADE);
-
-    GGLContext* ggl = NULL;
-    gglInit(&ggl);
-    assert(ggl != NULL);
-    context_t* c = reinterpret_cast<context_t*>(ggl);
-
+    /* Test rendering & glCopyTexImage2D on Config 2 (RGBA8888), Config 3 (RGBX8888), Config 6 (RGBA4444) */
+    const int cfgIds[3] = { 2, 3, 6 };
     for (int i = 0; i < 3; ++i) {
-        sp<Assembly> asmBuf(new Assembly(2048));
-        uint32_t* initialBase = asmBuf->base();
-        assert(initialBase != NULL);
+        EGLConfig cfg = (EGLConfig)(intptr_t)cfgIds[i];
+        int dims[2] = { 64, 64 };
+        EGLSurface surf = eglCreateWindowSurface(dpy, cfg, (EGLNativeWindowType)dims, NULL);
+        assert(surf != EGL_NO_SURFACE);
+        EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, NULL);
+        assert(ctx != EGL_NO_CONTEXT);
+        assert(eglMakeCurrent(dpy, surf, surf, ctx) == EGL_TRUE);
 
-        GGLAssembler jit(new ARMAssembler(asmBuf));
-        int err = jit.scanline(configs[i], c);
-        assert(err == 0);
-        /* Verify shrink-in-place did NOT relocate base (branch targets stay valid!) */
-        assert(asmBuf->base() == initialBase);
-        assert(asmBuf->size() >= 16);
+        /* Verify JIT is 100% disabled (scanline_as == NULL) */
+        const android::gl::ogles_context_t* glCtx = (const android::gl::ogles_context_t*)ctx;
+        assert(glCtx->rasterizer.scanline_as == NULL);
 
-        /* Inspect emitted 32-bit ARMv5TE words (must be non-zero machine instructions) */
-        ssize_t nWords = asmBuf->size() / 4;
-        int condAlwaysCount = 0;
-        for (ssize_t w = 0; w < nWords; ++w) {
-            if ((initialBase[w] >> 28) == 0xEu)
-                ++condAlwaysCount;
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        /* Draw Gouraud + alpha-blended triangle exercising generic C++ scanline() */
+        const float tri[6] = { -0.9f, -0.9f,  0.9f, -0.9f,  0.0f, 0.9f };
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnable(GL_DEPTH_TEST);
+        glColor4ub(255, 64, 32, 0); /* alpha=0: verify window blit still produces opaque RGB! */
+        glVertexPointer(2, GL_FLOAT, 0, tri);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        assert(glCtx->rasterizer.scanline_as == NULL);
+
+        uint8_t px[4] = {0};
+        glReadPixels(32, 24, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        assert(px[0] >= 220 && px[1] >= 45 && px[1] <= 85 && px[2] <= 50);
+
+        /* Verify glCopyTexImage2D succeeds on this colorbuffer format! */
+        GLuint copyTex = 0;
+        glGenTextures(1, &copyTex);
+        glBindTexture(GL_TEXTURE_2D, copyTex);
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, (cfgIds[i] == 3) ? GL_RGB : GL_RGBA, 0, 0, 64, 64, 0);
+        assert(glGetError() == GL_NO_ERROR);
+
+        /* Verify eglCopyBuffers produces opaque 0xFFRRGGBB even when GL alpha was 0 */
+        if (cfgIds[i] != 6) {
+            uint32_t out32[64 * 64];
+            memset(out32, 0, sizeof(out32));
+            assert(eglCopyBuffers(dpy, surf, (EGLNativePixmapType)out32) == EGL_TRUE);
+            uint32_t mid = out32[(64 - 24) * 64 + 32];
+            assert((mid & 0xFF000000u) == 0xFF000000u);
+            assert(((mid >> 16) & 0xFFu) >= 220);
         }
-        assert(condAlwaysCount > 4);
 
-        AssemblyKey<needs_t> key(configs[i]);
-        int cerr = cache.cache(key, asmBuf);
-        assert(cerr == 0);
-
-        sp<Assembly> hit = cache.lookup(key);
-        assert(hit.get() == asmBuf.get());
-        printf("[test] ARMv5TE JIT kernel #%d assembled cleanly: %zd bytes (%zd ARM insns), cache hit OK\n",
-               i, (ssize_t)asmBuf->size(), nWords);
+        glDeleteTextures(1, &copyTex);
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) == EGL_TRUE);
+        assert(eglDestroySurface(dpy, surf) == EGL_TRUE);
+        assert(eglDestroyContext(dpy, ctx) == EGL_TRUE);
     }
-
-    gglUninit(ggl);
-    free(rawMem);
+    assert(eglTerminate(dpy) == EGL_TRUE);
+    printf("[test] Non-JIT C++ scanline verified on RGBA8888, RGBX8888, RGBA4444 + glCopyTexImage2D!\n");
 }
 
 int main(void)
 {
-    printf("=== Symbian EKA2 Pixelflinger + Codeflinger + libagl Headless Suite ===\n");
+    printf("=== Symbian EKA2 Pixelflinger (Non-JIT C++) + libagl Headless Suite ===\n");
 
-    /* 1. Test Codeflinger ARMv5TE JIT + PfExecArena + CodeCache */
-    test_codeflinger_armv5_jit();
+    /* 1. Test non-JIT C++ rasterizer across 32-bit/24-bit/16-bit formats & EGL attrs */
+    test_nonjit_formats_and_config_attrs();
 
     /* 2. Initialize EGL 1.1 */
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);

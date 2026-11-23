@@ -571,7 +571,10 @@ void glBlendFunc(GLenum sfactor, GLenum dfactor) {
     c->rasterizer.procs.blendFunc(c, sfactor, dfactor);
 }
 
+extern "C" void pf_egl_sync_window_surface(void);
+
 void glClear(GLbitfield mask) {
+    pf_egl_sync_window_surface();
     ogles_context_t* c = ogles_context_t::get();
     c->rasterizer.procs.clear(c, mask);
 }

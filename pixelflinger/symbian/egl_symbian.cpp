@@ -1,12 +1,15 @@
 /* egl_symbian.cpp - Native Symbian OS v9.x (EKA2) EGL 1.1 implementation for
- * Android libpixelflinger + codeflinger + libagl (zero WSD, 175-ordinal ABI).
+ * Android libpixelflinger + libagl (non-JIT, zero WSD, 175-ordinal ABI).
  *
- * Supports:
- *   - Symbian RWindow + CWsBitmap + CWindowGc::BitBlt window surfaces (with
- *     dynamic S60 portrait/landscape resize & FBS heap lock/unlock safety)
- *   - Symbian CFbsBitmap pixmap surfaces + eglCopyBuffers color conversion
+ * Key Symbian OS EKA2 design points:
+ *   - Dedicated 8-byte-aligned RAM render buffers in ChunkHeap (zero global
+ *     CFbsBitmap::LockHeap held across draw calls or application UI/IO)
+ *   - Window Server native display mode detection (EColor16MU / EColor64K)
+ *     with opaque alpha enforcement so CWindowGc::BitBlt never blends alpha=0
+ *   - Automatic RWindow size synchronization before glViewport/glScissor/glClear
+ *     and eglSwapBuffers (handling S60 ConstructL (0,0) -> SizeChanged() order)
  *   - Pbuffer offscreen surfaces + zero-copy eglBindTexImage/eglReleaseTexImage
- *   - Portable PF_HEADLESS_UNIX mode for automated Linux render verification
+ *   - CFbsBitmap pixmap surfaces + eglCopyBuffers format conversion
  */
 
 #include <stdint.h>
@@ -41,6 +44,20 @@ using namespace android::gl;
 #define SYM_DISP_ECOLOR16MA  12
 #define SYM_DISP_ECOLOR16MAP 13
 
+/* Optional EGL 1.2+ filter tokens sometimes passed by S60 5th / Symbian^3 apps */
+#ifndef EGL_RENDERABLE_TYPE
+#define EGL_RENDERABLE_TYPE     0x3040
+#endif
+#ifndef EGL_COLOR_BUFFER_TYPE
+#define EGL_COLOR_BUFFER_TYPE   0x303F
+#endif
+#ifndef EGL_LUMINANCE_SIZE
+#define EGL_LUMINANCE_SIZE      0x303D
+#endif
+#ifndef EGL_ALPHA_MASK_SIZE
+#define EGL_ALPHA_MASK_SIZE     0x303E
+#endif
+
 #define PF_DEFAULT_DISPLAY ((EGLDisplay)1)
 
 struct PfConfigDesc {
@@ -57,17 +74,20 @@ struct PfConfigDesc {
     uint8_t     symDisplayMode;
 };
 
+/* Use Pixelflinger's primary native formats (RGB_565, RGBA_8888, RGBX_8888,
+ * RGBA_4444) supported across 100% of scanline.cpp, buffer.cpp, texture.cpp,
+ * and mipmap.cpp. */
 static const PfConfigDesc kConfigs[] = {
     /* Config 1: RGB565 (EColor64K) + 16-bit Z-buffer */
     { 1, 16, 5, 6, 5, 0, 16, GGL_PIXEL_FORMAT_RGB_565,   GGL_PIXEL_FORMAT_Z_16, 2, SYM_DISP_ECOLOR64K  },
-    /* Config 2: RGB565 (EColor64K), no Z-buffer */
-    { 2, 16, 5, 6, 5, 0,  0, GGL_PIXEL_FORMAT_RGB_565,   GGL_PIXEL_FORMAT_NONE, 2, SYM_DISP_ECOLOR64K  },
-    /* Config 3: BGRA8888 (EColor16MA/16MU) + 16-bit Z-buffer */
-    { 3, 32, 8, 8, 8, 8, 16, GGL_PIXEL_FORMAT_BGRA_8888, GGL_PIXEL_FORMAT_Z_16, 4, SYM_DISP_ECOLOR16MA },
-    /* Config 4: BGRX8888 (EColor16MU) + 16-bit Z-buffer */
-    { 4, 32, 8, 8, 8, 0, 16, GGL_PIXEL_FORMAT_BGRA_8888, GGL_PIXEL_FORMAT_Z_16, 4, SYM_DISP_ECOLOR16MU },
-    /* Config 5: BGRA8888 (EColor16MA), no Z-buffer */
-    { 5, 32, 8, 8, 8, 8,  0, GGL_PIXEL_FORMAT_BGRA_8888, GGL_PIXEL_FORMAT_NONE, 4, SYM_DISP_ECOLOR16MA },
+    /* Config 2: RGBA8888 (EColor16MU/16MA) + 16-bit Z-buffer */
+    { 2, 32, 8, 8, 8, 8, 16, GGL_PIXEL_FORMAT_RGBA_8888, GGL_PIXEL_FORMAT_Z_16, 4, SYM_DISP_ECOLOR16MU },
+    /* Config 3: RGBX8888 (EColor16MU) + 16-bit Z-buffer */
+    { 3, 24, 8, 8, 8, 0, 16, GGL_PIXEL_FORMAT_RGBX_8888, GGL_PIXEL_FORMAT_Z_16, 4, SYM_DISP_ECOLOR16MU },
+    /* Config 4: RGB565 (EColor64K), no Z-buffer */
+    { 4, 16, 5, 6, 5, 0,  0, GGL_PIXEL_FORMAT_RGB_565,   GGL_PIXEL_FORMAT_NONE, 2, SYM_DISP_ECOLOR64K  },
+    /* Config 5: RGBA8888 (EColor16MU/16MA), no Z-buffer */
+    { 5, 32, 8, 8, 8, 8,  0, GGL_PIXEL_FORMAT_RGBA_8888, GGL_PIXEL_FORMAT_NONE, 4, SYM_DISP_ECOLOR16MU },
     /* Config 6: RGBA4444 (EColor4K) + 16-bit Z-buffer */
     { 6, 16, 4, 4, 4, 4, 16, GGL_PIXEL_FORMAT_RGBA_4444, GGL_PIXEL_FORMAT_Z_16, 2, SYM_DISP_ECOLOR4K   },
 };
@@ -89,12 +109,12 @@ enum PfSurfaceKind {
 };
 
 struct PfEglContextHdr {
-    uint32_t        magic;
-    uint32_t        neverCurrent;
-    uint32_t        isCurrent;
-    uint32_t        deletePending;
-    EGLDisplay      dpy;
-    EGLConfig       config;
+    uint32_t          magic;
+    uint32_t          neverCurrent;
+    uint32_t          isCurrent;
+    uint32_t          deletePending;
+    EGLDisplay        dpy;
+    EGLConfig         config;
     struct PfSurface* draw;
     struct PfSurface* read;
     PfEglContextHdr*  next;
@@ -131,10 +151,8 @@ struct PfSurface {
     int                 ownWindow;
     void*               windowGc;
     void*               wsBitmap;
+    int                 wsDispMode;
     void*               nativePixmap;
-    int                 fbsLocked;
-#else
-    void*               hostWindowBuf;
 #endif
 
     PfSurface*          next;
@@ -145,6 +163,7 @@ struct PfEglState {
     int                 initialized;
     int                 ownCoeEnv;
     void*               createdCoeEnv;
+    int                 wsDisplayMode;
     EGLContext          currentCtx;
     PfSurface*          currentDraw;
     PfSurface*          currentRead;
@@ -174,6 +193,7 @@ static PfEglState* getEglState(bool createIfMissing = true)
         st = (PfEglState*)calloc(1, sizeof(PfEglState));
         if (st) {
             st->lastError = EGL_SUCCESS;
+            st->wsDisplayMode = SYM_DISP_ECOLOR64K;
             pf_symbian_set_egl_state(st, pfDestroyEglState);
         }
     }
@@ -214,76 +234,50 @@ static inline bool isValidSurface(EGLSurface surf)
     return s->magic == PF_SURF_MAGIC;
 }
 
-static bool allocDepthIfNeeded(PfSurface* s)
+static bool allocColorAndDepth(PfSurface* s, int32_t w, int32_t h)
 {
+    int32_t allocW = (w > 0) ? w : 1;
+    int32_t allocH = (h > 0) ? h : 1;
+    int32_t stride = (allocW + 3) & ~3;
+
+    if (!s->color.data || (int32_t)s->color.width != allocW || (int32_t)s->color.height != allocH) {
+        GGLubyte* newColor = (GGLubyte*)calloc((size_t)stride * (size_t)allocH, s->cfg->bytesPerPixel);
+        if (!newColor)
+            return false;
+        if (s->ownsColorMem && s->color.data)
+            free(s->color.data);
+        s->ownsColorMem     = 1;
+        s->stridePixels     = stride;
+        s->color.version    = sizeof(GGLSurface);
+        s->color.width      = (GGLuint)allocW;
+        s->color.height     = (GGLuint)allocH;
+        s->color.stride     = stride;
+        s->color.format     = s->cfg->gglFormat;
+        s->color.compressedFormat = 0;
+        s->color.data       = newColor;
+    }
+
     if (s->cfg->depthSize <= 0) {
         memset(&s->depth, 0, sizeof(GGLSurface));
         s->depth.version = sizeof(GGLSurface);
         return true;
     }
-    int32_t w = s->width > 0 ? s->width : 1;
-    int32_t h = s->height > 0 ? s->height : 1;
-    int32_t stride = (w + 1) & ~1;
-    if (s->depth.data && (int32_t)s->depth.width == w && (int32_t)s->depth.height == h)
-        return true;
 
-    free(s->depth.data);
-    s->depth.version = sizeof(GGLSurface);
-    s->depth.width   = (GGLuint)w;
-    s->depth.height  = (GGLuint)h;
-    s->depth.stride  = stride;
-    s->depth.format  = GGL_PIXEL_FORMAT_Z_16;
-    s->depth.compressedFormat = 0;
-    s->depth.data    = (GGLubyte*)malloc((size_t)stride * (size_t)h * 2u);
-    return s->depth.data != 0;
-}
-
-static bool connectSurface(PfSurface* s)
-{
-    if (!s) return false;
-#ifdef __SYMBIAN32__
-    void* bmp = (s->kind == PF_SURF_WINDOW) ? s->wsBitmap :
-                (s->kind == PF_SURF_PIXMAP) ? s->nativePixmap : 0;
-    if (bmp) {
-        SymTSize sz = { 0, 0 };
-        sym_CFbsBitmap_SizeInPixels(&sz, bmp);
-        if (sz.iWidth <= 0)  sz.iWidth = 1;
-        if (sz.iHeight <= 0) sz.iHeight = 1;
-        int dispMode = sym_CFbsBitmap_DisplayMode(bmp);
-        int byteStride = sym_CFbsBitmap_ScanLineLength(sz.iWidth, dispMode);
-        int bpp = s->cfg->bytesPerPixel;
-        if (!s->fbsLocked) {
-            sym_CFbsBitmap_LockHeap(bmp, 0);
-            s->fbsLocked = 1;
-        }
-        void* addr = sym_CFbsBitmap_DataAddress(bmp);
-        s->width        = sz.iWidth;
-        s->height       = sz.iHeight;
-        s->stridePixels = (byteStride > 0 && bpp > 0) ? (byteStride / bpp) : sz.iWidth;
-        s->color.version = sizeof(GGLSurface);
-        s->color.width   = (GGLuint)s->width;
-        s->color.height  = (GGLuint)s->height;
-        s->color.stride  = s->stridePixels;
-        s->color.format  = s->cfg->gglFormat;
-        s->color.compressedFormat = 0;
-        s->color.data    = (GGLubyte*)addr;
+    int32_t zStride = (allocW + 1) & ~1;
+    if (!s->depth.data || (int32_t)s->depth.width != allocW || (int32_t)s->depth.height != allocH) {
+        GGLubyte* newDepth = (GGLubyte*)malloc((size_t)zStride * (size_t)allocH * 2u);
+        if (!newDepth)
+            return false;
+        free(s->depth.data);
+        s->depth.version    = sizeof(GGLSurface);
+        s->depth.width      = (GGLuint)allocW;
+        s->depth.height     = (GGLuint)allocH;
+        s->depth.stride     = zStride;
+        s->depth.format     = GGL_PIXEL_FORMAT_Z_16;
+        s->depth.compressedFormat = 0;
+        s->depth.data       = newDepth;
     }
-#endif
-    return allocDepthIfNeeded(s);
-}
-
-static void disconnectSurface(PfSurface* s)
-{
-    if (!s) return;
-#ifdef __SYMBIAN32__
-    if (s->fbsLocked) {
-        void* bmp = (s->kind == PF_SURF_WINDOW) ? s->wsBitmap :
-                    (s->kind == PF_SURF_PIXMAP) ? s->nativePixmap : 0;
-        if (bmp)
-            sym_CFbsBitmap_UnlockHeap(bmp, 0);
-        s->fbsLocked = 0;
-    }
-#endif
+    return true;
 }
 
 static void bindDrawToGl(PfSurface* s, ogles_context_t* gl)
@@ -299,10 +293,213 @@ static void bindReadToGl(PfSurface* s, ogles_context_t* gl)
     gl->rasterizer.procs.readBuffer(gl, &s->color);
 }
 
+#ifdef __SYMBIAN32__
+/* Blit RAM GGLSurface -> Symbian CFbsBitmap / CWsBitmap inside a brief LockHeap/UnlockHeap.
+ * Supports EColor4K, EColor64K, EColor16M, EColor16MU, EColor16MA, EColor16MAP. */
+static bool pfBlitSurfaceToBitmap(const PfSurface* s, void* dstBmp, bool forceOpaqueAlpha)
+{
+    if (!s || !s->color.data || !dstBmp)
+        return false;
+
+    SymTSize dstSz = { 0, 0 };
+    sym_CFbsBitmap_SizeInPixels(&dstSz, dstBmp);
+    if (dstSz.iWidth <= 0 || dstSz.iHeight <= 0)
+        return false;
+
+    int dstMode = sym_CFbsBitmap_DisplayMode(dstBmp);
+    int dstByteStride = sym_CFbsBitmap_ScanLineLength(dstSz.iWidth, dstMode);
+    int copyW = (s->width < dstSz.iWidth) ? s->width : dstSz.iWidth;
+    int copyH = (s->height < dstSz.iHeight) ? s->height : dstSz.iHeight;
+    if (copyW <= 0 || copyH <= 0 || dstByteStride <= 0)
+        return false;
+
+    int srcBpp = s->cfg->bytesPerPixel;
+    int srcByteStride = s->stridePixels * srcBpp;
+    const uint8_t* srcBase = (const uint8_t*)s->color.data;
+    uint8_t srcFmt = s->cfg->gglFormat;
+
+    sym_CFbsBitmap_LockHeap(dstBmp, 0);
+    uint8_t* dstBase = (uint8_t*)sym_CFbsBitmap_DataAddress(dstBmp);
+
+    if (dstBase) {
+        if (srcFmt == GGL_PIXEL_FORMAT_RGB_565 && dstMode == SYM_DISP_ECOLOR64K) {
+            size_t rowBytes = (size_t)copyW * 2u;
+            for (int y = 0; y < copyH; ++y)
+                memcpy(dstBase + y * dstByteStride, srcBase + y * srcByteStride, rowBytes);
+        } else if (srcFmt == GGL_PIXEL_FORMAT_RGB_565 &&
+                   (dstMode == SYM_DISP_ECOLOR16MU || dstMode == SYM_DISP_ECOLOR16MA || dstMode == SYM_DISP_ECOLOR16MAP)) {
+            for (int y = 0; y < copyH; ++y) {
+                const uint16_t* sp = (const uint16_t*)(srcBase + y * srcByteStride);
+                uint32_t* dp = (uint32_t*)(dstBase + y * dstByteStride);
+                for (int x = 0; x < copyW; ++x) {
+                    uint32_t v = sp[x];
+                    uint32_t r = (v >> 11) & 0x1Fu; r = (r << 3) | (r >> 2);
+                    uint32_t g = (v >>  5) & 0x3Fu; g = (g << 2) | (g >> 4);
+                    uint32_t b =  v        & 0x1Fu; b = (b << 3) | (b >> 2);
+                    dp[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+                }
+            }
+        } else if ((srcFmt == GGL_PIXEL_FORMAT_RGBA_8888 || srcFmt == GGL_PIXEL_FORMAT_RGBX_8888) &&
+                   (dstMode == SYM_DISP_ECOLOR16MU || dstMode == SYM_DISP_ECOLOR16MA || dstMode == SYM_DISP_ECOLOR16MAP)) {
+            uint32_t alphaOr = (forceOpaqueAlpha || srcFmt == GGL_PIXEL_FORMAT_RGBX_8888 || dstMode == SYM_DISP_ECOLOR16MU)
+                               ? 0xFF000000u : 0u;
+            for (int y = 0; y < copyH; ++y) {
+                const uint32_t* sp = (const uint32_t*)(srcBase + y * srcByteStride);
+                uint32_t* dp = (uint32_t*)(dstBase + y * dstByteStride);
+                for (int x = 0; x < copyW; ++x) {
+                    uint32_t v = sp[x]; /* 0xAABBGGRR -> Symbian 0xAARRGGBB */
+                    dp[x] = alphaOr | (v & 0xFF00FF00u) | ((v & 0x000000FFu) << 16) | ((v >> 16) & 0x000000FFu);
+                }
+            }
+        } else if ((srcFmt == GGL_PIXEL_FORMAT_RGBA_8888 || srcFmt == GGL_PIXEL_FORMAT_RGBX_8888) &&
+                   dstMode == SYM_DISP_ECOLOR64K) {
+            for (int y = 0; y < copyH; ++y) {
+                const uint32_t* sp = (const uint32_t*)(srcBase + y * srcByteStride);
+                uint16_t* dp = (uint16_t*)(dstBase + y * dstByteStride);
+                for (int x = 0; x < copyW; ++x) {
+                    uint32_t v = sp[x]; /* 0xAABBGGRR */
+                    uint16_t r5 = (uint16_t)((v >>  3) & 0x1Fu);
+                    uint16_t g6 = (uint16_t)((v >> 10) & 0x3Fu);
+                    uint16_t b5 = (uint16_t)((v >> 19) & 0x1Fu);
+                    dp[x] = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+                }
+            }
+        } else if (srcFmt == GGL_PIXEL_FORMAT_RGB_565 && dstMode == SYM_DISP_ECOLOR16M) {
+            for (int y = 0; y < copyH; ++y) {
+                const uint16_t* sp = (const uint16_t*)(srcBase + y * srcByteStride);
+                uint8_t* dp = dstBase + y * dstByteStride;
+                for (int x = 0; x < copyW; ++x) {
+                    uint32_t v = sp[x];
+                    uint8_t r = (uint8_t)(((v >> 11) & 0x1Fu) * 255u / 31u);
+                    uint8_t g = (uint8_t)(((v >>  5) & 0x3Fu) * 255u / 63u);
+                    uint8_t b = (uint8_t)(( v        & 0x1Fu) * 255u / 31u);
+                    dp[x * 3 + 0] = b;
+                    dp[x * 3 + 1] = g;
+                    dp[x * 3 + 2] = r;
+                }
+            }
+        } else if ((srcFmt == GGL_PIXEL_FORMAT_RGBA_8888 || srcFmt == GGL_PIXEL_FORMAT_RGBX_8888) &&
+                   dstMode == SYM_DISP_ECOLOR16M) {
+            for (int y = 0; y < copyH; ++y) {
+                const uint32_t* sp = (const uint32_t*)(srcBase + y * srcByteStride);
+                uint8_t* dp = dstBase + y * dstByteStride;
+                for (int x = 0; x < copyW; ++x) {
+                    uint32_t v = sp[x];
+                    dp[x * 3 + 0] = (uint8_t)(v >> 16);
+                    dp[x * 3 + 1] = (uint8_t)(v >>  8);
+                    dp[x * 3 + 2] = (uint8_t)(v      );
+                }
+            }
+        } else if (srcFmt == GGL_PIXEL_FORMAT_RGBA_4444) {
+            for (int y = 0; y < copyH; ++y) {
+                const uint16_t* sp = (const uint16_t*)(srcBase + y * srcByteStride);
+                if (dstMode == SYM_DISP_ECOLOR4K) {
+                    uint16_t* dp = (uint16_t*)(dstBase + y * dstByteStride);
+                    for (int x = 0; x < copyW; ++x)
+                        dp[x] = (uint16_t)(sp[x] >> 4);
+                } else if (dstMode == SYM_DISP_ECOLOR64K) {
+                    uint16_t* dp = (uint16_t*)(dstBase + y * dstByteStride);
+                    for (int x = 0; x < copyW; ++x) {
+                        uint16_t v = sp[x];
+                        uint16_t r = (uint16_t)((v >> 12) & 0xFu);
+                        uint16_t g = (uint16_t)((v >>  8) & 0xFu);
+                        uint16_t b = (uint16_t)((v >>  4) & 0xFu);
+                        dp[x] = (uint16_t)((((r << 1) | (r >> 3)) << 11) |
+                                           (((g << 2) | (g >> 2)) <<  5) |
+                                            ((b << 1) | (b >> 3)));
+                    }
+                } else {
+                    uint32_t* dp = (uint32_t*)(dstBase + y * dstByteStride);
+                    for (int x = 0; x < copyW; ++x) {
+                        uint32_t v = sp[x];
+                        uint32_t r = ((v >> 12) & 0xFu) * 17u;
+                        uint32_t g = ((v >>  8) & 0xFu) * 17u;
+                        uint32_t b = ((v >>  4) & 0xFu) * 17u;
+                        dp[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+                    }
+                }
+            }
+        }
+    }
+
+    sym_CFbsBitmap_UnlockHeap(dstBmp, 0);
+    return dstBase != 0;
+}
+
+static bool syncWindowSurfaceSize(PfSurface* s, ogles_context_t* currentGl, PfEglState* st)
+{
+    if (!s || s->kind != PF_SURF_WINDOW || !s->nativeWindow)
+        return true;
+
+    SymTSize winSz = { 0, 0 };
+    sym_RWindowBase_Size(&winSz, s->nativeWindow);
+    if (winSz.iWidth <= 0 || winSz.iHeight <= 0)
+        return true;
+
+    if (winSz.iWidth == s->width && winSz.iHeight == s->height && s->color.data)
+        return true;
+
+    if (s->wsBitmap) {
+        SymTSize bmpSz = { 0, 0 };
+        sym_CFbsBitmap_SizeInPixels(&bmpSz, s->wsBitmap);
+        if (bmpSz.iWidth != winSz.iWidth || bmpSz.iHeight != winSz.iHeight)
+            (void)sym_CFbsBitmap_Resize(s->wsBitmap, &winSz);
+    }
+
+    int32_t oldW = s->width;
+    int32_t oldH = s->height;
+    s->width  = winSz.iWidth;
+    s->height = winSz.iHeight;
+    if (!allocColorAndDepth(s, winSz.iWidth, winSz.iHeight))
+        return false;
+
+    if (currentGl && st) {
+        if (st->currentDraw == s) {
+            bindDrawToGl(s, currentGl);
+            if (currentGl->viewport.w == oldW && currentGl->viewport.h == oldH) {
+                ogles_viewport(currentGl, 0, 0, winSz.iWidth, winSz.iHeight);
+            }
+            if ((int32_t)currentGl->rasterizer.state.scissor.right == oldW &&
+                (int32_t)currentGl->rasterizer.state.scissor.bottom == oldH) {
+                ogles_scissor(currentGl, 0, 0, winSz.iWidth, winSz.iHeight);
+            }
+        }
+        if (st->currentRead == s) bindReadToGl(s, currentGl);
+    }
+    return true;
+}
+#endif /* __SYMBIAN32__ */
+
+/* Called before glViewport / glScissor / glClear so S60 apps that create an
+ * RWindow at (0,0) in ConstructL() and resize in SizeChanged() have the exact
+ * updated color/depth buffer dimensions before Y-inversion is computed. */
+extern "C" void pf_egl_sync_window_surface(void)
+{
+#ifdef __SYMBIAN32__
+    PfEglState* st = getEglState(false);
+    if (!st || !st->currentCtx || !st->currentDraw)
+        return;
+    if (st->currentDraw->kind == PF_SURF_WINDOW) {
+        (void)syncWindowSurfaceSize(st->currentDraw, (ogles_context_t*)st->currentCtx, st);
+    }
+#endif
+}
+
+static void flushPixmapIfNeeded(PfSurface* s)
+{
+#ifdef __SYMBIAN32__
+    if (s && s->kind == PF_SURF_PIXMAP && s->nativePixmap) {
+        (void)pfBlitSurfaceToBitmap(s, s->nativePixmap, false);
+    }
+#else
+    (void)s;
+#endif
+}
+
 static void freeSurfaceImmediate(PfSurface* s)
 {
     if (!s) return;
-    disconnectSurface(s);
+    flushPixmapIfNeeded(s);
     if (s->boundTexObj) {
         s->boundTexObj->decStrong(s);
         s->boundTexObj = 0;
@@ -455,8 +652,23 @@ EGLAPI EGLBoolean EGLAPIENTRY eglInitialize(EGLDisplay dpy, EGLint *major, EGLin
                 st->createdCoeEnv = env;
             }
         }
+        void* coe = sym_CCoeEnv_Static();
+        if (coe && SYM_CCOEENV_SCREENDEV(coe) != 0) {
+            int numColors = 0, numGrays = 0;
+            int mode = sym_RWsSession_GetDefModeMaxNumColors(
+                SYM_CCOEENV_WSSESSION(coe), &numColors, &numGrays);
+            /* Force opaque EColor16MU when Window Server reports EColor16MA/MAP
+             * so CWindowGc::BitBlt never treats GL alpha=0 as transparent! */
+            if (mode == SYM_DISP_ECOLOR16MA || mode == SYM_DISP_ECOLOR16MAP)
+                mode = SYM_DISP_ECOLOR16MU;
+            if (mode == SYM_DISP_ECOLOR64K || mode == SYM_DISP_ECOLOR16MU ||
+                mode == SYM_DISP_ECOLOR16M || mode == SYM_DISP_ECOLOR4K) {
+                st->wsDisplayMode = mode;
+            }
+        }
     }
 #endif
+
     st->initialized = 1;
     if (major) *major = 1;
     if (minor) *minor = 1;
@@ -469,31 +681,54 @@ EGLAPI EGLBoolean EGLAPIENTRY eglTerminate(EGLDisplay dpy)
         return pfSetError(EGL_BAD_DISPLAY, EGL_FALSE);
 
     PfEglState* st = getEglState(false);
-    if (!st)
-        return EGL_TRUE;
+    if (!st || !st->initialized)
+        return pfSetError(EGL_SUCCESS, EGL_TRUE);
+
+    (void)eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+
+    while (st->contexts) {
+        PfEglContextHdr* hdr = st->contexts;
+        st->contexts = hdr->next;
+        ogles_context_t* gl = (ogles_context_t*)(((uintptr_t)hdr + sizeof(PfEglContextHdr) + 31u) & ~(uintptr_t)31u);
+        hdr->magic = 0;
+        ogles_uninit(gl);
+    }
+
+    while (st->surfaces) {
+        PfSurface* s = st->surfaces;
+        st->surfaces = s->next;
+        freeSurfaceImmediate(s);
+    }
 
 #ifdef __SYMBIAN32__
-    pf_symbian_set_egl_state(0, 0);
-#else
-    gHostEglState = 0;
+    if (st->ownCoeEnv && st->createdCoeEnv) {
+        sym_CCoeEnv_DestroyEnvironment(st->createdCoeEnv);
+        st->createdCoeEnv = 0;
+        st->ownCoeEnv = 0;
+    }
 #endif
-    pfDestroyEglState(st);
-    return EGL_TRUE;
+
+    st->initialized = 0;
+    return pfSetError(EGL_SUCCESS, EGL_TRUE);
 }
+
+static const char kEglVendor[]     = "klaxons";
+static const char kEglVersion[]    = "1.1 Android PixelFlinger";
+static const char kEglExtensions[] = "";
 
 EGLAPI const char* EGLAPIENTRY eglQueryString(EGLDisplay dpy, EGLint name)
 {
     if (dpy != PF_DEFAULT_DISPLAY)
-        return pfSetError<const char*>(EGL_BAD_DISPLAY, 0);
+        return pfSetError(EGL_BAD_DISPLAY, (const char*)0);
     PfEglState* st = getEglState(false);
     if (!st || !st->initialized)
-        return pfSetError<const char*>(EGL_NOT_INITIALIZED, 0);
+        return pfSetError(EGL_NOT_INITIALIZED, (const char*)0);
 
     switch (name) {
-    case EGL_VENDOR:      return pfSetError<const char*>(EGL_SUCCESS, "klaxons");
-    case EGL_VERSION:     return pfSetError<const char*>(EGL_SUCCESS, "1.1");
-    case EGL_EXTENSIONS:  return pfSetError<const char*>(EGL_SUCCESS, "");
-    default:              return pfSetError<const char*>(EGL_BAD_PARAMETER, 0);
+    case EGL_VENDOR:     return pfSetError(EGL_SUCCESS, kEglVendor);
+    case EGL_VERSION:    return pfSetError(EGL_SUCCESS, kEglVersion);
+    case EGL_EXTENSIONS: return pfSetError(EGL_SUCCESS, kEglExtensions);
+    default:             return pfSetError(EGL_BAD_PARAMETER, (const char*)0);
     }
 }
 
@@ -512,26 +747,25 @@ EGLAPI EGLBoolean EGLAPIENTRY eglGetConfigs(EGLDisplay dpy, EGLConfig *configs,
         *num_config = kNumConfigs;
         return pfSetError(EGL_SUCCESS, EGL_TRUE);
     }
-    int n = (config_size < kNumConfigs) ? config_size : kNumConfigs;
+    EGLint n = (config_size < kNumConfigs) ? config_size : kNumConfigs;
     if (n < 0) n = 0;
-    for (int i = 0; i < n; i++)
+    for (EGLint i = 0; i < n; i++)
         configs[i] = (EGLConfig)(intptr_t)kConfigs[i].configId;
     *num_config = n;
     return pfSetError(EGL_SUCCESS, EGL_TRUE);
 }
 
-static bool getConfigAttribInternal(const PfConfigDesc* c, EGLint attribute, EGLint* value)
+static bool getConfigAttribInternal(const PfConfigDesc* c, EGLint attr, EGLint* value)
 {
-    switch (attribute) {
-    case EGL_CONFIG_ID:             *value = c->configId; return true;
+    switch (attr) {
     case EGL_BUFFER_SIZE:           *value = c->bufferSize; return true;
     case EGL_RED_SIZE:              *value = c->redSize; return true;
     case EGL_GREEN_SIZE:            *value = c->greenSize; return true;
     case EGL_BLUE_SIZE:             *value = c->blueSize; return true;
     case EGL_ALPHA_SIZE:            *value = c->alphaSize; return true;
-    case EGL_DEPTH_SIZE:            *value = c->depthSize; return true;
-    case EGL_STENCIL_SIZE:          *value = 0; return true;
     case EGL_CONFIG_CAVEAT:         *value = EGL_NONE; return true;
+    case EGL_CONFIG_ID:             *value = c->configId; return true;
+    case EGL_DEPTH_SIZE:            *value = c->depthSize; return true;
     case EGL_LEVEL:                 *value = 0; return true;
     case EGL_MAX_PBUFFER_WIDTH:     *value = 2048; return true;
     case EGL_MAX_PBUFFER_HEIGHT:    *value = 2048; return true;
@@ -541,15 +775,20 @@ static bool getConfigAttribInternal(const PfConfigDesc* c, EGLint attribute, EGL
     case EGL_NATIVE_VISUAL_TYPE:    *value = c->symDisplayMode; return true;
     case EGL_SAMPLE_BUFFERS:        *value = 0; return true;
     case EGL_SAMPLES:               *value = 0; return true;
+    case EGL_STENCIL_SIZE:          *value = 0; return true;
     case EGL_SURFACE_TYPE:          *value = EGL_WINDOW_BIT | EGL_PIXMAP_BIT | EGL_PBUFFER_BIT; return true;
     case EGL_TRANSPARENT_TYPE:      *value = EGL_NONE; return true;
     case EGL_TRANSPARENT_RED_VALUE:
     case EGL_TRANSPARENT_GREEN_VALUE:
     case EGL_TRANSPARENT_BLUE_VALUE:*value = 0; return true;
-    case EGL_BIND_TO_TEXTURE_RGB:   *value = (c->alphaSize == 0) ? EGL_TRUE : EGL_FALSE; return true;
+    case EGL_BIND_TO_TEXTURE_RGB:   *value = EGL_TRUE; return true;
     case EGL_BIND_TO_TEXTURE_RGBA:  *value = (c->alphaSize > 0) ? EGL_TRUE : EGL_FALSE; return true;
     case EGL_MIN_SWAP_INTERVAL:     *value = 0; return true;
     case EGL_MAX_SWAP_INTERVAL:     *value = 1; return true;
+    case EGL_RENDERABLE_TYPE:       *value = 1; /* EGL_OPENGL_ES_BIT */ return true;
+    case EGL_COLOR_BUFFER_TYPE:     *value = 0x308E; /* EGL_RGB_BUFFER */ return true;
+    case EGL_LUMINANCE_SIZE:        *value = 0; return true;
+    case EGL_ALPHA_MASK_SIZE:       *value = 0; return true;
     default:                        return false;
     }
 }
@@ -570,6 +809,37 @@ EGLAPI EGLBoolean EGLAPIENTRY eglGetConfigAttrib(EGLDisplay dpy, EGLConfig confi
     if (!getConfigAttribInternal(c, attribute, value))
         return pfSetError(EGL_BAD_ATTRIBUTE, EGL_FALSE);
     return pfSetError(EGL_SUCCESS, EGL_TRUE);
+}
+
+static int matchConfigsHelper(EGLint reqId, EGLint reqBuf, EGLint reqR, EGLint reqG,
+                              EGLint reqB, EGLint reqA, EGLint reqD, EGLint reqS,
+                              EGLint reqSurf, EGLint reqBindRgb, EGLint reqBindRgba,
+                              EGLConfig* configs, EGLint config_size)
+{
+    int matched = 0;
+    for (int i = 0; i < kNumConfigs; i++) {
+        const PfConfigDesc& c = kConfigs[i];
+        if (reqId != EGL_DONT_CARE) {
+            if (c.configId != reqId) continue;
+        } else {
+            if (c.bufferSize < reqBuf) continue;
+            if (c.redSize    < reqR)   continue;
+            if (c.greenSize  < reqG)   continue;
+            if (c.blueSize   < reqB)   continue;
+            if (c.alphaSize  < reqA)   continue;
+            if (c.depthSize  < reqD)   continue;
+            if (0            < reqS)   continue;
+            EGLint stMask = EGL_WINDOW_BIT | EGL_PIXMAP_BIT | EGL_PBUFFER_BIT;
+            if ((stMask & reqSurf) != reqSurf) continue;
+            if (reqBindRgba == EGL_TRUE && c.alphaSize == 0) continue;
+            (void)reqBindRgb;
+        }
+        if (configs && matched < config_size)
+            configs[matched] = (EGLConfig)(intptr_t)c.configId;
+        if (!configs || matched < config_size)
+            ++matched;
+    }
+    return matched;
 }
 
 EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
@@ -607,12 +877,21 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
             case EGL_BIND_TO_TEXTURE_RGBA:reqBindRgba = v; break;
             case EGL_CONFIG_CAVEAT:
             case EGL_NATIVE_RENDERABLE:
+            case EGL_NATIVE_VISUAL_ID:
+            case EGL_NATIVE_VISUAL_TYPE:
             case EGL_LEVEL:
             case EGL_SAMPLE_BUFFERS:
             case EGL_SAMPLES:
             case EGL_TRANSPARENT_TYPE:
+            case EGL_TRANSPARENT_RED_VALUE:
+            case EGL_TRANSPARENT_GREEN_VALUE:
+            case EGL_TRANSPARENT_BLUE_VALUE:
             case EGL_MAX_SWAP_INTERVAL:
             case EGL_MIN_SWAP_INTERVAL:
+            case EGL_RENDERABLE_TYPE:
+            case EGL_COLOR_BUFFER_TYPE:
+            case EGL_LUMINANCE_SIZE:
+            case EGL_ALPHA_MASK_SIZE:
                 break;
             default:
                 return pfSetError(EGL_BAD_ATTRIBUTE, EGL_FALSE);
@@ -620,28 +899,13 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
         }
     }
 
-    int matched = 0;
-    for (int i = 0; i < kNumConfigs; i++) {
-        const PfConfigDesc& c = kConfigs[i];
-        if (reqId != EGL_DONT_CARE) {
-            if (c.configId != reqId) continue;
-        } else {
-            if (c.bufferSize < reqBuf) continue;
-            if (c.redSize    < reqR)   continue;
-            if (c.greenSize  < reqG)   continue;
-            if (c.blueSize   < reqB)   continue;
-            if (c.alphaSize  < reqA)   continue;
-            if (c.depthSize  < reqD)   continue;
-            if (0            < reqS)   continue;
-            EGLint stMask = EGL_WINDOW_BIT | EGL_PIXMAP_BIT | EGL_PBUFFER_BIT;
-            if ((stMask & reqSurf) != reqSurf) continue;
-            if (reqBindRgb == EGL_TRUE && c.alphaSize != 0) continue;
-            if (reqBindRgba == EGL_TRUE && c.alphaSize == 0) continue;
-        }
-        if (configs && matched < config_size)
-            configs[matched] = (EGLConfig)(intptr_t)c.configId;
-        if (!configs || matched < config_size)
-            ++matched;
+    int matched = matchConfigsHelper(reqId, reqBuf, reqR, reqG, reqB, reqA, reqD, reqS,
+                                     reqSurf, reqBindRgb, reqBindRgba, configs, config_size);
+    /* Fallback for Symbian games requesting stencil/24-bit depth so they still launch */
+    if (matched == 0 && (reqS > 0 || reqD > 16)) {
+        matched = matchConfigsHelper(reqId, reqBuf, reqR, reqG, reqB, reqA,
+                                     (reqD > 16) ? 16 : reqD, 0,
+                                     reqSurf, reqBindRgb, reqBindRgba, configs, config_size);
     }
 
     *num_config = matched;
@@ -708,11 +972,28 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreateWindowSurface(EGLDisplay dpy, EGLConfig c
 
     SymTSize sz = { 0, 0 };
     sym_RWindowBase_Size(&sz, s->nativeWindow);
-    if (sz.iWidth <= 0)  sz.iWidth = 240;
-    if (sz.iHeight <= 0) sz.iHeight = 320;
+    int initW = (sz.iWidth  > 0) ? sz.iWidth  : 240;
+    int initH = (sz.iHeight > 0) ? sz.iHeight : 320;
+    SymTSize createSz = { initW, initH };
 
-    if (!gc || sym_CWindowGc_Construct(gc) != 0 ||
-        !bmp || sym_CWsBitmap_Create(bmp, &sz, cfg->symDisplayMode) != 0) {
+    /* Create CWsBitmap in Window Server's native opaque display mode (just like
+     * Gerbera eglSymbian.c), falling back to EColor64K / EColor16MU if needed. */
+    int wsMode = st->wsDisplayMode;
+    bool gcOk  = (gc != 0 && sym_CWindowGc_Construct(gc) == 0);
+    bool bmpOk = false;
+    if (gcOk && bmp) {
+        if (sym_CWsBitmap_Create(bmp, &createSz, wsMode) == 0) {
+            bmpOk = true;
+        } else if (sym_CWsBitmap_Create(bmp, &createSz, SYM_DISP_ECOLOR64K) == 0) {
+            wsMode = SYM_DISP_ECOLOR64K;
+            bmpOk = true;
+        } else if (sym_CWsBitmap_Create(bmp, &createSz, SYM_DISP_ECOLOR16MU) == 0) {
+            wsMode = SYM_DISP_ECOLOR16MU;
+            bmpOk = true;
+        }
+    }
+
+    if (!gcOk || !bmpOk) {
         if (bmp) { sym_CWsBitmap_Reset(bmp); sym_CBase_Delete(bmp); }
         if (gc)  { sym_CBase_Delete(gc); }
         if (s->ownWindow && s->nativeWindow) {
@@ -723,12 +1004,17 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreateWindowSurface(EGLDisplay dpy, EGLConfig c
         return pfSetError(EGL_BAD_ALLOC, EGL_NO_SURFACE);
     }
 
-    s->windowGc = gc;
-    s->wsBitmap = bmp;
-    s->width    = sz.iWidth;
-    s->height   = sz.iHeight;
+    s->windowGc   = gc;
+    s->wsBitmap   = bmp;
+    s->wsDispMode = wsMode;
+    s->width      = initW;
+    s->height     = initH;
+
+    if (!allocColorAndDepth(s, initW, initH)) {
+        freeSurfaceImmediate(s);
+        return pfSetError(EGL_BAD_ALLOC, EGL_NO_SURFACE);
+    }
 #else
-    /* Host headless window simulation: win may optionally point to int[2] {w,h} */
     int w = 240, h = 320;
     if (win) {
         const int* dims = (const int*)win;
@@ -737,26 +1023,13 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreateWindowSurface(EGLDisplay dpy, EGLConfig c
             h = dims[1];
         }
     }
-    s->width        = w;
-    s->height       = h;
-    s->stridePixels = (w + 3) & ~3;
-    s->ownsColorMem = 1;
-    s->color.version = sizeof(GGLSurface);
-    s->color.width   = (GGLuint)w;
-    s->color.height  = (GGLuint)h;
-    s->color.stride  = s->stridePixels;
-    s->color.format  = cfg->gglFormat;
-    s->color.data    = (GGLubyte*)calloc((size_t)s->stridePixels * (size_t)h, cfg->bytesPerPixel);
-    if (!s->color.data) {
-        free(s);
-        return pfSetError(EGL_BAD_ALLOC, EGL_NO_SURFACE);
-    }
-#endif
-
-    if (!allocDepthIfNeeded(s)) {
+    s->width  = w;
+    s->height = h;
+    if (!allocColorAndDepth(s, w, h)) {
         freeSurfaceImmediate(s);
         return pfSetError(EGL_BAD_ALLOC, EGL_NO_SURFACE);
     }
+#endif
 
     s->next = st->surfaces;
     st->surfaces = s;
@@ -806,34 +1079,22 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig 
         if (w > 2048) w = 2048;
         if (h > 2048) h = 2048;
     }
-    int32_t allocW = w > 0 ? w : 1;
-    int32_t allocH = h > 0 ? h : 1;
-    int32_t stride = (allocW + 3) & ~3;
 
     PfSurface* s = (PfSurface*)calloc(1, sizeof(PfSurface));
     if (!s)
         return pfSetError(EGL_BAD_ALLOC, EGL_NO_SURFACE);
 
-    s->magic        = PF_SURF_MAGIC;
-    s->kind         = PF_SURF_PBUFFER;
-    s->dpy          = dpy;
-    s->cfg          = cfg;
-    s->width        = w;
-    s->height       = h;
-    s->stridePixels = stride;
-    s->texFormat    = texFmt;
-    s->texTarget    = texTgt;
-    s->mipmapTex    = mipTex;
-    s->ownsColorMem = 1;
+    s->magic     = PF_SURF_MAGIC;
+    s->kind      = PF_SURF_PBUFFER;
+    s->dpy       = dpy;
+    s->cfg       = cfg;
+    s->width     = w;
+    s->height    = h;
+    s->texFormat = texFmt;
+    s->texTarget = texTgt;
+    s->mipmapTex = mipTex;
 
-    s->color.version = sizeof(GGLSurface);
-    s->color.width   = (GGLuint)allocW;
-    s->color.height  = (GGLuint)allocH;
-    s->color.stride  = stride;
-    s->color.format  = cfg->gglFormat;
-    s->color.data    = (GGLubyte*)calloc((size_t)stride * (size_t)allocH, cfg->bytesPerPixel);
-
-    if (!s->color.data || !allocDepthIfNeeded(s)) {
+    if (!allocColorAndDepth(s, w, h)) {
         freeSurfaceImmediate(s);
         return pfSetError(EGL_BAD_ALLOC, EGL_NO_SURFACE);
     }
@@ -879,7 +1140,7 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePixmapSurface(EGLDisplay dpy, EGLConfig c
     s->texFormat    = EGL_NO_TEXTURE;
     s->texTarget    = EGL_NO_TEXTURE;
 
-    if (!allocDepthIfNeeded(s)) {
+    if (!allocColorAndDepth(s, sz.iWidth, sz.iHeight)) {
         freeSurfaceImmediate(s);
         return pfSetError(EGL_BAD_ALLOC, EGL_NO_SURFACE);
     }
@@ -925,6 +1186,11 @@ EGLAPI EGLBoolean EGLAPIENTRY eglQuerySurface(EGLDisplay dpy, EGLSurface surface
         return pfSetError(EGL_BAD_PARAMETER, EGL_FALSE);
 
     PfSurface* s = (PfSurface*)surface;
+#ifdef __SYMBIAN32__
+    if (s->kind == PF_SURF_WINDOW && (attribute == EGL_WIDTH || attribute == EGL_HEIGHT)) {
+        (void)syncWindowSurfaceSize(s, (ogles_context_t*)st->currentCtx, st);
+    }
+#endif
     switch (attribute) {
     case EGL_CONFIG_ID:         *value = s->cfg->configId; break;
     case EGL_WIDTH:             *value = s->width; break;
@@ -971,8 +1237,14 @@ EGLAPI EGLContext EGLAPIENTRY eglCreateContext(EGLDisplay dpy, EGLConfig config,
         return pfSetError(EGL_NOT_INITIALIZED, EGL_NO_CONTEXT);
     if (!findConfig(config))
         return pfSetError(EGL_BAD_CONFIG, EGL_NO_CONTEXT);
-    if (attrib_list && attrib_list[0] != EGL_NONE)
-        return pfSetError(EGL_BAD_ATTRIBUTE, EGL_NO_CONTEXT);
+    if (attrib_list) {
+        for (int i = 0; attrib_list[i] != EGL_NONE; i += 2) {
+            /* Accept EGL_CONTEXT_CLIENT_VERSION == 1 if passed by Symbian^3 apps */
+            if (attrib_list[i] == 0x3098 && attrib_list[i + 1] == 1)
+                continue;
+            return pfSetError(EGL_BAD_ATTRIBUTE, EGL_NO_CONTEXT);
+        }
+    }
 
     ogles_context_t* gl = ogles_init(sizeof(PfEglContextHdr));
     if (!gl)
@@ -1042,14 +1314,14 @@ EGLAPI EGLBoolean EGLAPIENTRY eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
         PfEglContextHdr* oldHdr = getCtxHdr(st->currentCtx);
         if (oldHdr) {
             if (oldHdr->draw && oldHdr->draw != d && oldHdr->draw != r) {
-                disconnectSurface(oldHdr->draw);
+                flushPixmapIfNeeded(oldHdr->draw);
                 oldHdr->draw->boundCtx = EGL_NO_CONTEXT;
                 if (oldHdr->draw->deletePending)
                     unlinkAndFreeSurface(st, oldHdr->draw);
             }
             if (oldHdr->read && oldHdr->read != oldHdr->draw &&
                 oldHdr->read != d && oldHdr->read != r) {
-                disconnectSurface(oldHdr->read);
+                flushPixmapIfNeeded(oldHdr->read);
                 oldHdr->read->boundCtx = EGL_NO_CONTEXT;
                 if (oldHdr->read->deletePending)
                     unlinkAndFreeSurface(st, oldHdr->read);
@@ -1065,14 +1337,14 @@ EGLAPI EGLBoolean EGLAPIENTRY eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
         if (oldHdr) {
             if (oldHdr->draw) {
                 PfSurface* oldD = oldHdr->draw;
-                disconnectSurface(oldD);
+                flushPixmapIfNeeded(oldD);
                 oldD->boundCtx = EGL_NO_CONTEXT;
                 if (oldHdr->read == oldD) oldHdr->read = 0;
                 if (oldD->deletePending) unlinkAndFreeSurface(st, oldD);
             }
             if (oldHdr->read) {
                 PfSurface* oldR = oldHdr->read;
-                disconnectSurface(oldR);
+                flushPixmapIfNeeded(oldR);
                 oldR->boundCtx = EGL_NO_CONTEXT;
                 if (oldR->deletePending) unlinkAndFreeSurface(st, oldR);
             }
@@ -1099,23 +1371,25 @@ EGLAPI EGLBoolean EGLAPIENTRY eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
 
     /* Detach old surfaces if switching surfaces on the SAME context */
     if (newHdr->draw && newHdr->draw != d && newHdr->draw != r) {
-        disconnectSurface(newHdr->draw);
+        flushPixmapIfNeeded(newHdr->draw);
         newHdr->draw->boundCtx = EGL_NO_CONTEXT;
         if (newHdr->draw->deletePending)
             unlinkAndFreeSurface(st, newHdr->draw);
     }
     if (newHdr->read && newHdr->read != newHdr->draw &&
         newHdr->read != d && newHdr->read != r) {
-        disconnectSurface(newHdr->read);
+        flushPixmapIfNeeded(newHdr->read);
         newHdr->read->boundCtx = EGL_NO_CONTEXT;
         if (newHdr->read->deletePending)
             unlinkAndFreeSurface(st, newHdr->read);
     }
 
-    if (!connectSurface(d))
-        return pfSetError(EGL_BAD_ALLOC, EGL_FALSE);
-    if (r != d && !connectSurface(r))
-        return pfSetError(EGL_BAD_ALLOC, EGL_FALSE);
+#ifdef __SYMBIAN32__
+    if (d->kind == PF_SURF_WINDOW)
+        (void)syncWindowSurfaceSize(d, 0, 0);
+    if (r != d && r->kind == PF_SURF_WINDOW)
+        (void)syncWindowSurfaceSize(r, 0, 0);
+#endif
 
     ogles_context_t* gl = (ogles_context_t*)ctx;
     setGlThreadSpecific(gl);
@@ -1129,16 +1403,18 @@ EGLAPI EGLBoolean EGLAPIENTRY eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
     st->currentDraw = d;
     st->currentRead = r;
 
-    /* CRITICAL: bindDrawToGl BEFORE initial ogles_viewport/ogles_scissor so
+    /* Bind buffers BEFORE initial ogles_viewport/ogles_scissor so
      * gl->rasterizer.state.buffers.color.height is populated for Y-flip! */
     bindDrawToGl(d, gl);
     bindReadToGl(r, gl);
 
     if (newHdr->neverCurrent) {
         newHdr->neverCurrent = 0;
+        int32_t vw = d->width > 0 ? d->width : 1;
+        int32_t vh = d->height > 0 ? d->height : 1;
         ogles_surfaceport(gl, 0, 0);
-        ogles_viewport(gl, 0, 0, d->width, d->height);
-        ogles_scissor(gl, 0, 0, d->width, d->height);
+        ogles_viewport(gl, 0, 0, vw, vh);
+        ogles_scissor(gl, 0, 0, vw, vh);
     }
 
     return pfSetError(EGL_SUCCESS, EGL_TRUE);
@@ -1191,6 +1467,9 @@ EGLAPI EGLBoolean EGLAPIENTRY eglQueryContext(EGLDisplay dpy, EGLContext ctx,
 EGLAPI EGLBoolean EGLAPIENTRY eglWaitGL(void)
 {
     glFinish();
+    PfEglState* st = getEglState(false);
+    if (st && st->currentDraw)
+        flushPixmapIfNeeded(st->currentDraw);
     return EGL_TRUE;
 }
 
@@ -1217,11 +1496,8 @@ EGLAPI EGLBoolean EGLAPIENTRY eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
 
 #ifdef __SYMBIAN32__
     if (s->nativeWindow && s->windowGc && s->wsBitmap) {
-        /* Unlock FBS heap before Window Server BitBlt */
-        if (s->fbsLocked) {
-            sym_CFbsBitmap_UnlockHeap(s->wsBitmap, 0);
-            s->fbsLocked = 0;
-        }
+        /* Copy/convert RAM framebuffer into CWsBitmap inside brief LockHeap/UnlockHeap */
+        (void)pfBlitSurfaceToBitmap(s, s->wsBitmap, true);
 
         SymTRect drawRect;
         sym_RDrawableWindow_GetDrawRect(&drawRect, s->nativeWindow);
@@ -1240,23 +1516,8 @@ EGLAPI EGLBoolean EGLAPIENTRY eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
             sym_RWindow_EndRedraw(s->nativeWindow);
         sym_CWindowGc_Deactivate(s->windowGc);
 
-        /* Handle dynamic S60 screen rotation / window resize */
-        SymTSize winSz = { 0, 0 };
-        sym_RWindowBase_Size(&winSz, s->nativeWindow);
-        if (winSz.iWidth > 0 && winSz.iHeight > 0 &&
-            (winSz.iWidth != s->width || winSz.iHeight != s->height)) {
-            (void)sym_CFbsBitmap_Resize(s->wsBitmap, &winSz);
-        }
-
-        /* Re-lock FBS heap & refresh data pointer if surface is current */
-        if (s->boundCtx != EGL_NO_CONTEXT) {
-            (void)connectSurface(s);
-            if (s->boundCtx == st->currentCtx) {
-                ogles_context_t* gl = (ogles_context_t*)st->currentCtx;
-                if (st->currentDraw == s) bindDrawToGl(s, gl);
-                if (st->currentRead == s) bindReadToGl(s, gl);
-            }
-        }
+        /* Sync window size for next frame if S60 rotated/resized */
+        (void)syncWindowSurfaceSize(s, (ogles_context_t*)st->currentCtx, st);
     }
 #endif
     return pfSetError(EGL_SUCCESS, EGL_TRUE);
@@ -1275,73 +1536,12 @@ EGLAPI EGLBoolean EGLAPIENTRY eglCopyBuffers(EGLDisplay dpy, EGLSurface surface,
     if (!target)
         return pfSetError(EGL_BAD_NATIVE_PIXMAP, EGL_FALSE);
 
-#ifdef __SYMBIAN32__
     PfSurface* s = (PfSurface*)surface;
-    bool tempLocked = false;
-    if (!s->fbsLocked && (s->kind == PF_SURF_WINDOW || s->kind == PF_SURF_PIXMAP)) {
-        (void)connectSurface(s);
-        tempLocked = true;
-    }
-
-    SymTSize dstSz = { 0, 0 };
-    sym_CFbsBitmap_SizeInPixels(&dstSz, target);
-    int dstMode = sym_CFbsBitmap_DisplayMode(target);
-    int dstByteStride = sym_CFbsBitmap_ScanLineLength(dstSz.iWidth, dstMode);
-
-    if (dstSz.iWidth <= 0 || dstSz.iHeight <= 0 || !s->color.data) {
-        if (tempLocked) disconnectSurface(s);
+#ifdef __SYMBIAN32__
+    if (!pfBlitSurfaceToBitmap(s, target, false))
         return pfSetError(EGL_BAD_NATIVE_PIXMAP, EGL_FALSE);
-    }
-
-    sym_CFbsBitmap_LockHeap(target, 0);
-    uint8_t* dstBase = (uint8_t*)sym_CFbsBitmap_DataAddress(target);
-    int copyW = (s->width < dstSz.iWidth) ? s->width : dstSz.iWidth;
-    int copyH = (s->height < dstSz.iHeight) ? s->height : dstSz.iHeight;
-
-    if (dstBase && copyW > 0 && copyH > 0) {
-        int srcBpp = s->cfg->bytesPerPixel;
-        int srcByteStride = s->stridePixels * srcBpp;
-        const uint8_t* srcBase = (const uint8_t*)s->color.data;
-
-        if (dstMode == s->cfg->symDisplayMode ||
-            (srcBpp == 4 && (dstMode == SYM_DISP_ECOLOR16MU || dstMode == SYM_DISP_ECOLOR16MA))) {
-            size_t rowBytes = (size_t)copyW * (size_t)srcBpp;
-            for (int y = 0; y < copyH; y++)
-                memcpy(dstBase + y * dstByteStride, srcBase + y * srcByteStride, rowBytes);
-        } else if (s->cfg->gglFormat == GGL_PIXEL_FORMAT_RGB_565 &&
-                   (dstMode == SYM_DISP_ECOLOR16MU || dstMode == SYM_DISP_ECOLOR16MA)) {
-            for (int y = 0; y < copyH; y++) {
-                const uint16_t* sp = (const uint16_t*)(srcBase + y * srcByteStride);
-                uint32_t* dp = (uint32_t*)(dstBase + y * dstByteStride);
-                for (int x = 0; x < copyW; x++) {
-                    uint32_t v = sp[x];
-                    uint32_t r = ((v >> 11) & 0x1Fu); r = (r << 3) | (r >> 2);
-                    uint32_t g = ((v >>  5) & 0x3Fu); g = (g << 2) | (g >> 4);
-                    uint32_t b = ( v        & 0x1Fu); b = (b << 3) | (b >> 2);
-                    dp[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
-                }
-            }
-        } else if (s->cfg->gglFormat == GGL_PIXEL_FORMAT_BGRA_8888 &&
-                   dstMode == SYM_DISP_ECOLOR64K) {
-            for (int y = 0; y < copyH; y++) {
-                const uint32_t* sp = (const uint32_t*)(srcBase + y * srcByteStride);
-                uint16_t* dp = (uint16_t*)(dstBase + y * dstByteStride);
-                for (int x = 0; x < copyW; x++) {
-                    uint32_t v = sp[x];
-                    uint16_t r = (uint16_t)((v >> 19) & 0x1Fu);
-                    uint16_t g = (uint16_t)((v >> 10) & 0x3Fu);
-                    uint16_t b = (uint16_t)((v >>  3) & 0x1Fu);
-                    dp[x] = (uint16_t)((r << 11) | (g << 5) | b);
-                }
-            }
-        }
-    }
-
-    sym_CFbsBitmap_UnlockHeap(target, 0);
-    if (tempLocked) disconnectSurface(s);
     return pfSetError(EGL_SUCCESS, EGL_TRUE);
 #else
-    PfSurface* s = (PfSurface*)surface;
     if (!s->color.data)
         return pfSetError(EGL_BAD_SURFACE, EGL_FALSE);
     uint32_t* dst32 = (uint32_t*)target;
@@ -1360,7 +1560,13 @@ EGLAPI EGLBoolean EGLAPIENTRY eglCopyBuffers(EGLDisplay dpy, EGLSurface surface,
                 dp[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
             }
         } else {
-            memcpy(dst32 + y * s->width, srcBase + y * srcByteStride, (size_t)s->width * 4u);
+            /* RGBA_8888 / RGBX_8888 (0xAABBGGRR) -> BGRA8888 (0xAARRGGBB) */
+            const uint32_t* sp = (const uint32_t*)(srcBase + y * srcByteStride);
+            uint32_t* dp = dst32 + y * s->width;
+            for (int x = 0; x < s->width; x++) {
+                uint32_t v = sp[x];
+                dp[x] = 0xFF000000u | (v & 0x0000FF00u) | ((v & 0xFFu) << 16) | ((v >> 16) & 0xFFu);
+            }
         }
     }
     return pfSetError(EGL_SUCCESS, EGL_TRUE);

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# build_symbian.sh - Build Android Pixelflinger + CodeFlinger + libagl OpenGL ES 1.1 CM
-# + Symbian EKA2 EGL 1.1 as a 100% drop-in replacement Symbian OS v9.x ARMv5TE DLL
-# (libgles_cm.dll, UID3 0x101fcabd, 175 exact ordinals, Zero WSD).
+# build_symbian.sh - Build Android Pixelflinger (non-JIT C++ pipeline) + libagl
+# OpenGL ES 1.1 CM + Symbian EKA2 EGL 1.1 as a 100% drop-in replacement
+# Symbian OS v9.x ARMv5TE DLL (libgles_cm.dll, UID3 0x101fcabd, 175 ordinals, Zero WSD).
 set -euo pipefail
 
 PF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,7 +55,7 @@ CXX_FLAGS=(
     -fgcse-after-reload
     -fpredictive-commoning
     -funswitch-loops
-    -fstrict-aliasing
+    -fno-strict-aliasing
     -fomit-frame-pointer
     -fno-pic
     -fno-PIE
@@ -88,14 +88,11 @@ CXX_FLAGS=(
     -DEGL_EGLEXT_PROTOTYPES
 )
 
-echo "[pixelflinger-symbian] Assembling ARMv5TE startup & scanline/fixed-point kernels..."
+echo "[pixelflinger-symbian] Assembling ARMv5TE startup & fixed-point kernels (JIT OFF)..."
 ASM_SOURCES=(
     "${PF_ROOT}/symbian/pf_symbian_entry.S"
     "${REPO_ROOT}/symbian/arm_divmod.S"
-    "${PF_ROOT}/libpixelflinger/col32cb16blend.S"
-    "${PF_ROOT}/libpixelflinger/t32cb16blend.S"
     "${PF_ROOT}/libagl/fixed_asm.S"
-    "${PF_ROOT}/libagl/iterators.S"
 )
 
 OBJS=()
@@ -111,7 +108,7 @@ CPP_SOURCES=(
     "${PF_ROOT}/symbian/pf_symbian_rt.cpp"
     "${PF_ROOT}/symbian/aeabi_softfp.cpp"
     "${PF_ROOT}/symbian/egl_symbian.cpp"
-    # libpixelflinger + codeflinger + tinyutils
+    # libpixelflinger (pure verified C++ pipeline, JIT disabled) + tinyutils
     "${PF_ROOT}/libpixelflinger/buffer.cpp"
     "${PF_ROOT}/libpixelflinger/clear.cpp"
     "${PF_ROOT}/libpixelflinger/fixed.cpp"
@@ -121,17 +118,9 @@ CPP_SOURCES=(
     "${PF_ROOT}/libpixelflinger/raster.cpp"
     "${PF_ROOT}/libpixelflinger/scanline.cpp"
     "${PF_ROOT}/libpixelflinger/trap.cpp"
-    "${PF_ROOT}/libpixelflinger/codeflinger/ARMAssembler.cpp"
-    "${PF_ROOT}/libpixelflinger/codeflinger/ARMAssemblerInterface.cpp"
-    "${PF_ROOT}/libpixelflinger/codeflinger/ARMAssemblerProxy.cpp"
-    "${PF_ROOT}/libpixelflinger/codeflinger/CodeCache.cpp"
-    "${PF_ROOT}/libpixelflinger/codeflinger/GGLAssembler.cpp"
-    "${PF_ROOT}/libpixelflinger/codeflinger/blending.cpp"
-    "${PF_ROOT}/libpixelflinger/codeflinger/load_store.cpp"
-    "${PF_ROOT}/libpixelflinger/codeflinger/texturing.cpp"
     "${PF_ROOT}/libpixelflinger/codeflinger/tinyutils/SharedBuffer.cpp"
     "${PF_ROOT}/libpixelflinger/codeflinger/tinyutils/VectorImpl.cpp"
-    # libagl + OpenGL ES 1.1 full 144-ordinal frontend
+    # libagl + OpenGL ES 1.1 full 146-ordinal frontend
     "${PF_ROOT}/libagl/BufferObjectManager.cpp"
     "${PF_ROOT}/libagl/TextureObjectManager.cpp"
     "${PF_ROOT}/libagl/TokenManager.cpp"

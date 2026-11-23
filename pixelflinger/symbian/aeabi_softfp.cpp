@@ -576,6 +576,51 @@ int PF_SOFTFP_NAME(dcmplt)(uint64_t a, uint64_t b)
 }
 
 #ifndef PF_SOFTFP_PREFIX
+uint64_t pf_udivmod64(uint64_t n, uint64_t d, uint64_t* rem_out)
+{
+    if (d == 0ULL) {
+        if (rem_out) *rem_out = 0ULL;
+        return 0ULL;
+    }
+    if ((n >> 32) == 0ULL && (d >> 32) == 0ULL) {
+        uint32_t n32 = (uint32_t)n;
+        uint32_t d32 = (uint32_t)d;
+        if (rem_out) *rem_out = (uint64_t)(n32 % d32);
+        return (uint64_t)(n32 / d32);
+    }
+    if (n < d) {
+        if (rem_out) *rem_out = n;
+        return 0ULL;
+    }
+    int shift = pf_clz64(d) - pf_clz64(n);
+    uint64_t den = d << shift;
+    uint64_t rem = n;
+    uint64_t quot = 0ULL;
+    for (int i = shift; i >= 0; --i) {
+        quot <<= 1;
+        if (rem >= den) {
+            rem -= den;
+            quot |= 1ULL;
+        }
+        den >>= 1;
+    }
+    if (rem_out) *rem_out = rem;
+    return quot;
+}
+
+int64_t pf_sdivmod64(int64_t n, int64_t d, int64_t* rem_out)
+{
+    int neg_q = ((n ^ d) < 0) ? 1 : 0;
+    int neg_r = (n < 0) ? 1 : 0;
+    uint64_t un = (n < 0) ? (0ULL - (uint64_t)n) : (uint64_t)n;
+    uint64_t ud = (d < 0) ? (0ULL - (uint64_t)d) : (uint64_t)d;
+    uint64_t urem = 0ULL;
+    uint64_t uq = pf_udivmod64(un, ud, &urem);
+    if (rem_out)
+        *rem_out = neg_r ? -(int64_t)urem : (int64_t)urem;
+    return neg_q ? -(int64_t)uq : (int64_t)uq;
+}
+
 int __aeabi_idiv0(int return_value)
 {
     return return_value;

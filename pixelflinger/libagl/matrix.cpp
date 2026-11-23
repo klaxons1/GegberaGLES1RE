@@ -1079,14 +1079,18 @@ void glTranslatex(GLfixed x, GLfixed y, GLfixed z)
     c->transforms.invalidate();
 }
 
+extern "C" void pf_egl_sync_window_surface(void);
+
 void glScissor(GLint x, GLint y, GLsizei w, GLsizei h)
 {
+    pf_egl_sync_window_surface();
     ogles_context_t* c = ogles_context_t::get();
     ogles_scissor(c, x, y, w, h);
 }
 
 void glViewport(GLint x, GLint y, GLsizei w, GLsizei h)
 {
+    pf_egl_sync_window_surface();
     ogles_context_t* c = ogles_context_t::get();
     ogles_viewport(c, x, y, w, h);
 }
