@@ -447,15 +447,15 @@ void grEvaluatePixelPipeline(Gerbera_s *state, _grSignature *signature)
             unsigned char *rec = signature->texture[unit];
             int pf;
 
-            grrGetTextureFormatDescriptor(&combinedMask[7], texObj->texFormat);
+            grrGetTextureFormatDescriptor(&combinedMask[7], texObj->mipmap[0].texFormat);
             *(int *)&combinedMask[0].colorMask =
                 (int)(unsigned char)combinedMask[7].pixelFormat;
             rec[16] = 1;
-            rec[17] = (unsigned char)((texObj->flags183 & 0x10) != 0);
-            rec[19] = (unsigned char)((texObj->flags207 & 1) != 0);
-            rec[20] = (unsigned char)((texObj->flags206 & 1) != 0);
-            rec[21] = texObj->coordFormat[0];
-            rec[22] = texObj->coordFormat[1];
+            rec[17] = (unsigned char)((texObj->parmMask & 0x10) != 0);
+            rec[19] = (unsigned char)((texObj->filterMask[GR_FILTERTYPE_MAG] & 1) != 0);
+            rec[20] = (unsigned char)((texObj->filterMask[GR_FILTERTYPE_MIN] & 1) != 0);
+            rec[21] = texObj->wrapMode[0];
+            rec[22] = texObj->wrapMode[1];
             *(int *)&rec[0] = *(int *)combinedMask[7].rgbaOffsets;
             *(int *)&rec[4] = *(int *)combinedMask[7].rgbaSizes;
             *(int *)&rec[8] = *(int *)&combinedMask[7].colorMask;

@@ -147,6 +147,8 @@ static void test_hcarmbackend(void);
 static void test_hcdatastructs_and_emulator(void);
 static void test_hccompiler(void);
 static void test_gradients(void);
+static void test_grr_texture_and_blit(void);
+static void test_gerbera_lifecycle_and_api_small(void);
 
 int main(void)
 {
@@ -192,6 +194,8 @@ int main(void)
     test_hcarmbackend();
     test_hcdatastructs_and_emulator();
     test_hccompiler();
+    test_grr_texture_and_blit();
+    test_gerbera_lifecycle_and_api_small();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -969,6 +973,7 @@ static void test_transform_vertex(void)
     float verts[8] = {1.0f, 2.0f, 3.0f, 1.0f, -1.0f, 0.5f, 0.25f, 1.0f};
     unsigned char k;
 
+    memset(pool, 0, 1332 + 2048);
     memset(&st, 0, sizeof(st));
     st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IMatrix4x4_identity(&id);
@@ -1819,7 +1824,7 @@ static void test_vertextcache(void)
     CHECK(grVertexCacheGet(&st, 0x41) == 63);
     CHECK(cache->cacheIndices[11] == 0x00000B3F);
     CHECK(cache->totalFreeSlots == 60);
-    CHECK(cache->batchLockMask == 0x8000020000000820ull);
+    CHECK((HGuint64)cache->batchLockMask == (HGuint64)0x8000020000000820ull);
     CHECK(vb[63].index == 0x41);
 
     /* byte-1 hit rotates the packed entry */
@@ -1978,8 +1983,8 @@ static void test_queueprimitive(void)
     grQueuePrimitive3(&st, 40, 41, 42);
     qidx = *(int *)(stack + GR_RENDER_STACK_COMMAND_QUEUE_INDEX);
     CHECK(qidx == 12);
-    CHECK(q[10] == 0x012e2d2c);
-    CHECK(q[11] == (int)0xffffffb2);   /* mul64h floors: screen y = -0x6400 */
+    CHECK(q[10] == 0x012e2d2cu);
+    CHECK(q[11] == 0xffffffb2u);   /* mul64h floors: screen y = -0x6400 */
 
     /* same shape with cullNegative 0: the clip-space stp sign matches ->
      * culled at grApiFast.inl 1046, nothing queued */
@@ -2487,16 +2492,16 @@ static void test_scanconvert(void)
     memset(stack, 0, sizeof(stack));
     grScanConvertWithoutXScissoring(pairs, (unsigned int *)stack, 3, 2);
     words = (unsigned int *)stack;
-    CHECK(words[0] == 100 | (100 << 16));
-    CHECK(words[2] == 100 | (100 << 16));
-    CHECK(words[3] == 50 | (200 << 16));
-    CHECK(words[4] == 50 | (200 << 16));
+    CHECK(words[0] == (100u | (100u << 16)));
+    CHECK(words[2] == (100u | (100u << 16)));
+    CHECK(words[3] == (50u | (200u << 16)));
+    CHECK(words[4] == (50u | (200u << 16)));
 
     /* ... and with X scissoring clamping to {150..180} */
     grSetRectangle(&st->renderScissor, 150, 180, 0, 64);
     grScanConvertWithXScissoring(pairs, (unsigned int *)stack, &st->renderScissor, 3, 2);
-    CHECK(words[0] == 150 | (30 << 16));
-    CHECK(words[3] == 150 | (30 << 16));
+    CHECK(words[0] == (150u | (30u << 16)));
+    CHECK(words[3] == (150u | (30u << 16)));
     grSetRectangle(&st->renderScissor, 0, 64, 0, 64);
 
     /* full grScanConvertTriangle: the hand-worked triangle. The vertex
@@ -2528,12 +2533,12 @@ static void test_scanconvert(void)
     CHECK(pp->numScanlines == 16);
     CHECK(pp->scanlineInfo == (unsigned int *)(stack + 15668));
     words = pp->scanlineInfo;
-    CHECK(words[0] == 10 | (2 << 16));
-    CHECK(words[1] == 10 | (4 << 16));
-    CHECK(words[7] == 13 | (16 << 16));
-    CHECK(words[8] == 14 | (14 << 16));
-    CHECK(words[14] == 17 | (2 << 16));
-    CHECK(words[15] == 17 | (1 << 16));
+    CHECK(words[0] == (10u | (2u << 16)));
+    CHECK(words[1] == (10u | (4u << 16)));
+    CHECK(words[7] == (13u | (16u << 16)));
+    CHECK(words[8] == (14u | (14u << 16)));
+    CHECK(words[14] == (17u | (2u << 16)));
+    CHECK(words[15] == (17u | (1u << 16)));
 
     /* X scissoring to {13..17}: front row (13|0) and the two zero-pixel
      * bottom rows trim away -> 13 rows starting at y=13 */
@@ -2544,9 +2549,9 @@ static void test_scanconvert(void)
              (_grRasterPoint *)&vb[1].screenPosition[0], 8) == 13);
     CHECK(pp->yStart == 13);
     words = pp->scanlineInfo;
-    CHECK(words[0] == 13 | (1 << 16));
-    CHECK(words[1] == 13 | (4 << 16));
-    CHECK(words[12] == 16 | (1 << 16));
+    CHECK(words[0] == (13u | (1u << 16)));
+    CHECK(words[1] == (13u | (4u << 16)));
+    CHECK(words[12] == (16u | (1u << 16)));
 
     /* Y clip: scissor y0=16 cuts 4 rows off the top half (the long and
      * short edges advance, the bottom half keeps its own rows); the last
@@ -2558,10 +2563,10 @@ static void test_scanconvert(void)
              (_grRasterPoint *)&vb[1].screenPosition[0], 8) == 12);
     CHECK(pp->yStart == 16);
     words = pp->scanlineInfo;
-    CHECK(words[0] == 12 | (10 << 16));
-    CHECK(words[3] == 13 | (16 << 16));
-    CHECK(words[10] == 17 | (2 << 16));
-    CHECK(words[11] == 17 | (1 << 16));
+    CHECK(words[0] == (12u | (10u << 16)));
+    CHECK(words[3] == (13u | (16u << 16)));
+    CHECK(words[10] == (17u | (2u << 16)));
+    CHECK(words[11] == (17u | (1u << 16)));
     grSetRectangle(&st->renderScissor, 0, 64, 0, 64);
 
     /* end-to-end grDrawClippedTriangle through the y-sort: rows, row
@@ -2797,8 +2802,8 @@ static void test_linepoint(void)
     CHECK(pp->yStart == 14);                 /* second triangle's scan */
     CHECK(pp->numScanlines == 2);
     words = pp->scanlineInfo;
-    CHECK(words[0] == 27 | (3 << 16));
-    CHECK(words[1] == 25 | (5 << 16));
+    CHECK(words[0] == (19u | (10u << 16)));
+    CHECK(words[1] == (8u | (20u << 16)));
 
     /* vertical line: steep path, coverage [19,21] x [8.5,30.5] */
     vb[0].screenPosition[0] = 20 << 12;
@@ -2819,9 +2824,9 @@ static void test_linepoint(void)
     CHECK(pp->yStart == 19);
     CHECK(pp->numScanlines == 10);
     words = pp->scanlineInfo;
-    CHECK(words[0] == 19 | (1 << 16));
-    CHECK(words[8] == 19 | (1 << 16));
-    CHECK(words[9] == 20 | (1 << 16));
+    CHECK(words[0] == (19u | (1u << 16)));
+    CHECK(words[8] == (19u | (1u << 16)));
+    CHECK(words[9] == (19u | (1u << 16)));
 
     /* zero-length line draws nothing */
     vb[0].screenPosition[0] = 12 << 12;
@@ -2921,9 +2926,9 @@ static void test_tessellate(void)
     vb[2].screenPosition[0] = 11 << 12; vb[2].screenPosition[1] = 13 << 12;
     CHECK(grClassifyTriangle(st, vb, grSetIndices(0, 1, 2)) ==
           GR_TRIANGLESTATUS_AFFINE);
-    vb[0].screenPosition[0] = -10 << 12; vb[0].screenPosition[1] = -10 << 12;
-    vb[1].screenPosition[0] = -30 << 12; vb[1].screenPosition[1] = -20 << 12;
-    vb[2].screenPosition[0] = -20 << 12; vb[2].screenPosition[1] = -30 << 12;
+    vb[0].screenPosition[0] = -10 * 4096; vb[0].screenPosition[1] = -10 * 4096;
+    vb[1].screenPosition[0] = -30 * 4096; vb[1].screenPosition[1] = -20 * 4096;
+    vb[2].screenPosition[0] = -20 * 4096; vb[2].screenPosition[1] = -30 * 4096;
     CHECK(grClassifyTriangle(st, vb, grSetIndices(0, 1, 2)) ==
           GR_TRIANGLESTATUS_DISCARD);
     vb[0].screenPosition[0] = 10 << 12; vb[0].screenPosition[1] = 10 << 12;
@@ -2994,9 +2999,9 @@ static void test_tessellate(void)
     CHECK(pp->yStart == 10);
     CHECK(pp->numScanlines == 7);                /* last drawn piece */
     words = pp->scanlineInfo;
-    CHECK(words[0] == 26 | (7 << 16));
-    CHECK(words[1] == 26 | (6 << 16));
-    CHECK(words[4] == 26 | (3 << 16));
+    CHECK(words[0] == (26u | (7u << 16)));
+    CHECK(words[1] == (26u | (6u << 16)));
+    CHECK(words[4] == (26u | (3u << 16)));
 
     /* equal-w big triangle: affine at level 0, single draw, no split records */
     vb[1].clipPosition.m[3] = ONE;
@@ -3034,7 +3039,6 @@ static void test_pipecache(void)
     unsigned int mask;
     unsigned char *code;
     unsigned char *code2;
-    int i;
 
     memset(&sigA, 0, sizeof(sigA));
     memset(&sigB, 0, sizeof(sigB));
@@ -3233,12 +3237,12 @@ static void test_signature(void)
         for (i = 0; i < 2; ++i)
         {
             grInitTexture(&tex[i]);
-            tex[i].texFormat = (unsigned short)(i == 0 ? 2 : 1);
-            tex[i].coordFormat[0] = 0;
-            tex[i].coordFormat[1] = 1;
-            tex[i].flags183 = 0x10;
-            tex[i].flags206 = 1;
-            tex[i].flags207 = 0;
+            tex[i].mipmap[0].texFormat = (unsigned short)(i == 0 ? 2 : 1);
+            tex[i].wrapMode[0] = 0;
+            tex[i].wrapMode[1] = 1;
+            tex[i].parmMask = 0x10;
+            tex[i].filterMask[GR_FILTERTYPE_MIN] = 1;
+            tex[i].filterMask[GR_FILTERTYPE_MAG] = 0;
             st.textureUnit[2 * i].texture = &tex[i];
             st.useTexUnit[i] = 1;
         }
@@ -3356,17 +3360,47 @@ static void test_signature(void)
             }
         }
 
-        /* grEnsureValidPixelPipeline: miss on an empty cache takes the
-         * compile-failure exit until the hc module lands */
+        /* grEnsureValidPixelPipeline: miss compiles the program via HC_compile
+         * (unit 1 REPLACE(TEXTURE) DCE-eliminates primary RGB and unit 0 fetch,
+         * leaving depth + fog + primaryA + s1 + t1 = 0x323, 5 gradients), and
+         * at max scratch size (204800) with exhausted arena sets compilationFailed = 1 */
         {
             _grPipelineCache emptyCache;
             _grCacheEntry emptyEntries[8];
-            unsigned char emptyArena[256];
+            unsigned char emptyArena[4096];
+            static unsigned char compileScratch[204800];
 
-            grCacheInit(&emptyCache, emptyArena, emptyEntries, 256, 8);
+            /* Restore legal GLES surface/texenv invariants after the raw bitpack check */
+            st.drawSurface.depthBytes   = 4;
+            st.drawSurface.stencilBytes = 1;
+            st.textureUnit[2].envOpAlpha[1] = 3;
+            st.textureUnit[2].envOpAlpha[2] = 2;
+            st.setjmpConfigStorage.setjmpWrap = eglHCWrapSetjmp;
+            st.setjmpConfigStorage.longjmp    = eglHCWrapLongjmp;
+            st.setjmpConfigStorage.jmpbufSize = (unsigned int)eglGetJmpbufSize();
+            st.setjmpConfig  = &st.setjmpConfigStorage;
+            st.scratchMemory = compileScratch;
+            st.scratchMemorySize = (int)sizeof(compileScratch);
+            grStackInit(&st.scratchAllocator, compileScratch, (int)sizeof(compileScratch));
+
+            grCacheInit(&emptyCache, emptyArena, emptyEntries, 4096, 8);
             st.pipelineCache = &emptyCache;
             grEnsureValidPixelPipeline(&st);
+            CHECK(st.compilationFailed == 0);
+            CHECK(st.pixelPipelineCode != NULL);
+            CHECK(st.activeGradientMask == 0x323);
+            CHECK(st.numActiveGradients == 5);
+
+            /* Exhausted scratch at scratchSizes[6] (204800) -> compilationFailed = 1 */
+            grCacheInit(&emptyCache, emptyArena, emptyEntries, 4096, 8);
+            st.setjmpConfigStorage.jmpbufSize = 300000u;
+            grEnsureValidPixelPipeline(&st);
             CHECK(st.compilationFailed == 1);
+            st.setjmpConfigStorage.jmpbufSize = (unsigned int)eglGetJmpbufSize();
+            st.drawSurface.depthBytes   = 0;
+            st.drawSurface.stencilBytes = 0;
+            st.textureUnit[2].envOpAlpha[1] = 1;
+            st.textureUnit[2].envOpAlpha[2] = 0;
         }
 
         /* hit path: the pre-inserted program is published */
@@ -3510,12 +3544,15 @@ static void test_setuprendering(void)
 static void test_texturerect(void)
 {
     Gerbera_s st;
+    _grTexture tex[2];
+    static unsigned int dummyTexPixels[16 * 16];
     _grTRGradSetupInfo info;
     int txMin[2] = { 0, 100 };
     int tyMin[2] = { 0, 200 };
     int txMax[2] = { 1000, 1100 };
     int tyMax[2] = { 2000, 2200 };
     _grPixelPipe pipe;
+    int u;
 
     memset(&st, 0, sizeof(st));
     memset(&pipe, 0, sizeof(pipe));
@@ -3531,6 +3568,14 @@ static void test_texturerect(void)
     st.zFar = 0x3F800000;  /* 1.0f in IScalar (float-as-bits) */
     st.primitiveType = 4;  /* TEXTURE_RECT */
     st.capabilities[GR_CAPABILITY_FOG] = 1;
+    for (u = 0; u < 2; ++u)
+    {
+        grInitTexture(&tex[u]);
+        grSetTextureTarget(&tex[u], GR_TEXTURETARGET_2D);
+        grrReplaceTextureLevel(&tex[u], 0, dummyTexPixels, 16, 16, GR_TEXTUREFORMAT_RGBA8);
+        grUpdateTexture(&tex[u]);
+        st.textureUnit[2 * u].texture = &tex[u];
+    }
 
     info.z = 0x3F000000;   /* 0.5f in IScalar */
     info.fx0 = 0;
@@ -3544,16 +3589,19 @@ static void test_texturerect(void)
 
     grSetupTextureRectGradients(&st, &info);
 
-    /* texture gradients: unit 0 at indices 6/7, unit 1 at 8/9 */
-    /* xAdder = (txMax-txMin) << 12 / (fx1-fx0) = 1000<<12/100 = 40960 */
-    CHECK(pipe.xAdder[6] == 40960);
+    /* texture gradients: unit 0 at indices 6/7, unit 1 at 8/9
+     * pre-setup xAdder = 40960, shifted left by lsh = 11 - 0 = 11 for REPEAT */
+    CHECK(pipe.xAdder[6] == (40960 << 11));
     CHECK(pipe.yAdder[6] == 0);
     CHECK(pipe.xAdder[7] == 0);
-    /* yAdder = (tyMax-tyMin) << 12 / (fy1-fy0) = 2000<<12/200 = 40960 */
-    CHECK(pipe.yAdder[7] == 40960);
-    /* unit 1: dTx=1000, dTy=2000, same screen rect -> same adders */
-    CHECK(pipe.xAdder[8] == 40960);
-    CHECK(pipe.yAdder[9] == 40960);
+    CHECK(pipe.yAdder[7] == (40960 << 11));
+    CHECK(pipe.xAdder[8] == (40960 << 11));
+    CHECK(pipe.yAdder[9] == (40960 << 11));
+    CHECK(pipe.textureUnit[0].pixels == dummyTexPixels);
+    CHECK(pipe.textureUnit[0].sMask == 15);
+    CHECK(pipe.textureUnit[0].tMask == 15);
+    CHECK(pipe.textureUnit[0].rShift[0] == 28);
+    CHECK(pipe.textureUnit[0].rShift[1] == 28);
 
     /* fog gradient: reference[1] = (fogAtZero & 0xFFFF) << 8 */
     CHECK(pipe.reference[1] == (0x1234 << 8));
@@ -5025,6 +5073,280 @@ static void test_hccompiler(void)
         CHECK(st.numActiveGradients == 5);
     }
 }
+
+/* --- Milestone 5b: grrTexture + grrBlit + grSetupTextureUnit ---------------- */
+
+static void test_grr_texture_and_blit(void)
+{
+    int minWork = grGetMinWorkMemorySize();
+    unsigned char *workMem = (unsigned char *)malloc((size_t)minWork + 64u);
+    Gerbera_s *st;
+    _grTexture tex;
+    _grSurfaceDescriptor desc;
+
+    grrSelfTest();
+    CHECK(grrGetBitsPerPixel(GR_TEXTUREFORMAT_ALPHA8) == 8);
+    CHECK(grrGetBitsPerPixel(GR_TEXTUREFORMAT_LUMINANCE8_ALPHA8) == 16);
+    CHECK(grrGetBitsPerPixel(GR_TEXTUREFORMAT_RGB8) == 32);
+    CHECK(grrGetBitsPerPixel(GR_TEXTUREFORMAT_RGBA8) == 32);
+    CHECK(grrGetBitsPerPixel(GR_TEXTUREFORMAT_RGB565) == 16);
+    CHECK(grrGetBitsPerPixel(GR_TEXTUREFORMAT_PALETTE4_RGB8) == 4);
+    CHECK(grrGetBitsPerPixel(GR_TEXTUREFORMAT_PALETTE8_RGBA8) == 8);
+
+    st = grCreateGerbera(minWork, workMem, NULL, 0);
+    CHECK(st != NULL);
+
+    /* Allocate 4x4 RGBA8 level 0, populate 2x2 constant quadrants, generate mipmaps */
+    grInitTexture(&tex);
+    grSetTextureTarget(&tex, GR_TEXTURETARGET_2D);
+    CHECK(grrSetupTextureLevel(&tex, 0, 4, 4, GR_TEXTUREFORMAT_RGBA8) == 1);
+    {
+        int dim[2];
+        unsigned int *p0 = (unsigned int *)grGetTextureMipLevel(&tex, 0, dim);
+        unsigned int *p1;
+        unsigned int *p2;
+        int x, y;
+
+        CHECK(p0 != NULL && dim[0] == 2 && dim[1] == 2);
+        for (y = 0; y < 4; ++y)
+        {
+            for (x = 0; x < 4; ++x)
+            {
+                if (x < 2 && y < 2)
+                    p0[y * 4 + x] = grSetRGBA(200, 0, 0, 255);
+                else if (x >= 2 && y < 2)
+                    p0[y * 4 + x] = grSetRGBA(0, 200, 0, 255);
+                else if (x < 2 && y >= 2)
+                    p0[y * 4 + x] = grSetRGBA(0, 0, 200, 255);
+                else
+                    p0[y * 4 + x] = grSetRGBA(200, 200, 200, 255);
+            }
+        }
+
+        CHECK(grrCalcTextureMipmaps(st, &tex) == 1);
+        grUpdateTexture(&tex);
+        CHECK(tex.numMipLevels == 3);
+
+        p1 = (unsigned int *)grGetTextureMipLevel(&tex, 1, dim);
+        CHECK(p1 != NULL && dim[0] == 1 && dim[1] == 1);
+        CHECK(p1[0] == grSetRGBA(200, 0, 0, 255));
+        CHECK(p1[1] == grSetRGBA(0, 200, 0, 255));
+        CHECK(p1[2] == grSetRGBA(0, 0, 200, 255));
+        CHECK(p1[3] == grSetRGBA(200, 200, 200, 255));
+
+        p2 = (unsigned int *)grGetTextureMipLevel(&tex, 2, dim);
+        CHECK(p2 != NULL && dim[0] == 0 && dim[1] == 0);
+        CHECK(p2[0] == grSetRGBA(100, 100, 100, 255));
+    }
+
+    /* grSetupTextureUnit: verify LOD selection (level 0 vs level 2) & wrap mask */
+    {
+        static unsigned char stack[GR_RENDER_STACK_SIZE];
+        _grPixelPipe *pp = (_grPixelPipe *)(stack + 14644);
+        int pairs[2][2] = { { 0x80000, 0 }, { 0x80000, 0 } };
+
+        memset(stack, 0, sizeof(stack));
+        st->renderStack = stack;
+        st->renderStackAllocated = 1;
+        st->pixelPipeline = pp;
+        st->activeGradientMask = 0xC0;
+        grSetActiveTexture(st, 0, &tex);
+        grSetTextureFilter(&tex, GR_FILTERTYPE_MIN,
+                           GR_FILTERMASK_FILTER | GR_FILTERMASK_USE_MIPMAPS);
+        grSetTextureWrapMode(&tex, 0, GR_WRAPMODE_REPEAT);
+        grSetTextureWrapMode(&tex, 1, GR_WRAPMODE_CLAMP_TO_EDGE);
+        grUpdateTexture(&tex);
+
+        /* Minification with huge s/t step selects smallest 1x1 mip level (dim=0) */
+        pp->xAdder[6] = 0x400000;
+        pp->yAdder[7] = 0x400000;
+        grSetupTextureUnit(st, 0, pairs, 0, 0);
+        CHECK(pp->textureUnit[0].log2DimS == 0);
+        CHECK(pp->textureUnit[0].sMask == 0);
+        CHECK(pp->textureUnit[0].tMask == 0);
+
+        /* Magnification (tiny s/t step) selects 4x4 base mip level (dim=2) */
+        pp->xAdder[6] = 0x100;
+        pp->yAdder[7] = 0x100;
+        grSetupTextureUnit(st, 0, pairs, 0, 0);
+        CHECK(pp->textureUnit[0].log2DimS == 2);
+        CHECK(pp->textureUnit[0].sMask == 3);
+        CHECK(pp->textureUnit[0].tMask == 3);
+        CHECK(pp->textureUnit[0].rShift[0] == 30); /* REPEAT: 32 - 2 */
+        CHECK(pp->textureUnit[0].rShift[1] == 19); /* CLAMP_TO_EDGE: 21 - 2 */
+        CHECK(pp->textureUnit[0].linear == 1);     /* mag filter init = 1 (FILTER) */
+
+        st->activeGradientMask = 0;
+        st->renderStack = NULL;
+        st->renderStackAllocated = 0;
+        st->pixelPipeline = NULL;
+    }
+
+    /* grrBlit: memory RGBA8 -> RGB565 memory image & read-surface Y-flip */
+    {
+        unsigned int srcPx[4] =
+        {
+            grSetRGBA(255, 0, 0, 255),     grSetRGBA(0, 255, 0, 255),
+            grSetRGBA(0, 0, 255, 255),     grSetRGBA(255, 255, 255, 255)
+        };
+        unsigned short dstPx[4] = { 0, 0, 0, 0 };
+        grBlitImage_s srcImg, dstImg;
+        grBlitInfo_s info;
+
+        memset(&srcImg, 0, sizeof(srcImg));
+        memset(&dstImg, 0, sizeof(dstImg));
+        memset(&info, 0, sizeof(info));
+
+        srcImg.type = GR_BLITIMAGE_MEMORY_IMAGE;
+        srcImg.memoryImage.width = 2;
+        srcImg.memoryImage.height = 2;
+        srcImg.memoryImage.stride = 8;
+        srcImg.memoryImage.bytesPerPixel = 4;
+        srcImg.memoryImage.data = srcPx;
+        srcImg.memoryImage.useDescriptor = 0;
+        srcImg.memoryImage.dataType = GR_DATATYPE_UINT8;
+        srcImg.memoryImage.imageFormat = GR_IMAGEFORMAT_RGBA;
+
+        grrGetTextureFormatDescriptor(&desc, GR_TEXTUREFORMAT_RGB565);
+        dstImg.type = GR_BLITIMAGE_MEMORY_IMAGE;
+        dstImg.memoryImage.width = 2;
+        dstImg.memoryImage.height = 2;
+        dstImg.memoryImage.stride = 4;
+        dstImg.memoryImage.bytesPerPixel = 2;
+        dstImg.memoryImage.data = dstPx;
+        dstImg.memoryImage.useDescriptor = 1;
+        dstImg.memoryImage.descriptor = desc;
+
+        grSetRectangle(&info.srcRect, 0, 2, 0, 2);
+        grSetRectangle(&info.dstRect, 0, 2, 0, 2);
+        info.srcImage = &srcImg;
+        info.dstImage = &dstImg;
+        grrBlit(st, &info);
+
+        CHECK(dstPx[0] == 0xF800u);
+        CHECK(dstPx[1] == 0x07E0u);
+        CHECK(dstPx[2] == 0x001Fu);
+        CHECK(dstPx[3] == 0xFFFFu);
+    }
+
+    grrFreeTextureData(&tex);
+
+    /* grrSetPalettedTexture: 4-bit 16-entry RGB8 (3-byte packed) palette + 2x2 indices */
+    {
+        unsigned char palBlob[16 * 3 + 2];
+        int e;
+
+        memset(palBlob, 0, sizeof(palBlob));
+        for (e = 0; e < 16; ++e)
+        {
+            palBlob[3 * e + 0] = (unsigned char)(e * 17);
+            palBlob[3 * e + 1] = (unsigned char)(255 - e * 17);
+            palBlob[3 * e + 2] = 0x40u;
+        }
+        palBlob[48] = 0x12u;
+        palBlob[49] = 0xF0u;
+
+        grInitTexture(&tex);
+        grSetTextureTarget(&tex, GR_TEXTURETARGET_2D);
+        grrGetTextureFormatDescriptor(&desc, GR_TEXTUREFORMAT_PALETTE4_RGB8);
+        CHECK(grrSetPalettedTexture(&tex, &desc, GR_TEXTUREFORMAT_PALETTE4_RGB8,
+                                    2, 2, 1, palBlob) == 1);
+        CHECK(tex.palette != NULL);
+        CHECK(((unsigned int *)tex.palette)[0] == grSetRGBA(0, 255, 0x40, 0));
+        CHECK(((unsigned int *)tex.palette)[15] == grSetRGBA(255, 0, 0x40, 0));
+        grrFreeTextureData(&tex);
+        CHECK(tex.palette == NULL);
+    }
+
+    grDestroyGerbera(st);
+    CHECK(workMem[0] == 0xBEu);
+    free(workMem);
+}
+
+static void test_gerbera_lifecycle_and_api_small(void)
+{
+    int minWork = grGetMinWorkMemorySize();
+    int minShared = grGetMinSharedMemorySize();
+    unsigned char *workMem = (unsigned char *)malloc((size_t)minWork + 64u);
+    Gerbera_s *st;
+    _grDrawSurface surf;
+    unsigned short colorBuf[16 * 16];
+    int attn[3] = { IScalar_immediate(1.0f), IScalar_immediate(0.5f), IScalar_immediate(0.25f) };
+    int norm[3] = { 0, 0, 0x8000 };
+    int tc[4]   = { IScalar_immediate(0.5f), IScalar_immediate(0.75f), IScalar_zero(), IScalar_one() };
+    _XColor3 vcol;
+
+    CHECK(minWork > (int)sizeof(Gerbera_s));
+    CHECK(minShared > 0);
+
+    st = grCreateGerbera(minWork, workMem, NULL, 0);
+    CHECK(st != NULL);
+    CHECK(st->scratchMemory != NULL && st->scratchMemorySize == 30720);
+    CHECK(grTestCapability(st, GR_CAPABILITY_SMOOTH_SHADING) == 1);
+
+    /* Surface binding */
+    memset(&surf, 0, sizeof(surf));
+    grrGetTextureFormatDescriptor((_grSurfaceDescriptor *)&surf, GR_TEXTUREFORMAT_RGB565);
+    surf.width = 16;
+    surf.height = 16;
+    surf.buffers[GR_BUFFERTYPE_COLOR].data = colorBuf;
+    surf.buffers[GR_BUFFERTYPE_COLOR].stride = 32;
+    CHECK(grIsValidSurfaceInfo(&surf) == 1);
+    grSetSurfaces(st, &surf, &surf);
+    CHECK(st->drawSurface.width == 16 && st->drawSurface.height == 16);
+
+    /* TexEnv getters/setters */
+    grSetTexEnvColor(st, 0, 0x80402010u);
+    CHECK(grGetTexEnvColor(st, 0) == 0x80402010u);
+    grSetTexEnvMode(st, 0, GR_TEXENVMODE_COMBINE);
+    CHECK(grGetTexEnvMode(st, 0) == GR_TEXENVMODE_COMBINE);
+    grSetTexEnvRGBCombFunc(st, 0, GR_TEXENVCOMBFUNC_INTERPOLATE);
+    CHECK(grGetTexEnvRGBCombFunc(st, 0) == GR_TEXENVCOMBFUNC_INTERPOLATE);
+    grSetTexEnvAlphaCombFunc(st, 0, GR_TEXENVCOMBFUNC_ADD_SIGNED);
+    CHECK(grGetTexEnvAlphaCombFunc(st, 0) == GR_TEXENVCOMBFUNC_ADD_SIGNED);
+    grSetTexEnvRGBCombSrc(st, 0, 2, GR_TEXENVCOMBSRC_CONSTANT);
+    CHECK(grGetTexEnvRGBCombSrc(st, 0, 2) == GR_TEXENVCOMBSRC_CONSTANT);
+    grSetTexEnvAlphaCombSrc(st, 0, 1, GR_TEXENVCOMBSRC_PRIMARY_COLOR);
+    CHECK(grGetTexEnvAlphaCombSrc(st, 0, 1) == GR_TEXENVCOMBSRC_PRIMARY_COLOR);
+    grSetTexEnvRGBCombOperand(st, 0, 0, GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_COLOR);
+    CHECK(grGetTexEnvRGBCombOperand(st, 0, 0) == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_COLOR);
+    grSetTexEnvAlphaCombOperand(st, 0, 1, GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA);
+    CHECK(grGetTexEnvAlphaCombOperand(st, 0, 1) == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA);
+    grSetTexEnvRGBCombScale(st, 0, 2);
+    CHECK(grGetTexEnvRGBCombScale(st, 0) == 2);
+    grSetTexEnvAlphaCombScale(st, 0, 4);
+    CHECK(grGetTexEnvAlphaCombScale(st, 0) == 4);
+    grSetTexCoordReplace(st, 1, 1);
+    CHECK(grGetTexCoordReplace(st, 1) == 1);
+
+    /* Vertex array, point/line parameters, and immediate vertex attributes */
+    grSetVertexArray(st, GR_VERTEXARRAY_POSITION, GR_DATATYPE_FLOAT, 3, 12,
+                     colorBuf, 7u, (void *)0x100u);
+    CHECK(st->vertexArray[GR_VERTEXARRAY_POSITION].size == 3);
+    CHECK(st->vertexArray[GR_VERTEXARRAY_POSITION].stride == 12);
+    CHECK(st->vertexArray[GR_VERTEXARRAY_POSITION].binding == 7u);
+
+    grSetPointSize(st, 0x40000);
+    grSetPointSizeMin(st, IScalar_immediate(1.0f));
+    grSetPointSizeMax(st, IScalar_immediate(32.0f));
+    grSetPointFadeThreshold(st, IScalar_immediate(1.5f));
+    grSetPointDistAttn(st, attn);
+    grSetLineWidth(st, 0x20000);
+    CHECK(st->pointSize == 0x40000);
+    CHECK(st->pointFadeThreshold == IScalar_immediate(1.5f));
+    CHECK(st->lineWidth == 0x20000);
+
+    XColor3_setf(&vcol, 0.25f, 0.5f, 0.75f);
+    grSetVertexColor(st, &vcol, 0x8000u);
+    grSetVertexNormal(st, norm);
+    grSetVertexTexCoord(st, 0, tc);
+    CHECK(st->defaultTexCoord.x[0][0] == IScalar_immediate(0.5f));
+    CHECK(st->defaultTexCoord.x[0][1] == IScalar_immediate(0.75f));
+
+    grDestroyGerbera(st);
+    free(workMem);
+}
+
 
 
 

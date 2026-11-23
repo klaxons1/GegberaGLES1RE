@@ -45,31 +45,39 @@ enum GR_IMAGEFORMAT_e
  * ("sizeArray->type == GR_DATATYPE_FIXED"). 3..5, 8..11 unpinned. */
 enum GR_DATATYPE_e
 {
-    GR_DATATYPE_INT8 = 0,     /* size 1 */
-    GR_DATATYPE_UINT8 = 1,    /* size 1 */
-    GR_DATATYPE_INT16 = 2,    /* size 2 */
-    GR_DATATYPE_UINT16 = 3,   /* size 2; index data only (oglMapDataType
-                               * maps GL_UNSIGNED_SHORT 0x1403 here; the
-                               * vertex-array paths never accept it) */
-    GR_DATATYPE_4 = 4,        /* size 4 */
-    GR_DATATYPE_5 = 5,        /* size 4 */
-    GR_DATATYPE_FLOAT = 6,    /* size 4 */
-    GR_DATATYPE_FIXED = 7,    /* size 4 */
-    GR_DATATYPE_8 = 8,        /* size 1 */
-    GR_DATATYPE_9 = 9,        /* size 0 */
-    GR_DATATYPE_10 = 10,      /* size 0 */
-    GR_DATATYPE_11 = 11,      /* size 0 */
+    GR_DATATYPE_INT8 = 0,       /* size 1 */
+    GR_DATATYPE_UINT8 = 1,      /* size 1 */
+    GR_DATATYPE_INT16 = 2,      /* size 2 */
+    GR_DATATYPE_UINT16 = 3,     /* size 2 */
+    GR_DATATYPE_INT32 = 4,      /* size 4 */
+    GR_DATATYPE_UINT32 = 5,     /* size 4 */
+    GR_DATATYPE_4 = 4,          /* legacy alias */
+    GR_DATATYPE_5 = 5,          /* legacy alias */
+    GR_DATATYPE_FLOAT = 6,      /* size 4 */
+    GR_DATATYPE_FIXED = 7,      /* size 4 */
+    GR_DATATYPE_BOOL = 8,       /* size 1 */
+    GR_DATATYPE_8 = 8,          /* legacy alias */
+    GR_DATATYPE_DESCRIPTOR = 9, /* size 0 (packed pixel formats) */
+    GR_DATATYPE_9 = 9,          /* legacy alias */
+    GR_DATATYPE_10 = 10,        /* size 0 */
+    GR_DATATYPE_11 = 11,        /* size 0 */
     GR_DATATYPE_MAX = 12
 };
 
 extern const char grGetDataTypeSize_dataTypeSizes[12];
 
-/* --- pixel / palette format bounds (grUtilSmall.inl range asserts) -------
- * pixelFormat: hgInRange32(desc->pixelFormat, 0, GR_PIXELFORMAT_MAX)
- * paletteFormat: hgInRange32(desc->paletteFormat, 0, GR_PALETTEFORMAT_MAX-1)
- * TODO: both MAX values need pinning from a writer; conservative below. */
+/* --- pixel / palette format bounds (grUtilSmall.inl range asserts) ------- */
 #define GR_PIXELFORMAT_MAX 6
 #define GR_PALETTEFORMAT_MAX 3
+#define GR_MAX_POINT_SIZE 64
+#define GR_MAX_LINE_WIDTH 64
+
+enum GR_PALETTEFORMAT_e
+{
+    GR_PALETTEFORMAT_NONE = 0,
+    GR_PALETTEFORMAT_4BIT = 1,
+    GR_PALETTEFORMAT_8BIT = 2
+};
 
 /* --- surface descriptor (decompile type cv_anon_14F9) --------------------
  * rgbaOffsets/rgbaSizes are PACKED BYTES: the decompile clears/compares/copies

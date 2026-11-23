@@ -249,6 +249,28 @@ semantics line-for-line (verified against the session-4b port): big-endian
        *before* calling `HCRandom_get` and testing `spillNeigh * spCost == nNeigh * spillCost`,
        so ties (`<=`) always enter the tie-break RNG check.
 
+### `api_opengl` & `core`/`grr` findings (sessions 5a-5b)
+
+- **`tools/split_decomp.py` `_BOOL` string corruption**: the splitter's global
+  `_BOOL -> int` regex also rewrote two assert string literals inside
+  `generated/fragments/api/`: `"dataType == OGL_OUTPUTTYPE_BOOL"` (`oglGetter.inl`)
+  and `"dataType != GR_DATATYPE_BOOL"` (`oglUtil.inl:1342`). Always verify
+  assert strings containing `int` against `docs/libGLES_CM.dll` `.rdata`.
+- **CodeView `LF_ENUMERATE` (`0x0403`) enum orderings**: `GR_STENCILOP_e` is
+  `KEEP=0, REPLACE=1, INCR=2, DECR=3, ZERO=4, INVERT=5, MAX=6` (`0x152897`),
+  `GR_BLENDFACTOR_e` is `ZERO=0..ONE_MINUS_CONSTANT_ALPHA=14, MAX=15` (`0x151abb`),
+  and `GR_MATRIXMODE_e` is `MODELVIEW=0, PROJECTION=1, TEXTURE0=2, TEXTURE1=3,
+  PALETTE0=4..PALETTE_LAST=12, MAX=13` (`0x152983`).
+- **`grSetupTextureRectGradients` `_QWORD` store**: in `docs/libGLES_CM.dll.c`,
+  `*(_QWORD *)&zVal[29] = (unsigned int)expr` and `*(_QWORD *)&zVal[31] = (unsigned int)expr`
+  are 64-bit zero-extended stores into `int pairs[2][2]`, setting `pairs[coord][0]`
+  and zeroing `pairs[coord][1]` (`preShift = 0`).
+- **64-bit host portability in `oglContext_s` & `Gerbera_s`**: `oglCreateContext`
+  pads `sizeof(oglContext_s)` and the 13 `oglMatrixStack_s` allocations (`2532` B)
+  to `sizeof(void *)` alignment before carving `Gerbera_s` work memory, and
+  `eglGetJmpbufSize()` returns `(sizeof(jmp_buf) + 7) & ~7` (`200` B on x86_64
+  glibc vs `64` B on 32-bit x86).
+
 ## Strategy for full reconstruction
 
 1. Port leaf libraries first (hg done, imath next) - no struct unknowns.

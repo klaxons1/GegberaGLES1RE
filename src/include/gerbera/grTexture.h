@@ -87,6 +87,7 @@ enum GR_FILTERTYPE_e
 #define GR_FILTERMASK_FILTER_MIPMAPS 4
 #define GR_FILTERMASK_ALL 7
 #define GR_MAX_TEXTURE_MIPMAPS 11
+#define GR_MAX_TEXTURE_DIMENSION 1024
 #define GR_MAX_TEXTURE_DIMENSION_LOG2 10
 #define GR_MAX_TEXTURE_UNITS 2
 
@@ -97,17 +98,61 @@ enum GR_TEXCOORD_e
     GR_TEXCOORD_MAX = 2
 };
 
-/* one mip level (decompile cv_anon_1472; grInitTexture writes exactly these) */
+enum GR_TEXENVMODE_e
+{
+    GR_TEXENVMODE_MODULATE = 0,
+    GR_TEXENVMODE_DECAL = 1,
+    GR_TEXENVMODE_BLEND = 2,
+    GR_TEXENVMODE_REPLACE = 3,
+    GR_TEXENVMODE_ADD = 4,
+    GR_TEXENVMODE_COMBINE = 5,
+    GR_TEXENVMODE_MAX = 6
+};
+
+enum GR_TEXENVCOMBFUNC_e
+{
+    GR_TEXENVCOMBFUNC_MODULATE = 0,
+    GR_TEXENVCOMBFUNC_REPLACE = 1,
+    GR_TEXENVCOMBFUNC_ADD = 2,
+    GR_TEXENVCOMBFUNC_ADD_SIGNED = 3,
+    GR_TEXENVCOMBFUNC_INTERPOLATE = 4,
+    GR_TEXENVCOMBFUNC_SUBTRACT = 5,
+    GR_TEXENVCOMBFUNC_DOT3_RGB = 6,
+    GR_TEXENVCOMBFUNC_DOT3_RGBA = 7,
+    GR_TEXENVCOMBFUNC_MAX = 8
+};
+
+enum GR_TEXENVCOMBSRC_e
+{
+    GR_TEXENVCOMBSRC_TEXTURE = 0,
+    GR_TEXENVCOMBSRC_CONSTANT = 1,
+    GR_TEXENVCOMBSRC_PRIMARY_COLOR = 2,
+    GR_TEXENVCOMBSRC_PREVIOUS = 3,
+    GR_TEXENVCOMBSRC_MAX = 4
+};
+
+enum GR_TEXENVCOMBOPERAND_e
+{
+    GR_TEXENVCOMBOPERAND_SRC_COLOR = 0,
+    GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_COLOR = 1,
+    GR_TEXENVCOMBOPERAND_SRC_ALPHA = 2,
+    GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA = 3,
+    GR_TEXENVCOMBOPERAND_MAX = 4
+};
+
+struct Gerbera_s;
+
+/* one mip level (CodeView TI=0x1472, 16 bytes on 32-bit) */
 typedef struct _grMipLevel
 {
     void *pixels;
-    int log2Dim[2];
-    int texFormat;
-    int initialized;
+    short log2Dim[2];
+    unsigned short texFormat;
+    unsigned short initialized;
     int pbuffer;
 } _grMipLevel;
 
-/* texture format info row (decompile cv_anon_182B; s_infos[18] in
+/* texture format info row (CodeView TI=0x182B; s_infos[18] in
  * data.fragments.c 3351, indexed by GR_TEXTUREFORMAT) */
 typedef struct _grTextureFormatInfo
 {
@@ -125,46 +170,43 @@ typedef struct _grTextureFormatInfo
     unsigned char padding;
 } _grTextureFormatInfo;             /* 12 bytes */
 
-/* texture object (decompile cv_anon_1477). The named fields are always
- * accessed by name; the RAW-OFFSET consumers (grEvaluatePixelPipeline,
- * grRasterizer texture setup) pin these byte positions:
- *   +8   u16 texFormat (the descriptor source)
- *   +176 palette base pointer (copied into the pipe unit +8)
- *   +183 flags byte (0x10 -> signature, 0x20 -> rasterizer enable)
- *   +204/205 per-coord texcoord data format (0=u16, 1=u8, 2=u10; asserted)
- *   +206 flags (bit0 -> signature, bit1 -> rasterizer)
- *   +207 flags (bit0 -> signature)
- * The mipmap base offset is NOT pinned; everything between numMipLevels
- * and palette, and between palette and the coord formats, is unnamed DLL
- * data (pads below reserve the pinned gaps). */
+/* texture object (CodeView TI=0x1477, 208 bytes on 32-bit):
+ *   +0   mipmap[11]  (11 * 16 = 176 bytes; mipmap[0].texFormat at +8)
+ *   +176 palette     (void*)
+ *   +180 numMipLevels (short)
+ *   +182 target      (unsigned char)
+ *   +183 parmMask    (unsigned char: 1=dirty, 2=checked, 4=complete, 8=chain,
+ *                     0x10=square, 0x20=min!=mag)
+ *   +184 genMipMaps  (int)
+ *   +188 cropRect    (_grRect, 16 bytes)
+ *   +204 wrapMode[2] (unsigned char[2])
+ *   +206 filterMask[2] (unsigned char[2]: MIN=0, MAG=1) */
 typedef struct _grTexture
 {
-    unsigned int parmMask;              /* +0 */
-    unsigned char filterMask[2];        /* +4 */
-    unsigned char wrapMode[2];          /* +6 */
-    unsigned short texFormat;           /* +8  (DLL u16, pinned) */
-    unsigned char target;               /* +10 */
-    unsigned char numMipLevels;         /* +11 */
-    unsigned char pad12[164];           /* +12..175 (DLL unnamed params) */
-    void *palette;                      /* +176 (DLL, pinned) */
-    unsigned char pad180[3];            /* +180..182 */
-    unsigned char flags183;             /* +183 (DLL, pinned) */
-    unsigned char pad184[20];           /* +184..203 (DLL unnamed) */
-    unsigned char coordFormat[2];       /* +204/205 (DLL, pinned) */
-    unsigned char flags206;             /* +206 (DLL, pinned) */
-    unsigned char flags207;             /* +207 (DLL, pinned) */
-    _grMipLevel mipmap[GR_MAX_TEXTURE_MIPMAPS]; /* base UNPINNED */
-    _grRect cropRect;
+    _grMipLevel mipmap[GR_MAX_TEXTURE_MIPMAPS];
+    void *palette;
+    short numMipLevels;
+    unsigned char target;
+    unsigned char parmMask;
     int genMipMaps;
+    _grRect cropRect;
+    unsigned char wrapMode[2];
+    unsigned char filterMask[2];
 } _grTexture;
 
 int grIsValidTexture(_grTexture *texture);
 void grUpdateTexture(_grTexture *texture);
+int  grrGetBitsPerPixel(int texFormat);
 void grrGetTextureFormatDescriptor(_grSurfaceDescriptor *desc, int texFormat);
+void grrSelfTest(void);
+int  grrSetupTextureLevel(_grTexture *texture, int mipLevel, int width, int height, int texFormat);
+void grrReplaceTextureLevel(_grTexture *texture, int mipLevel, void *pixels, int width, int height, int texFormat);
+int  grrCalcTextureMipmaps(struct Gerbera_s *state, _grTexture *texture);
+void grrFreeTextureLevel(_grTexture *texture, int mipLevel);
+void grrFreeTextureData(_grTexture *texture);
+int  grrSetPalettedTexture(_grTexture *texture, _grSurfaceDescriptor *inDesc, int texFormat,
+                           int width, int height, int numLevels, void *data);
 
-/* texture-env combine ranges (grEvaluatePixelPipeline asserts) */
-#define GR_TEXENVCOMBSRC_MAX 4
-#define GR_TEXENVCOMBFUNC_MAX 8
 int grGetTextureTargetDimensionality(int texTarget);
 
 void grInitTexture(_grTexture *texture);
@@ -183,8 +225,6 @@ void grSetTextureFilter(_grTexture *texture, int filterType, unsigned int filter
 unsigned int grGetTextureFilter(_grTexture *texture, int filterType);
 
 int grIsPalettedTextureFormat(int texFormat);
-void grrFreeTextureLevel(_grTexture *texture, int mipLevel);
-void grrFreeTextureData(_grTexture *texture);
 
 HG_EXTERN_C_END
 

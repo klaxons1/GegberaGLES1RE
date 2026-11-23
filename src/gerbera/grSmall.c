@@ -231,3 +231,21 @@ int grGetRectGradients(Gerbera_s *state)
 {
     return state->screenRectGradients;
 }
+
+/* --- grGetMinWorkMemorySize / grGetMinSharedMemorySize (grSmall.c) ---------
+ * On 32-bit x86/ARM, sizeof(Gerbera_s) == 7664 and 32 * sizeof(_grCacheEntry)
+ * == 2048, totaling 9712. On 64-bit hosted builds pointers widen the structs,
+ * so the aligned struct sizes are used (which evaluate to 9712 on 32-bit). */
+
+int grGetMinWorkMemorySize(void)
+{
+    int stateBytes = ((int)sizeof(Gerbera_s) + 7) & ~7;
+    int entryBytes = 32 * (((int)sizeof(_grCacheEntry) + 7) & ~7);
+
+    return hgMax32(9712, stateBytes + entryBytes);
+}
+
+int grGetMinSharedMemorySize(void)
+{
+    return GR_RENDER_STACK_SIZE;
+}

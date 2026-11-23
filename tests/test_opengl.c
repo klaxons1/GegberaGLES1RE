@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "GLES/gl.h"
+#include "gerbera/grRGBA.h"
 #include "gerbera/api_opengl/oglContext.h"
 
 static int g_checks = 0;
@@ -365,6 +366,199 @@ static void test_getters(void)
     CHECK(ctx.error == OGL_ERROR_INVALID_ENUM);
 }
 
+static void test_ogl_util(void)
+{
+    grMemoryImage_s img;
+    float fv[4];
+    int   xv[4] = { 0x04000, 0x08000, 0x0C000, 0x10000 };
+    float inF[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+    _XColor3 xc;
+    _IFVector4 v4;
+
+    /* Run the original driver self-test verifying round-trip enum mappings */
+    oglMappingTest();
+
+    /* Fixed/float/color/input converters */
+    CHECK(NEAR_F(oglFixedToFloat(0x10000), 1.0f, 1e-6f));
+    CHECK(oglFloatToFixed(1.5f) == 0x18000);
+    CHECK(NEAR_F(oglFloatClampUnit(-0.5f), 0.0f, 1e-6f));
+    CHECK(NEAR_F(oglFloatClampUnit(2.5f), 1.0f, 1e-6f));
+    CHECK(NEAR_F(oglFixedClampUnit(-100), 0.0f, 1e-6f));
+    CHECK(NEAR_F(oglFixedClampUnit(0x20000), 1.0f, 1e-6f));
+    CHECK(oglFloatsToRGBA(1.0f, 0.0f, 0.0f, 1.0f) == grSetRGBA(255, 0, 0, 255));
+    CHECK(oglFixedToRGBA(0, 0x10000, 0, 0x10000) == grSetRGBA(0, 255, 0, 255));
+
+    oglRGBAToFloatv(grSetRGBA(255, 0, 255, 0), fv);
+    CHECK(NEAR_F(fv[0], 1.0f, 1e-5f) && NEAR_F(fv[1], 0.0f, 1e-5f) &&
+          NEAR_F(fv[2], 1.0f, 1e-5f) && NEAR_F(fv[3], 0.0f, 1e-5f));
+
+    oglInputToXColor3(&xc, inF, OGL_INPUTTYPE_FLOAT);
+    CHECK(oglInputAlpha(inF, OGL_INPUTTYPE_FLOAT) == 0xFFFFu);
+    CHECK(oglInputToRGBA(xv, OGL_INPUTTYPE_FIXED) == grSetRGBA(64, 128, 192, 255));
+    CHECK(oglInputToIScalarDirect(&inF[1], OGL_INPUTTYPE_FLOAT) == IScalar_immediate(0.5f));
+    CHECK(oglInputToIScalarDirect(&xv[1], OGL_INPUTTYPE_FIXED) == IScalar_immediate(0.5f));
+    CHECK(oglTestInput(xv, 0, OGL_INPUTTYPE_FIXED) == 1);
+    CHECK(NEAR_F(oglInputToFloatDirect(&xv[2], OGL_INPUTTYPE_FIXED), 0.75f, 1e-6f));
+    oglInputToIFVector4Direct(&v4, inF, OGL_INPUTTYPE_FLOAT);
+    CHECK((unsigned int)IFVector4_getf(&v4, 3) == hgFloatBitPattern(1.0f));
+    oglInputToIFVector4W0(&v4, xv, OGL_INPUTTYPE_FIXED);
+    CHECK(IFVector4_getf(&v4, 3) == 0);
+    CHECK(oglInputToInteger(&xv[3], OGL_INPUTTYPE_FIXED) == 0x10000);
+    CHECK(oglInputToInteger(&inF[3], OGL_INPUTTYPE_FLOAT) == 1);
+    oglInputToFloatv(fv, xv, OGL_INPUTTYPE_FIXED, 4);
+    CHECK(NEAR_F(fv[0], 0.25f, 1e-6f) && NEAR_F(fv[3], 1.0f, 1e-6f));
+
+    /* Enum mappers */
+    CHECK(oglMapDataType(GL_BYTE) == GR_DATATYPE_INT8);
+    CHECK(oglMapDataType(GL_UNSIGNED_BYTE) == GR_DATATYPE_UINT8);
+    CHECK(oglMapDataType(GL_SHORT) == GR_DATATYPE_INT16);
+    CHECK(oglMapDataType(GL_FLOAT) == GR_DATATYPE_FLOAT);
+    CHECK(oglMapDataType(GL_FIXED) == GR_DATATYPE_FIXED);
+    CHECK(oglMapDataType(GL_UNSIGNED_SHORT_5_6_5) == GR_DATATYPE_MAX);
+
+    CHECK(oglMapCapability(GL_DEPTH_TEST) == GR_CAPABILITY_DEPTH_TEST);
+    CHECK(oglMapCapability(GL_BLEND) == GR_CAPABILITY_BLEND);
+    CHECK(oglMapCapability(GL_LIGHT0 + 5) == GR_CAPABILITY_LIGHT0 + 5);
+    CHECK(oglMapCapability(GL_CLIP_PLANE0 + 3) == GR_CAPABILITY_CLIP_PLANE0 + 3);
+    CHECK(oglMapCapability(0xDEADu) == GR_CAPABILITY_MAX);
+
+    CHECK(oglMapStencilOp(GL_ZERO) == GR_STENCILOP_ZERO);
+    CHECK(oglMapStencilOp(GL_INCR) == GR_STENCILOP_INCR);
+    CHECK(oglMapStencilOp(GL_INVERT) == GR_STENCILOP_INVERT);
+    CHECK(oglMapBlendFactor(GL_SRC_ALPHA) == GR_BLENDFACTOR_SRC_ALPHA);
+    CHECK(oglMapBlendFactor(GL_ONE_MINUS_SRC_ALPHA) == GR_BLENDFACTOR_ONE_MINUS_SRC_ALPHA);
+    CHECK(oglMapMatrixMode(GL_MODELVIEW) == GR_MATRIXMODE_MODELVIEW);
+    CHECK(oglMapMatrixMode(GL_PROJECTION) == GR_MATRIXMODE_PROJECTION);
+    CHECK(oglMapMatrixMode(GL_TEXTURE) == GR_MATRIXMODE_TEXTURE0);
+    CHECK(oglMapMatrixMode(GL_MATRIX_PALETTE_OES) == GR_MATRIXMODE_PALETTE0);
+
+    CHECK(oglMapBufferMask(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT) == 7u);
+    CHECK(oglMapBufferMask(GL_DEPTH_BUFFER_BIT) == 2u);
+
+    /* Texture format & memory image helpers */
+    CHECK(oglMapInternalTextureFormatAndType(GL_RGB, GL_UNSIGNED_SHORT_5_6_5) == GR_TEXTUREFORMAT_RGB565);
+    CHECK(oglMapInternalTextureFormatAndType(GL_RGBA, GL_UNSIGNED_BYTE) == GR_TEXTUREFORMAT_RGBA8);
+    CHECK(oglIsCompatibleTextureType(GL_RGB, GL_UNSIGNED_SHORT_5_6_5) == 1);
+    CHECK(oglIsCompatibleTextureType(GL_RGBA, GL_UNSIGNED_SHORT_5_6_5) == 0);
+    CHECK(oglIsCompatibleInternalFormat(GL_RGB, GR_TEXTUREFORMAT_RGB565) == 1);
+    CHECK(oglIsCompatibleInternalFormat(GL_RGB, GR_TEXTUREFORMAT_RGBA8) == 0);
+
+    memset(&img, 0, sizeof(img));
+    oglFillMemoryImageFormat(&img, GL_RGB, GL_UNSIGNED_SHORT_5_6_5);
+    CHECK(img.useDescriptor == 1 && img.bytesPerPixel == 2);
+
+    memset(&img, 0, sizeof(img));
+    oglFillMemoryImageFormat(&img, GL_RGBA, GL_UNSIGNED_BYTE);
+    CHECK(img.useDescriptor == 0 && img.bytesPerPixel == 4 &&
+          img.dataType == GR_DATATYPE_UINT8 && img.imageFormat == GR_IMAGEFORMAT_RGBA);
+}
+
+static void test_ogl_context(void)
+{
+    oglContext_s *ctx1;
+    oglContext_s *ctx2;
+    oglSurfaceDescriptor_s surfDesc;
+    static unsigned short colorBuf[32 * 32];
+    static unsigned int   depthBuf[32 * 32];
+    static unsigned char  stencilBuf[32 * 32];
+    static unsigned int   surfTexPixels[8 * 8];
+    int outI[4];
+    float outF[4];
+    float amb[4]  = { 0.1f, 0.2f, 0.3f, 0.8f };
+    float lpos[4] = { 1.0f, 2.0f, 3.0f, 1.0f };
+
+    /* Unbound current context returns NULL and records EGL_NOT_INITIALIZED (0x3001) */
+    egliSetCurrentContext(NULL);
+    CHECK(oglGetContext() == NULL);
+    CHECK(eglGetLastErrorHosted() == 0x3001);
+
+    /* Standalone context creation & default GLES 1.1 state */
+    ctx1 = oglCreateContext(NULL, NULL);
+    CHECK(ctx1 != NULL);
+    CHECK(oglIsValidContext(ctx1) == 1);
+    oglCheckValidity(ctx1);
+
+    egliSetCurrentContext(ctx1);
+    CHECK(oglGetContext() == ctx1);
+
+    /* Shared context: shares textureManager + bufObjManager + sharedWorkMem */
+    ctx2 = oglCreateContext(ctx1, ctx1);
+    CHECK(ctx2 != NULL);
+    CHECK(ctx2->textureManager == ctx1->textureManager);
+    CHECK(ctx2->bufObjManager == ctx1->bufObjManager);
+    CHECK(ctx2->sharedWorkMem == ctx1->sharedWorkMem);
+    CHECK(ctx1->shareListNext == ctx2 && ctx2->shareListPrev == ctx1);
+    CHECK(ctx1->shareMemNext == ctx2 && ctx2->shareMemPrev == ctx1);
+
+    /* Allocate a texture in ctx1 -> visible in ctx2 */
+    CHECK(oglAllocateTexture(ctx1->textureManager, 42u) == 1);
+    CHECK(oglIsTexture(ctx2->textureManager, 42u) == 1);
+
+    /* Destroy ctx2 first -> ctx1 keeps shared managers & unlinks cleanly */
+    oglDestroyContext(ctx2);
+    CHECK(ctx1->shareListNext == NULL && ctx1->shareListPrev == NULL);
+    CHECK(ctx1->shareMemNext == NULL && ctx1->shareMemPrev == NULL);
+    CHECK(oglIsTexture(ctx1->textureManager, 42u) == 1);
+
+    /* Bind RGB565 + D32 + S8 buffers via oglSetBuffers and query channel bits */
+    memset(&surfDesc, 0, sizeof(surfDesc));
+    surfDesc.width               = 32;
+    surfDesc.height              = 32;
+    surfDesc.colorBuffer         = colorBuf;
+    surfDesc.depthBuffer         = depthBuf;
+    surfDesc.stencilBuffer       = stencilBuf;
+    surfDesc.colorBufferStride   = 32 * 2;
+    surfDesc.depthBufferStride   = 32 * 4;
+    surfDesc.stencilBufferStride = 32;
+    surfDesc.colorBytes          = 2;
+    surfDesc.depthBytes          = 4;
+    surfDesc.stencilBytes        = 1;
+    surfDesc.redBits             = 5;
+    surfDesc.redOffset           = 11;
+    surfDesc.greenBits           = 6;
+    surfDesc.greenOffset         = 5;
+    surfDesc.blueBits            = 5;
+    surfDesc.blueOffset          = 0;
+    surfDesc.alphaBits           = 0;
+    surfDesc.alphaOffset         = 0;
+
+    CHECK(oglIsValidSurfaceDescriptor(&surfDesc) == 1);
+    oglSetBuffers(ctx1, &surfDesc, &surfDesc);
+    oglGetInternal(ctx1, GL_RED_BITS, outI, OGL_OUTPUTTYPE_INT);
+    CHECK(outI[0] == 5);
+    oglGetInternal(ctx1, GL_GREEN_BITS, outI, OGL_OUTPUTTYPE_INT);
+    CHECK(outI[0] == 6);
+    oglGetInternal(ctx1, GL_DEPTH_BITS, outI, OGL_OUTPUTTYPE_INT);
+    CHECK(outI[0] == 32);
+    oglGetInternal(ctx1, GL_STENCIL_BITS, outI, OGL_OUTPUTTYPE_INT);
+    CHECK(outI[0] == 8);
+    CHECK(ctx1->drawSurfaceWidth == 32 && ctx1->drawSurfaceHeight == 32);
+
+    /* Client state, material & light internal helpers */
+    oglSetClientState(ctx1, GL_VERTEX_ARRAY, 1);
+    oglGetInternal(ctx1, GL_VERTEX_ARRAY, outI, OGL_OUTPUTTYPE_INT);
+    CHECK(outI[0] == 1);
+    oglMaterialInternal(ctx1, GL_FRONT_AND_BACK, GL_AMBIENT, amb, OGL_INPUTTYPE_FLOAT);
+    CHECK(NEAR_F(ctx1->materialColors[GR_MATERIALCOLOR_AMBIENT][0], 0.1f, 1e-5f) &&
+          NEAR_F(ctx1->materialColors[GR_MATERIALCOLOR_AMBIENT][3], 0.8f, 1e-5f));
+    oglLightInternal(ctx1, GL_LIGHT0, GL_POSITION, lpos, OGL_INPUTTYPE_FLOAT);
+    CHECK(ctx1->gerbera->lights[0].positional == 1);
+    (void)outF;
+
+    /* Bind texture & EGL surface texture bind/release */
+    oglBindTexture(ctx1, 0, GR_TEXTURETARGET_2D, 42u);
+    ctx1->textureEnabled[0][GR_TEXTURETARGET_2D] = 1;
+    CHECK(oglSetSurfaceTexture(ctx1, surfTexPixels, 8, 8, GL_RGBA, 0, 1) == 1);
+    CHECK(oglIsSurfaceTextureReleased(ctx1, 42u) == 0);
+    oglUpdateTextureUnit(ctx1, 0);
+    CHECK(grTestCapability(ctx1->gerbera, GR_CAPABILITY_TEXTURE_0) == 1);
+    oglReleaseSurfaceTexture(ctx1, 42u, 0);
+    CHECK(oglIsSurfaceTextureReleased(ctx1, 42u) == 1);
+
+    egliSetCurrentContext(NULL);
+    oglDestroyContext(ctx1);
+}
+
 int main(void)
 {
     test_error_and_descriptor();
@@ -372,6 +566,8 @@ int main(void)
     test_tex_manager();
     test_bufobj_manager();
     test_getters();
+    test_ogl_util();
+    test_ogl_context();
 
     printf("opengl tests: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

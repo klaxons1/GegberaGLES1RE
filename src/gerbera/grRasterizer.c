@@ -1010,3 +1010,154 @@ void grDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri,
         grDrawClippedTriangle(state, &quad, origIndices, 8);
     }
 }
+
+/* --- grSetupTextureUnit (grRasterizer.inl 69; DLL 25345-25526) ------------- */
+
+void grSetupTextureUnit(Gerbera_s *state, int texIndex, int (*g0)[2], int v0sx, int v0sy)
+{
+    _grPixelPipe *pipe = GR_PIXEL_PIPE(state);
+    _grTexture *texture = (_grTexture *)state->textureUnit[2 * texIndex].texture;
+    int activeGradMask = state->activeGradientMask;
+    int isMag = 1;
+    int mipLevel = 0;
+    unsigned char filterByte;
+    int linear;
+    _grMipLevel *mipmap;
+    _grPixelPipeTextureUnit *tex;
+    int halfTexel;
+    int i;
+
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS-1)", "grRasterizer.inl", 69) != 0)
+        grDie(0);
+    if (texture == NULL &&
+        grAssert("texture", "grRasterizer.inl", 70) != 0)
+        grDie(0);
+
+    if ((texture->parmMask & 0x20u) != 0)
+    {
+        HGuint64 maxRho2 = hgToUnsigned64(hgZero64());
+        for (i = 1; i >= 0; --i)
+        {
+            if (((64 << (i + 2 * texIndex)) & activeGradMask) != 0)
+            {
+                int gradIdx = i + 6 + 2 * texIndex;
+                int xAdd = pipe->xAdder[gradIdx];
+                int shift = texture->mipmap[0].log2Dim[i];
+                int yAdd = pipe->yAdder[gradIdx];
+                HGint64 sumSq = hgMadd64(hgMul64(xAdd, xAdd), yAdd, yAdd);
+                int rsh = hgClamp32_0_x(2 * (10 - shift + g0[i][1] - 3), 63);
+                HGuint64 rho2 = hgToUnsigned64(hgLsr64(sumSq, rsh));
+
+                if (shift > 20 &&
+                    grAssert("shift <= 20", "grRasterizer.inl", 106) != 0)
+                    grDie(0);
+                if (hgLessThan64u(maxRho2, rho2) != 0)
+                    maxRho2 = rho2;
+            }
+        }
+        if (hgGet64uh(maxRho2) < 0x8000u)
+        {
+            unsigned int scaled = (unsigned int)hgLsl64h_0_31(hgToSigned64(maxRho2), 16);
+            int adj = (int)((scaled >> 3) + scaled);
+            mipLevel = hgMaxZero32((20 - hgClz32((unsigned int)adj)) >> 1);
+            if (mipLevel > 0)
+            {
+                isMag = 0;
+                mipLevel = hgMin32(mipLevel, texture->numMipLevels - 1);
+            }
+        }
+        else
+        {
+            isMag = 0;
+            mipLevel = texture->numMipLevels - 1;
+        }
+        if ((texture->filterMask[GR_FILTERTYPE_MIN] & GR_FILTERMASK_USE_MIPMAPS) == 0)
+            mipLevel = 0;
+    }
+
+    if (hgInRange32(mipLevel, 0, texture->numMipLevels - 1) == 0 &&
+        grAssert("hgInRange32(mipLevel, 0, texture->numMipLevels-1)", "grRasterizer.inl", 139) != 0)
+        grDie(0);
+
+    filterByte = texture->filterMask[isMag != 0 ? GR_FILTERTYPE_MAG : GR_FILTERTYPE_MIN];
+    linear = (filterByte & GR_FILTERMASK_FILTER) != 0;
+    mipmap = &texture->mipmap[mipLevel];
+    tex = &pipe->textureUnit[texIndex];
+    halfTexel = linear ? 0x100000 : 0;
+
+    if (mipmap->pixels == NULL &&
+        grAssert("mipmap->pixels", "grRasterizer.inl", 152) != 0)
+        grDie(0);
+    if (mipmap->log2Dim[GR_TEXCOORD_S] < 0 &&
+        grAssert("mipmap->log2Dim[GR_TEXCOORD_S] >= 0", "grRasterizer.inl", 153) != 0)
+        grDie(0);
+    if (mipmap->log2Dim[GR_TEXCOORD_T] < 0 &&
+        grAssert("mipmap->log2Dim[GR_TEXCOORD_T] >= 0", "grRasterizer.inl", 154) != 0)
+        grDie(0);
+
+    for (i = 1; i >= 0; --i)
+    {
+        if (((64 << (i + 2 * texIndex)) & activeGradMask) != 0)
+        {
+            int gradIdx = i + 6 + 2 * texIndex;
+            if (mipmap->log2Dim[i] != 0)
+            {
+                int relShift = mipmap->log2Dim[i] - g0[i][1];
+                int bias = halfTexel;
+                int xAdd = pipe->xAdder[gradIdx];
+                int yAdd = pipe->yAdder[gradIdx];
+                int ref;
+                int lsh = 0;
+                int baseShift = 0;
+
+                if (relShift >= 0)
+                    bias >>= relShift;
+                else
+                    bias <<= -relShift;
+
+                ref = g0[i][0] + grComputeGradientReference(v0sx, v0sy, xAdd, yAdd) - bias;
+                switch (texture->wrapMode[i])
+                {
+                case GR_WRAPMODE_REPEAT:
+                    lsh = 11 - g0[i][1];
+                    baseShift = 32;
+                    break;
+                case GR_WRAPMODE_CLAMP_TO_EDGE:
+                    lsh = 0;
+                    baseShift = g0[i][1] + 21;
+                    break;
+                case GR_WRAPMODE_MIRRORED_REPEAT:
+                    lsh = 10 - g0[i][1];
+                    baseShift = 31;
+                    break;
+                default:
+                    imAssert("0", "grRasterizer.inl", 183);
+                    break;
+                }
+                pipe->xAdder[gradIdx] = xAdd << lsh;
+                pipe->yAdder[gradIdx] = yAdd << lsh;
+                pipe->reference[gradIdx] = ref << lsh;
+                tex->rShift[i] = baseShift - mipmap->log2Dim[i];
+                if ((unsigned int)tex->rShift[i] > 31u &&
+                    grAssert("tex->rShift[i] >= 0 && tex->rShift[i] <= 31",
+                             "grRasterizer.inl", 202) != 0)
+                    grDie(0);
+            }
+            else
+            {
+                pipe->xAdder[gradIdx] = 0;
+                pipe->yAdder[gradIdx] = 0;
+                pipe->reference[gradIdx] = 0;
+                tex->rShift[i] = 0;
+            }
+        }
+    }
+
+    tex->pixels = mipmap->pixels;
+    tex->sMask = (1 << mipmap->log2Dim[GR_TEXCOORD_S]) - 1;
+    tex->tMask = (1 << mipmap->log2Dim[GR_TEXCOORD_T]) - 1;
+    tex->log2DimS = mipmap->log2Dim[GR_TEXCOORD_S];
+    tex->linear = linear;
+    tex->palette = texture->palette;
+}

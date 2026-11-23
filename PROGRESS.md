@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 5a)
+Last updated: 2026-11-22 (session 5b)
 
 ## Legend
 
@@ -14,10 +14,10 @@ Last updated: 2026-11-22 (session 5a)
 |---|---|---|---|
 | hg | renderer/libs/hg | 105 | **DONE** (session 1) |
 | imath | renderer/libs/imath | 198 | **IN PROGRESS** - scalar + vector/matrix layers done (sessions 2-3; all `api_opengl` call targets present) |
-| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z, 4g, 5a) - core + `HC_compile` pipeline + `grGetInteger`/`grGetIScalar` |
-| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z, 5a) - clears, texture format/free, texture rect |
-| gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | **IN PROGRESS** (session 5a) - `GLES/gl.h`, `oglContext.h` (CodeView `TI=0x145B..0x1652`), `oglError`, `oglDescriptor`, `oglMatrixStack`, `oglTexManager`, `oglBufObjManager`, `oglGetter` (55 funcs, 224 checks); `oglUtil`, `oglContext`, `oglFast`, `oglApi` next |
-| gerbera/hc | .../gerbera/hc | 296 | **DONE** (sessions 4a-4g) - ALL 17 TUs ported (`hcCompiler.c` + `hcPanicRegalloc.inl`, x86 & ARM32 JIT backends, optimizer, regalloc, interpreter, bytecode; 2,254 core checks) |
+| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z, 4g, 5a, 5b) - full core lifecycle (`grCreateGerbera`/`grDestroyGerbera`/`grSetSurfaces`), texenv, vertex/point API, `grSetupTextureUnit`, & `HC_compile` pipeline |
+| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z, 5a, 5b) - clears, `grrTexture` (levels, box-filtered mipmaps, paletted textures, self-test), `grrBlit` (blits & downsampling), texture rect |
+| gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | **IN PROGRESS** (sessions 5a-5b) - `GLES/gl.h`, `oglContext.h`, `oglError`, `oglDescriptor`, `oglMatrixStack`, `oglTexManager`, `oglBufObjManager`, `oglGetter`, `oglUtil` (56 funcs), `oglContext` (13 funcs) = **123 funcs** done (303 checks); `oglFast` & `oglApi` next |
+| gerbera/hc | .../gerbera/hc | 296 | **DONE** (sessions 4a-4g) - ALL 17 TUs ported (`hcCompiler.c` + `hcPanicRegalloc.inl`, x86 & ARM32 JIT backends, optimizer, regalloc, interpreter, bytecode; 2,327 core checks) |
 | egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
 | egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
 | crt/platform | Symbian + MSL runtime | 44 | n/a (reference) |
@@ -1730,6 +1730,58 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
 - **Next up (Session 5b)**: remaining `grApiSmall.c` / `grrTexture.c` /
   `grrBlit.c` helpers + full `oglUtil.c` + `oglContext.c`, followed by
   **Session 5c** (`oglFast.c` + `oglApi.c` `gl*` entry points).
+
+## DONE session 5b (`core`/`grr` surface, texture, & blit layers + `oglUtil` & `oglContext`)
+
+- **CodeView NB11 enum & struct verification (`docs/libGLES_CM.dll`)**:
+  - Verified exact CodeView `LF_ENUMERATE` (`0x0403`) orderings for
+    `GR_STENCILOP_e` (`KEEP=0, REPLACE=1, INCR=2, DECR=3, ZERO=4, INVERT=5, MAX=6`),
+    `GR_BLENDFACTOR_e` (`ZERO=0..ONE_MINUS_CONSTANT_ALPHA=14, MAX=15`), and
+    `GR_MATRIXMODE_e` (`MODELVIEW=0, PROJECTION=1, TEXTURE0=2, TEXTURE1=3,
+    PALETTE0=4..PALETTE_LAST=12, MAX=13`), plus `grBlitInfo_s` / `grBlitImage_s` /
+    `grMemoryImage_s` (`TI=0x15D1..0x1659`) and `oglSurfaceDescriptor_s`
+    (`TI=0x167E`).
+  - Fixed a real Hex-Rays `_QWORD`-zero-extension bug in `grSetupTextureRectGradients`
+    (`src/gerbera/grApiFast.c`), where `*(_QWORD *)&zVal[29]` and
+    `*(_QWORD *)&zVal[31]` zero `pairs[0][1]` and `pairs[1][1]` (`preShift = 0`)
+    while writing `pairs[0][0]` and `pairs[1][0]`.
+- **Completed remaining `core` & `grr` runtime layers**:
+  - `src/gerbera/grSmall.c` & `src/gerbera/grApiSmall.c`: `grGetMinWorkMemorySize`,
+    `grGetMinSharedMemorySize`, `grScratchGrowMemory`, `grCreateGerbera`,
+    `grDestroyGerbera`, `grIsValidSurfaceInfo`, `grSetSurfaces`,
+    `grSetActiveTexture`, all 19 `grSetTexEnv*`/`grGetTexEnv*` +
+    `grSetTexCoordReplace`/`grGetTexCoordReplace`, `grSetVertexArray`,
+    `grSetPointSize*`, `grSetPointFadeThreshold`, `grSetPointDistAttn`,
+    `grSetLineWidth`, `grSetVertexColor`, `grSetVertexNormal`, and
+    `grSetVertexTexCoord`.
+  - `src/gerbera/grrTexture.c` & `src/gerbera/grrBlit.c` & `src/gerbera/grRasterizer.c`:
+    `grrGetBitsPerPixel`, `grrSelfTest`, `grrSetupTextureLevel`,
+    `grrReplaceTextureLevel`, `grrCalcTextureMipmaps`, `grrSetPalettedTexture`,
+    `grReadDataTypeColor`, `grWriteDataTypeColor`, `grrConvertBlitImage`,
+    `grrCopyColorSpan`, `grrBoxFilterLoop8/16/32`, `grrDownsample`, `grrBlitMipmap`,
+    `grrBlit`, and full `grSetupTextureUnit` (LOD selection & wrap-mode shift setup).
+  - `src/gerbera/grrStubs.c`: hosted `eglAllocExecutable`/`eglFreeExecutable`,
+    `eglGetJmpbufSize` (host `sizeof(jmp_buf)` rounded to 8B), `eglHCWrapSetjmp`/
+    `eglHCWrapLongjmp`, `grGetBackend` (`HCX86Backend_create`), and current-context/
+    EGL-error state until `egl` lands.
+- **Ported `oglUtil.c` (56 functions) & `oglContext.c` (13 functions)**:
+  - `src/gerbera/api_opengl/oglUtil.c`: fixed/float/color/input converters,
+    sorted binary-search & `.rdata` enum lookup tables + `oglMappingTest()`
+    (verified `s_texEnvModes[5]`), texture format compatibility &
+    `oglFillMemoryImageFormat`, `oglBindTexture` / `oglUpdateTextureUnit`, and
+    `oglSetClientState` / `oglMaterialInternal` / `oglLightInternal`.
+  - `src/gerbera/api_opengl/oglContext.c`: pointer-aligned context + 13 matrix
+    stacks + `Gerbera_s` work-memory carving, doubly-linked `shareList` &
+    `shareMem` lists, full GLES 1.1 default state init, `oglSetBuffers`, and
+    `oglSetSurfaceTexture` / `oglReleaseSurfaceTexture` /
+    `oglIsSurfaceTextureReleased`.
+- **Tests (`make test`)**: **3,236 checks, 0 failures, 0 warnings** (`hg`: 295,
+  `imath`: 311, `core`: 2,327, `opengl`: 303 across 60 `.c` files).
+- **Next up (Session 5c)**: `oglFast.c` (`oglGetPrimitiveType`,
+  `oglUpdateCoreMatrices`, `oglSetupRendering`, `oglMapPrimitive`,
+  `glDrawArrays`, `glDrawElements`, `glDrawTex*OES`) and `oglApi.c` (all
+  remaining `gl*` entry points).
+
 
 
 

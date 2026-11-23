@@ -45,6 +45,7 @@ LIB_SRC := \
              src/gerbera/hc/grInterpreter.c \
              src/gerbera/hc/g_pixelPipeBytecode.c \
 src/gerbera/grrTexture.c \
+ src/gerbera/grrBlit.c \
  src/gerbera/grTransform.c \
  src/gerbera/grFill.c \
  src/gerbera/grrClear.c \
@@ -57,6 +58,7 @@ src/gerbera/grrTexture.c \
     src/gerbera/api_opengl/oglTexManager.c \
     src/gerbera/api_opengl/oglBufObjManager.c \
     src/gerbera/api_opengl/oglUtil.c \
+    src/gerbera/api_opengl/oglContext.c \
     src/gerbera/api_opengl/oglGetter.c \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
@@ -83,17 +85,17 @@ $(BUILD)/%.o: %.c
 $(BUILD)/libgerbera.a: $(LIB_OBJ)
 	$(AR) rcs $@ $^
 
-$(BUILD)/test_hg: $(filter src/hg/%,$(LIB_OBJ)) tests/test_hg.c
+$(BUILD)/test_hg: $(BUILD)/libgerbera.a tests/test_hg.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(filter src/hg/%,$(LIB_SRC)) tests/test_hg.c -lm -o $@
+	$(CC) $(CFLAGS) tests/test_hg.c $(BUILD)/libgerbera.a -lm -o $@
 
-$(BUILD)/test_imath: $(LIB_OBJ) tests/test_imath.c
+$(BUILD)/test_imath: $(BUILD)/libgerbera.a tests/test_imath.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LIB_SRC) tests/test_imath.c -lm -o $@
+	$(CC) $(CFLAGS) tests/test_imath.c $(BUILD)/libgerbera.a -lm -o $@
 
-$(BUILD)/test_core: $(LIB_OBJ) tests/test_core.c
+$(BUILD)/test_core: $(BUILD)/libgerbera.a tests/test_core.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LIB_SRC) tests/test_core.c -lm -o $@
+	$(CC) $(CFLAGS) tests/test_core.c $(BUILD)/libgerbera.a -lm -o $@
 
 $(BUILD)/test_opengl: $(BUILD)/libgerbera.a tests/test_opengl.c
 	@mkdir -p $(dir $@)

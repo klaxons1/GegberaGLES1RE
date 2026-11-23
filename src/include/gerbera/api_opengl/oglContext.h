@@ -337,7 +337,7 @@ typedef struct oglContext_s
     int                 drawSurfaceHeight;
     void               *workMemory;
     void               *sharedWorkMem;
-    unsigned int        activeTextures[GR_MAX_TEXTURE_UNITS][GR_TEXTURETARGET_MAX];
+    unsigned int        activeTextures[GR_TEXTURETARGET_MAX][GR_MAX_TEXTURE_UNITS];
     unsigned char       textureEnabled[GR_MAX_TEXTURE_UNITS][GR_TEXTURETARGET_MAX];
     float               materialColors[4][4];
     float               lightAlphas[GR_MAX_LIGHTS][4];
@@ -347,6 +347,31 @@ typedef struct oglContext_s
     int                 pointSizeMax;
     char                rendererStr[48];
 } oglContext_s;
+
+/* --- OpenGL ES surface descriptor (CodeView TI=0x167E, 76 bytes on 32-bit) -- */
+
+typedef struct oglSurfaceDescriptor_s
+{
+    int   width;
+    int   height;
+    void *colorBuffer;
+    void *depthBuffer;
+    void *stencilBuffer;
+    int   colorBufferStride;
+    int   depthBufferStride;
+    int   stencilBufferStride;
+    int   colorBytes;
+    int   depthBytes;
+    int   stencilBytes;
+    int   redBits;
+    int   redOffset;
+    int   greenBits;
+    int   greenOffset;
+    int   blueBits;
+    int   blueOffset;
+    int   alphaBits;
+    int   alphaOffset;
+} oglSurfaceDescriptor_s;
 
 /* --- oglError.inl ---------------------------------------------------------- */
 void oglSetError(oglContext_s *context, OGL_ERROR error);
@@ -400,8 +425,107 @@ int                 oglSetupBufObj(oglBufObj_s *bufObj, OGL_BUFOBJUSAGE usage, i
 oglBufObj_s        *oglGetActiveBufObj(oglContext_s *context, OGL_BUFOBJTARGET bufObjTarget);
 void                oglBindBuffer(oglContext_s *context, OGL_BUFOBJTARGET bufObjTarget, unsigned int bufObjIndex);
 
-/* --- oglUtil.inl (binary search & helpers) --------------------------------- */
-int oglBinarySearch(int key, int length, const unsigned short *keys);
+/* --- oglUtil.inl ----------------------------------------------------------- */
+int            oglBinarySearch(int key, int length, const unsigned short *keys);
+int            oglMapDataType(unsigned int type);
+void           oglUpdateCoreMatrices(oglContext_s *context);
+int            oglSetupRendering(oglContext_s *context, int primitive, int count);
+int            oglMapPrimitive(unsigned int mode);
+float          oglFixedToFloat(int v);
+float          oglFloatClampUnit(float f);
+float          oglFixedClampUnit(int x);
+int            oglFloatToFixed(float v);
+unsigned int   oglFloatsToRGBA(float r, float g, float b, float a);
+unsigned int   oglFixedToRGBA(int r, int g, int b, int a);
+void           oglInputToXColor3(_XColor3 *color, const void *params, OGL_INPUTTYPE inputType);
+unsigned short oglInputAlpha(const void *params, OGL_INPUTTYPE inputType);
+unsigned int   oglInputToRGBA(const void *params, OGL_INPUTTYPE inputType);
+int            oglInputToIScalarDirect(const void *param, OGL_INPUTTYPE inputType);
+int            oglTestInput(const void *param, int ndx, OGL_INPUTTYPE inputType);
+float          oglInputToFloatDirect(const void *param, OGL_INPUTTYPE inputType);
+void           oglInputToIFVector4Direct(_IFVector4 *dst, const void *params, OGL_INPUTTYPE inputType);
+void           oglInputToIFVector4W0(_IFVector4 *dst, const void *params, OGL_INPUTTYPE inputType);
+int            oglInputToInteger(const void *param, OGL_INPUTTYPE inputType);
+unsigned int   oglInputToEnum(const void *param, OGL_INPUTTYPE inputType);
+void           oglInputToFloatv(float *fArr, const void *param, OGL_INPUTTYPE inputType, int n);
+void           oglRGBAToFloatv(unsigned int c, float *v);
+int            oglMapFogMode(unsigned int mode);
+int            oglMapMatrixMode(unsigned int mode);
+OGL_STRINGNAME oglMapStringName(unsigned int name);
+int            oglMapImageFormat(unsigned int format);
+int            oglMapCapability(unsigned int target);
+int            oglMapStencilOp(unsigned int op);
+int            oglMapBlendFactor(unsigned int factor);
+int            oglMapLogicOp(unsigned int op);
+int            oglMapClientStateCapability(oglContext_s *context, unsigned int apiCap);
+int            oglMapMaterialColor(unsigned int param);
+int            oglMapTexEnvMode(unsigned int pname);
+unsigned int   oglUnmapTexEnvMode(int pname);
+int            oglMapTexEnvCombFunc(unsigned int pname);
+unsigned int   oglUnmapTexEnvCombFunc(int pname);
+int            oglMapTexEnvCombSrc(unsigned int pname);
+unsigned int   oglUnmapTexEnvCombSrc(int pname);
+int            oglMapTexEnvCombOperand(unsigned int pname);
+unsigned int   oglUnmapTexEnvCombOperand(int pname);
+int            oglMapInternalTextureFormat(unsigned int internalFormat);
+int            oglIsPalettedTextureFormat(int texFormat);
+int            oglMapInternalTextureFormatAndType(unsigned int internalFormat, unsigned int type);
+int            oglMapTextureTarget(unsigned int target);
+OGL_BUFOBJTARGET oglMapBufObjTarget(unsigned int target);
+OGL_BUFOBJUSAGE  oglMapBufObjUsage(unsigned int usage);
+unsigned int   oglUnmapBufObjUsage(OGL_BUFOBJUSAGE usage);
+int            oglMapWrapMode(unsigned int pname);
+unsigned int   oglUnmapWrapMode(int pname);
+int            oglMinusOne(void);
+void           oglMappingTest(void);
+int            oglIsValidTextureType(unsigned int type);
+int            oglIsCompatibleTextureType(unsigned int format, unsigned int type);
+int            oglIsCompatibleInternalFormat(unsigned int format, int texFormat);
+void           oglFillMemoryImageFormat(grMemoryImage_s *image, unsigned int format, unsigned int type);
+void           oglUpdateTextureUnit(oglContext_s *context, int texUnit);
+_grTexture    *oglGetActiveTexture(oglContext_s *context, int texTarget);
+void           oglBindTexture(oglContext_s *context, int texUnit, int texTarget, unsigned int texIndex);
+unsigned int   oglMapBufferMask(unsigned int buf);
+int            oglIsScalarFogParam(unsigned int pname);
+int            oglIsScalarPointParameter(unsigned int pname);
+void           oglSetClientState(oglContext_s *context, unsigned int array, int state);
+void           oglMaterialInternal(oglContext_s *context, unsigned int face, unsigned int pname,
+                                   const void *params, OGL_INPUTTYPE inputType);
+void           oglLightInternal(oglContext_s *context, unsigned int lname, unsigned int pname,
+                                const void *params, OGL_INPUTTYPE inputType);
+int            oglIsScalarLightParameter(unsigned int pname);
+int            oglIsScalarLightModelParameter(unsigned int pname);
+int            oglIsScalarTexEnvParam(unsigned int pname);
+int            oglIsScalarTexParam(unsigned int param);
+
+/* --- oglContext.inl -------------------------------------------------------- */
+oglContext_s     *oglGetContext(void);
+oglMatrixStack_s *oglInitMatrixStack(oglContext_s *context, int depth);
+int               oglInitContext(oglContext_s *context, unsigned char *sharedWorkMem, int sharedWorkMemSize);
+int               oglIsValidContext(oglContext_s *context);
+oglContext_s     *oglCreateContext(oglContext_s *shareList, oglContext_s *shareMemContext);
+void              oglDestroyContext(oglContext_s *context);
+int               oglIsValidSurfaceDescriptor(const oglSurfaceDescriptor_s *desc);
+void              oglConvertSurfaceDescriptor(_grDrawSurface *dst, const oglSurfaceDescriptor_s *src);
+void              oglSetBuffers(oglContext_s *context, const oglSurfaceDescriptor_s *drawDesc,
+                                const oglSurfaceDescriptor_s *readDesc);
+int               oglSetSurfaceTexture(oglContext_s *context, void *pixels, int width, int height,
+                                       unsigned int format, int mipLevel, int createMipmaps);
+void              oglReleaseSurfaceTexture(oglContext_s *context, unsigned int textureName, int mipLevel);
+int               oglIsSurfaceTextureReleased(oglContext_s *context, unsigned int textureName);
+void              oglCheckValidity(oglContext_s *context);
+
+/* Hosted current-context & EGL-error hooks (in grrStubs.c until egl lands) */
+typedef struct eglState_s
+{
+    oglContext_s *currentESContext;
+    int           errorCode;
+} eglState_s;
+
+eglState_s *egliGetState(void);
+void        eglSetError(int error);
+void        egliSetCurrentContext(oglContext_s *context);
+int         eglGetLastErrorHosted(void);
 
 /* --- oglGetter.inl --------------------------------------------------------- */
 void                  oglIntToOutput(void *output, const void *input, int n, OGL_OUTPUTTYPE dataType);

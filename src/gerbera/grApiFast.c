@@ -922,17 +922,17 @@ void grSetupRendering(Gerbera_s *state)
 
         if (grTestCapability(state, GR_CAPABILITY_TEXTURE_2D + i) != 0 && tex != NULL)
         {
-            /* the decompile tests bits 24/26 of the int at tex+180
-             * (tex[6][2].pad[4] with 64-byte cv_anon_171E), i.e. flags183
-             * bits 0 (dirty) and 2 (enabled) */
-            if ((tex->flags183 & 0x01) != 0)
+            /* CodeView TI=0x1477: tex->parmMask at +183:
+             * bit 0 = dirty, bit 2 = complete/enabled */
+            if ((tex->parmMask & 0x01) != 0)
             {
                 grUpdateTexture(tex);
                 state->pixelPipelineDirty = 1;
             }
-            enabled = (tex->flags183 & 0x04) != 0;
+            enabled = (tex->parmMask & 0x04) != 0;
         }
         state->useTexUnit[i] = (unsigned char)enabled;
+        state->textureUnitEnabled[i] = (unsigned char)enabled;
     }
     grCheckPixelPipeConsistency(state);
     if (state->pixelPipelineDirty == 0 && state->scissorDirty == 0)
@@ -1133,7 +1133,9 @@ void grSetupTextureRectGradients(Gerbera_s *state, _grTRGradSetupInfo *info)
             pixelPipe->xAdder[2 * i + 7] = 0;
             pixelPipe->yAdder[2 * i + 7] = yAdder;
             pairs[0][0] = txMin + (xAdder >> 1) - 1;
-            pairs[0][1] = tyMin + (yAdder >> 1) + 1;
+            pairs[0][1] = 0;
+            pairs[1][0] = tyMin + (yAdder >> 1) + 1;
+            pairs[1][1] = 0;
             grSetupTextureUnit(state, i, pairs, info->fx0, info->fy0);
         }
     }

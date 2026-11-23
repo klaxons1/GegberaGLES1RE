@@ -55,7 +55,9 @@ enum GR_MATRIXMODE_e
     GR_MATRIXMODE_PROJECTION = 1,
     GR_MATRIXMODE_TEXTURE0 = 2,
     GR_MATRIXMODE_TEXTURE1 = 3,
-    GR_MATRIXMODE_MATRIXPALETTE0 = 4, /* names beyond PROJECTION unpinned */
+    GR_MATRIXMODE_PALETTE0 = 4,
+    GR_MATRIXMODE_MATRIXPALETTE0 = 4,
+    GR_MATRIXMODE_PALETTE_LAST = 12,
     GR_MATRIXMODE_MAX = 13
 };
 
@@ -466,11 +468,11 @@ enum GR_FUNC_e
 
 enum GR_STENCILOP_e
 {
-    GR_STENCILOP_ZERO = 0,
-    GR_STENCILOP_KEEP = 1,
-    GR_STENCILOP_REPLACE = 2,
-    GR_STENCILOP_INCR = 3,
-    GR_STENCILOP_DECR = 4,
+    GR_STENCILOP_KEEP = 0,
+    GR_STENCILOP_REPLACE = 1,
+    GR_STENCILOP_INCR = 2,
+    GR_STENCILOP_DECR = 3,
+    GR_STENCILOP_ZERO = 4,
     GR_STENCILOP_INVERT = 5,
     GR_STENCILOP_MAX = 6
 };
@@ -500,6 +502,19 @@ enum GR_BLENDFACTOR_e
 {
     GR_BLENDFACTOR_ZERO = 0,
     GR_BLENDFACTOR_ONE = 1,
+    GR_BLENDFACTOR_SRC_COLOR = 2,
+    GR_BLENDFACTOR_ONE_MINUS_SRC_COLOR = 3,
+    GR_BLENDFACTOR_SRC_ALPHA = 4,
+    GR_BLENDFACTOR_ONE_MINUS_SRC_ALPHA = 5,
+    GR_BLENDFACTOR_DST_ALPHA = 6,
+    GR_BLENDFACTOR_ONE_MINUS_DST_ALPHA = 7,
+    GR_BLENDFACTOR_DST_COLOR = 8,
+    GR_BLENDFACTOR_ONE_MINUS_DST_COLOR = 9,
+    GR_BLENDFACTOR_SRC_ALPHA_SATURATE = 10,
+    GR_BLENDFACTOR_CONSTANT_COLOR = 11,
+    GR_BLENDFACTOR_ONE_MINUS_CONSTANT_COLOR = 12,
+    GR_BLENDFACTOR_CONSTANT_ALPHA = 13,
+    GR_BLENDFACTOR_ONE_MINUS_CONSTANT_ALPHA = 14,
     GR_BLENDFACTOR_MAX = 15        /* 0..14 valid (grSetBlendFunc assert) */
 };
 
@@ -553,12 +568,16 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_STENCIL_TEST = 3,
     GR_CAPABILITY_BLEND = 4,
     GR_CAPABILITY_COLOR_LOGIC_OP = 5,
+    GR_CAPABILITY_LOGIC_OP = 5,
     GR_CAPABILITY_DITHER = 6,
     GR_CAPABILITY_FOG = 7,
     GR_CAPABILITY_TEXTURE_2D = 10,
+    GR_CAPABILITY_TEXTURE_0 = 10,
+    GR_CAPABILITY_TEXTURE_1 = 11,
     GR_CAPABILITY_VERTEX_ARRAY = 21,
-    GR_CAPABILITY_NORMAL_ARRAY = 22,      /* flagged guess - see above */
+    GR_CAPABILITY_NORMAL_ARRAY = 22,
     GR_CAPABILITY_COLOR_ARRAY = 23,
+    GR_CAPABILITY_INDEX_ARRAY = 24,
     GR_CAPABILITY_TEXTURE_COORD_ARRAY_0 = 25,
     GR_CAPABILITY_TEXTURE_COORD_ARRAY_1 = 26,
     GR_CAPABILITY_WEIGHT_ARRAY = 27,      /* flagged guess: unpinned gap; not
@@ -741,13 +760,28 @@ typedef void (*grFetchTexCoordFn)(Gerbera_s *state, unsigned char *vertexList, i
 typedef void (*grFetchPointSizeFn)(Gerbera_s *state, unsigned char *vertexList);
 typedef void (*grApplyFogFn)(Gerbera_s *state, unsigned char *vertexList);
 
-/* material color slots (grSetMaterialColor; 0..3 valid, GR_MATERIALCOLOR_MAX=4).
- * AMBIENT and EMISSION are named in the decompile; numeric order unpinned. */
+/* material color slots (CodeView TI=0x15A5) */
 enum GR_MATERIALCOLOR_e
 {
-    GR_MATERIALCOLOR_AMBIENT = 0,     /* value not pinned yet */
-    GR_MATERIALCOLOR_EMISSION = 3,    /* value not pinned yet */
+    GR_MATERIALCOLOR_AMBIENT = 0,
+    GR_MATERIALCOLOR_DIFFUSE = 1,
+    GR_MATERIALCOLOR_SPECULAR = 2,
+    GR_MATERIALCOLOR_EMISSION = 3,
     GR_MATERIALCOLOR_MAX = 4
+};
+
+/* vertex array slots (CodeView TI=0x15FC) */
+enum GR_VERTEXARRAY_e
+{
+    GR_VERTEXARRAY_POSITION = 0,
+    GR_VERTEXARRAY_NORMAL = 1,
+    GR_VERTEXARRAY_COLOR = 2,
+    GR_VERTEXARRAY_WEIGHT = 3,
+    GR_VERTEXARRAY_MATRIX_INDEX = 4,
+    GR_VERTEXARRAY_POINT_SIZE = 5,
+    GR_VERTEXARRAY_TEXCOORD0 = 6,
+    GR_VERTEXARRAY_TEXCOORD_LAST = 7,
+    GR_VERTEXARRAY_MAX = 8
 };
 
 /* material state (decompile cv_anon_174D, reconstructed from byte offsets:
@@ -798,7 +832,7 @@ typedef struct _grTextureUnitState
 {
     void *texture;                /* +0  xStart[0]: bound texture object */
     unsigned int envColor;        /* +4  xStart[1] */
-    unsigned char envMode;        /* +8  xAdder[0] (internal 0..4) */
+    unsigned char envMode;        /* +8  xAdder[0] (internal 0..5) */
     unsigned char envFuncRGB;     /* +9  xAdder[1] */
     unsigned char envFuncAlpha;   /* +10 xAdder[2] */
     unsigned char envSrcRGB[3];   /* +11..13 xAdder[3..5] */
@@ -807,8 +841,51 @@ typedef struct _grTextureUnitState
     unsigned char envOpAlpha[3];  /* +20..22 */
     unsigned char envScaleRGB;    /* +23 (31-clz -> shift) */
     unsigned char envScaleAlpha;  /* +24 */
-    unsigned char pad25[7];       /* +25..31 (DLL unpinned) */
+    unsigned char pad25[3];       /* +25..27 */
+    int texCoordReplace;          /* +28 (CodeView TI=0x1732) */
 } _grTextureUnitState;
+
+/* --- blit image / memory image structs (CodeView TI=0x15D1..0x1659) -------- */
+enum GR_BLITIMAGE_e
+{
+    GR_BLITIMAGE_MEMORY_IMAGE = 0,
+    GR_BLITIMAGE_TEXTURE = 1,
+    GR_BLITIMAGE_READ_SURFACE = 2
+};
+
+typedef struct grMemoryImage_s
+{
+    int width;
+    int height;
+    int stride;
+    int bytesPerPixel;
+    void *data;
+    int useDescriptor;
+    _grSurfaceDescriptor descriptor;
+    int dataType;
+    int imageFormat;
+} grMemoryImage_s;
+
+typedef struct grTextureImage_s
+{
+    _grTexture *texture;
+    int mipLevel;
+} grTextureImage_s;
+
+typedef struct grBlitImage_s
+{
+    int type;
+    grTextureImage_s texture;
+    grMemoryImage_s memoryImage;
+} grBlitImage_s;
+
+typedef struct grBlitInfo_s
+{
+    _grRect srcRect;
+    _grRect dstRect;
+    grBlitImage_s *srcImage;
+    grBlitImage_s *dstImage;
+} grBlitInfo_s;
 
 typedef struct Gerbera_s
 {
@@ -850,8 +927,10 @@ typedef struct Gerbera_s
     _IMatrix4x4 userClipMatrix[GR_MAX_USER_CLIP_PLANES];       /* +4968 */
     int enabledUserClipPlaneIndices;                           /* +7620 */
 
-    /* --- draw surface ----------------------------------------------------- */
+    /* --- draw / read surfaces -------------------------------------------- */
     _grDrawSurface drawSurface;
+    _grDrawSurface readSurface;
+    unsigned char displayOpen;
     int useDithering;
 
     _grTextureUnitState textureUnit[2 * GR_MAX_TEXTURE_UNITS];
@@ -887,6 +966,9 @@ typedef struct Gerbera_s
     grPixelPipelineCode_fn pixelPipelineCode;         /* compiled program
                                                        * (hc compiler) */
     _grPipelineCache *pipelineCache;                  /* offset UNPINNED */
+    _grPipelineCache pipelineCacheStorage;
+    void *pipelineCacheExecutable;
+    _grStackAllocator allocator;
     _grStackAllocator scratchAllocator;               /* render-stack
                                                        * allocator (grSetup-
                                                        * Rendering allocates
@@ -896,6 +978,12 @@ typedef struct Gerbera_s
     int scratchMemorySize;                            /* offset UNPINNED */
     void *setjmpConfig;                               /* offset UNPINNED (HC
                                                        * setjmp container) */
+    struct
+    {
+        int (*setjmpWrap)(void *jmpbuf, int (*func)(void *), void *args);
+        void (*longjmp)(void *jmpbuf, int value);
+        unsigned int jmpbufSize;
+    } setjmpConfigStorage;
     unsigned char textureUnitEnabled[2];              /* +48/49: per-unit texcoord
                                                        * stage active (set by the
                                                        * ogl texture-enable path) */
@@ -910,6 +998,7 @@ typedef struct Gerbera_s
     int pointSizeMin;                                 /* offset UNPINNED (16.16;
                                                        * oglPointParameter) */
     int pointSizeMax;                                 /* offset UNPINNED (16.16) */
+    int pointFadeThreshold;                           /* +580 (IScalar) */
     unsigned char transformVE;                        /* +47  */
     unsigned char primitiveType;                      /* +22  */
     int defaultNormal[3];                             /* XNormal3 ints */
@@ -1309,12 +1398,86 @@ enum GR_QUERY_e
 int  grGetInteger(Gerbera_s *state, int value);
 int  grGetIScalar(Gerbera_s *state, int value);
 
+/* --- grSmall.c / grApiSmall.inl: lifecycle, surfaces, texenv, vertex/point --- */
+int        grGetMinWorkMemorySize(void);
+int        grGetMinSharedMemorySize(void);
+Gerbera_s *grCreateGerbera(int workMemorySize, unsigned char *workMemory,
+                           unsigned char *sharedWorkMem, int sharedWorkMemSize);
+void       grDestroyGerbera(Gerbera_s *state);
+int        grIsValidSurfaceInfo(_grDrawSurface *info);
+void       grSetSurfaces(Gerbera_s *state, _grDrawSurface *drawInfo, _grDrawSurface *readInfo);
+
+void         grSetActiveTexture(Gerbera_s *state, int ndx, _grTexture *texture);
+void         grSetTexEnvColor(Gerbera_s *state, int texUnit, unsigned int color);
+unsigned int grGetTexEnvColor(Gerbera_s *state, int texUnit);
+void         grSetTexEnvMode(Gerbera_s *state, int texIndex, int texEnvMode);
+int          grGetTexEnvMode(Gerbera_s *state, int texUnit);
+void         grSetTexEnvRGBCombFunc(Gerbera_s *state, int texIndex, int func);
+int          grGetTexEnvRGBCombFunc(Gerbera_s *state, int texIndex);
+void         grSetTexEnvAlphaCombFunc(Gerbera_s *state, int texIndex, int func);
+int          grGetTexEnvAlphaCombFunc(Gerbera_s *state, int texIndex);
+void         grSetTexEnvRGBCombSrc(Gerbera_s *state, int texIndex, int srcIndex, int src);
+int          grGetTexEnvRGBCombSrc(Gerbera_s *state, int texIndex, int srcIndex);
+void         grSetTexEnvAlphaCombSrc(Gerbera_s *state, int texIndex, int srcIndex, int src);
+int          grGetTexEnvAlphaCombSrc(Gerbera_s *state, int texIndex, int srcIndex);
+void         grSetTexEnvRGBCombOperand(Gerbera_s *state, int texIndex, int opIndex, int op);
+int          grGetTexEnvRGBCombOperand(Gerbera_s *state, int texIndex, int opIndex);
+void         grSetTexEnvAlphaCombOperand(Gerbera_s *state, int texIndex, int opIndex, int op);
+int          grGetTexEnvAlphaCombOperand(Gerbera_s *state, int texIndex, int opIndex);
+void         grSetTexEnvRGBCombScale(Gerbera_s *state, int texIndex, int scale);
+int          grGetTexEnvRGBCombScale(Gerbera_s *state, int texIndex);
+void         grSetTexEnvAlphaCombScale(Gerbera_s *state, int texIndex, int scale);
+int          grGetTexEnvAlphaCombScale(Gerbera_s *state, int texIndex);
+void         grSetTexCoordReplace(Gerbera_s *state, int texUnit, int replace);
+int          grGetTexCoordReplace(Gerbera_s *state, int texUnit);
+
+void grSetVertexArray(Gerbera_s *state, int arrayType, int dataType, int numComponents,
+                      int stride, void *pointer, unsigned int binding, void *origPointer);
+void grSetPointSize(Gerbera_s *state, int size);
+void grSetLineWidth(Gerbera_s *state, int width);
+void grSetPointSizeMin(Gerbera_s *state, int min);
+void grSetPointSizeMax(Gerbera_s *state, int max);
+void grSetPointFadeThreshold(Gerbera_s *state, int size);
+void grSetPointDistAttn(Gerbera_s *state, int *attn);
+void grSetVertexColor(Gerbera_s *state, _XColor3 *color, unsigned short alpha);
+void grSetVertexNormal(Gerbera_s *state, int *normal);
+void grSetVertexTexCoord(Gerbera_s *state, int ndx, int *texCoord);
+
+/* --- grrBlit.inl: color read/write, box-filter mipmap & surface blits ------- */
+unsigned int grReadDataTypeColor(void *src, int dataType, int imageFormat);
+void         grWriteDataTypeColor(void *dst, int dataType, int imageFormat, unsigned int color);
+void         grrConvertBlitImage(Gerbera_s *state, grBlitImage_s *image);
+void        *grrComputeImageAddress(grMemoryImage_s *image, int x, int y);
+void         grrCopyColorSpan(grMemoryImage_s *dstImage, grMemoryImage_s *srcImage,
+                              int xDst, int yDst, int xSrc, int ySrc, int length, void *workMemory);
+void         grrBoxFilterLoop32(unsigned int *src, unsigned int *dst, int srcWidth, int srcHeight,
+                                int dstWidth, int dstHeight, unsigned int *mask, unsigned int *rounding,
+                                unsigned int *preShift, unsigned int *postShift, unsigned int xStep, unsigned int yStep);
+void         grrBoxFilterLoop16(unsigned short *src, unsigned short *dst, int srcWidth, int srcHeight,
+                                int dstWidth, int dstHeight, unsigned int *mask, unsigned int *rounding,
+                                unsigned int *preShift, unsigned int *postShift, unsigned int xStep, unsigned int yStep);
+void         grrBoxFilterLoop8(unsigned char *src, unsigned char *dst, int srcWidth, int srcHeight,
+                               int dstWidth, int dstHeight, unsigned int *mask, unsigned int *rounding,
+                               unsigned int *preShift, unsigned int *postShift, unsigned int xStep, unsigned int yStep);
+void         grrDownsample(_grSurfaceDescriptor *desc, int srcWidth, int srcHeight,
+                           int dstWidth, int dstHeight, void *src, void *dst);
+void         grrBlitMipmap(Gerbera_s *state, grBlitInfo_s *blitInfo);
+void         grrBlit(Gerbera_s *state, grBlitInfo_s *blitInfo);
+
 /* --- grClearBuffers (grApiSmall.inl 388): queue a clear record ------------- */
 void grClearBuffers(Gerbera_s *state, unsigned int bufferMask);
 
-/* --- egl allocator hooks (eglSymbian.inl, hosted in grrStubs.c until egl) -- */
-void *eglAlloc(unsigned int size);
-void eglFree(void *ptr);
+/* --- egl allocator & executable hooks (eglSymbian.inl / eglBase.inl) -------- */
+typedef struct grExecutable_s grExecutable_s;
+void           *eglAlloc(unsigned int size);
+void            eglFree(void *ptr);
+grExecutable_s *eglAllocExecutable(unsigned int size);
+void            eglFreeExecutable(grExecutable_s *executable);
+void           *eglGetExecutableData(grExecutable_s *executable);
+int             eglGetExecutableSize(grExecutable_s *executable);
+int             eglGetJmpbufSize(void);
+int             eglHCWrapSetjmp(void *jmpbuf, int (*func)(void *), void *args);
+void            eglHCWrapLongjmp(void *jmpbuf, int val);
 
 /* --- grr layer (grrClear.inl + grrRender.inl, implemented in grrRender.c) --
  * the flush side of the clear queue; the lock/release pair is egl material
@@ -1332,6 +1495,7 @@ void *grGetBackend(void);
 int  HC_extraStackSpace(void *backend);
 int  grScratchGrowMemory(Gerbera_s *state);
 
+int  grSetupCulling(Gerbera_s *state, int primitiveType);
 void grrClearColorBuffer(_grDrawSurface *surface, _grClearInfo *info);
 void grrClearDitheredColorBuffer(_grDrawSurface *surface, _grClearInfo *info, unsigned int fillMask);
 void grrClearDepthBuffer(_grDrawSurface *surface, _grClearInfo *info);

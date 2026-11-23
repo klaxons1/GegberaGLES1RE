@@ -1,32 +1,22 @@
-/* grrStubs.c - scaffolding for the rasterizer-side entry points that
- * grFlushPrimitiveBatch and grClipPrimitive reach.
- *
- * All rasterizer-side entry points are now REAL ports; grTriangleTessellator
- * lives in grTessellator.c and grUpdateVertexPipeline in grVertexPipeline.c.
+/* grrStubs.c - rasterizer point/line wrappers and hosted EGL/OS hooks
+ * (eglSymbian.inl / eglBase.inl) until the full egl module lands.
  */
+#include <setjmp.h>
 #include <stdlib.h>
 #include "gerbera/grState.h"
 #include "gerbera/hc/hcBackend.h"
-
-
+#include "gerbera/api_opengl/oglContext.h"
 
 void grrDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
 {
-    (void)state;
-    (void)tri;
-    (void)origIndices;
+    grDrawClippedPoint(state, tri, origIndices);
 }
 
 void grrDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
 {
-    (void)state;
-    (void)tri;
-    (void)origIndices;
+    grDrawClippedLine(state, tri, origIndices);
 }
 
-/* grrDrawClippedTriangle (grSmall.c; DLL 27381-27390) - ported: affine path
- * (emptyBits 8) vs the perspective tessellator; grTriangleTessellator is
- * still a stub below (tessellator session). */
 void grrDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri, unsigned int origIndices)
 {
     if (grTestCapability(state, GR_CAPABILITY_PERSPECTIVE_CORRECTION) != 0)
@@ -35,37 +25,20 @@ void grrDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri, unsigned int
         grDrawClippedTriangle(state, tri, origIndices, 8);
 }
 
+/* --- grSymbian.cpp: active JIT backend ------------------------------------- */
 
-
-/* grSetupTextureUnit (grRasterizer.inl 8-189; DLL 25345-25526) is NOT ported
- * yet: it walks the texture-object/mipmap layout (tex+4, tex+16*level,
- * tex+176/+180/+183/+204/+206) which gets pinned with the texture block.
- * Silent stub so the gradient setup links; the texture-gradient mask bits
- * (0xC0/0x300) must stay clear in tests until it lands. */
-void grSetupTextureUnit(Gerbera_s *state, int texIndex, int (*pairs)[2],
-                        int v0sx, int v0sy)
-{
-    (void)state;
-    (void)texIndex;
-    (void)pairs;
-    (void)v0sx;
-    (void)v0sy;
-}
-
-/* --- hc/egl integration & stubs -------------------------------------------
- * grGetBackend (grSymbian.cpp; DLL 24751-24754) returns the active JIT
- * backend (x86 WINSCW reference backend). grScratchGrowMemory awaits the
- * egl allocator (eglAlloc/eglFree). */
 void *grGetBackend(void)
 {
     return HCX86Backend_create();
 }
 
-int grScratchGrowMemory(Gerbera_s *state)
+/* --- eglSymbian.inl / eglBase.inl hosted allocator, executable & setjmp ---- */
+
+struct grExecutable_s
 {
-    (void)state;
-    return 0;
-}
+    void *data;
+    int   size;
+};
 
 void *eglAlloc(unsigned int size)
 {
@@ -80,3 +53,87 @@ void eglFree(void *ptr)
         free(ptr);
 }
 
+grExecutable_s *eglAllocExecutable(unsigned int size)
+{
+    grExecutable_s *exec;
+
+    if (size == 0 && grAssert("size > 0", "eglSymbian.inl", 281) != 0)
+        grDie(0);
+    exec = (grExecutable_s *)malloc(sizeof(grExecutable_s));
+    if (exec == NULL)
+        return NULL;
+    exec->data = malloc((size_t)size);
+    if (exec->data == NULL)
+    {
+        free(exec);
+        return NULL;
+    }
+    exec->size = (int)size;
+    return exec;
+}
+
+void eglFreeExecutable(grExecutable_s *executable)
+{
+    if (executable == NULL && grAssert("executable", "eglSymbian.inl", 306) != 0)
+        grDie(0);
+    free(executable->data);
+    free(executable);
+}
+
+int eglGetExecutableSize(grExecutable_s *executable)
+{
+    if (executable == NULL && grAssert("executable", "eglSymbian.inl", 321) != 0)
+        grDie(0);
+    return executable->size;
+}
+
+void *eglGetExecutableData(grExecutable_s *executable)
+{
+    if (executable == NULL && grAssert("executable", "eglSymbian.inl", 334) != 0)
+        grDie(0);
+    return executable->data;
+}
+
+int eglGetJmpbufSize(void)
+{
+    return (hgMax32(64, (int)sizeof(jmp_buf)) + 7) & ~7;
+}
+
+int eglHCWrapSetjmp(void *jmpbuf, int (*func)(void *), void *args)
+{
+    if (setjmp(*(jmp_buf *)jmpbuf) != 0)
+        return -1;
+    return func(args);
+}
+
+void eglHCWrapLongjmp(void *jmpbuf, int val)
+{
+    longjmp(*(jmp_buf *)jmpbuf, val);
+}
+
+/* --- Hosted current-context / EGL error state (until egl module lands) ----- */
+
+static eglState_s s_hostedEglState = { NULL, 0x3000 };
+static int        s_hostedEglInitialized = 0;
+
+eglState_s *egliGetState(void)
+{
+    return s_hostedEglInitialized ? &s_hostedEglState : NULL;
+}
+
+void eglSetError(int error)
+{
+    s_hostedEglState.errorCode = error;
+}
+
+void egliSetCurrentContext(oglContext_s *context)
+{
+    s_hostedEglState.currentESContext = context;
+    s_hostedEglInitialized = (context != NULL) ? 1 : 0;
+    s_hostedEglState.errorCode = 0x3000;
+}
+
+int eglGetLastErrorHosted(void)
+{
+    return s_hostedEglState.errorCode;
+}

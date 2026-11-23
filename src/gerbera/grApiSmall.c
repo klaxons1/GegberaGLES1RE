@@ -4,9 +4,12 @@
  *
  * Assert sites keep the original grApiSmall.inl file/line strings.
  */
+#include <stdint.h>
 #include "gerbera/grState.h"
 #include "gerbera/grRGBA.h"
 #include "hg/hgInt32.h"
+#include "hg/hgFill.h"
+#include "hg/hgMemory.h"
 
 #define GR_API_CHECK(cond, line)                 \
     do                                           \
@@ -737,4 +740,735 @@ int grGetIScalar(Gerbera_s *state, int value)
             grDie(0);
         return IScalar_zero();
     }
+}
+
+/* --- grSetActiveTexture / grSetTexEnv* / grSetTexCoordReplace -------------- */
+
+void grSetActiveTexture(Gerbera_s *state, int ndx, _grTexture *texture)
+{
+    GR_API_CHECK(state != NULL, 1288);
+    if (!(texture != NULL && grIsValidTexture(texture) != 0) &&
+        grAssert("texture && grIsValidTexture(texture)", "grApiSmall.inl", 1289) != 0)
+        grDie(0);
+    if (hgInRange32(ndx, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(ndx, 0, GR_MAX_TEXTURE_UNITS-1)", "grApiSmall.inl", 1290) != 0)
+        grDie(0);
+    if ((_grTexture *)state->textureUnit[2 * ndx].texture != texture)
+    {
+        state->textureUnit[2 * ndx].texture = texture;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+void grSetTexEnvColor(Gerbera_s *state, int texUnit, unsigned int color)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1391) != 0)
+        grDie(0);
+    if (hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS-1)", "grApiSmall.inl", 1392) != 0)
+        grDie(0);
+    state->textureUnit[2 * texUnit].envColor = color;
+}
+
+void grSetTexEnvMode(Gerbera_s *state, int texIndex, int texEnvMode)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1398) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS-1)", "grApiSmall.inl", 1399) != 0)
+        grDie(0);
+    if (hgInRange32(texEnvMode, 0, GR_TEXENVMODE_MAX - 1) == 0 &&
+        grAssert("hgInRange32(texEnvMode, 0, GR_TEXENVMODE_MAX-1)", "grApiSmall.inl", 1400) != 0)
+        grDie(0);
+    if (state->textureUnit[2 * texIndex].envMode != (unsigned char)texEnvMode)
+    {
+        state->textureUnit[2 * texIndex].envMode = (unsigned char)texEnvMode;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+void grSetTexEnvRGBCombFunc(Gerbera_s *state, int texIndex, int func)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1414) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1415) != 0)
+        grDie(0);
+    if (hgInRange32(func, 0, GR_TEXENVCOMBFUNC_MAX - 1) == 0 &&
+        grAssert("hgInRange32(func, 0, GR_TEXENVCOMBFUNC_MAX - 1)", "grApiSmall.inl", 1416) != 0)
+        grDie(0);
+    if (state->textureUnit[2 * texIndex].envFuncRGB != (unsigned char)func)
+    {
+        state->textureUnit[2 * texIndex].envFuncRGB = (unsigned char)func;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+int grGetTexEnvRGBCombFunc(Gerbera_s *state, int texIndex)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1429) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1430) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texIndex].envFuncRGB;
+}
+
+void grSetTexEnvAlphaCombFunc(Gerbera_s *state, int texIndex, int func)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1440) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1441) != 0)
+        grDie(0);
+    if (hgInRange32(func, 0, GR_TEXENVCOMBFUNC_MAX - 1) == 0 &&
+        grAssert("hgInRange32(func, 0, GR_TEXENVCOMBFUNC_MAX - 1)", "grApiSmall.inl", 1442) != 0)
+        grDie(0);
+    if (!(func != GR_TEXENVCOMBFUNC_DOT3_RGB && func != GR_TEXENVCOMBFUNC_DOT3_RGBA) &&
+        grAssert("func != GR_TEXENVCOMBFUNC_DOT3_RGB && func != GR_TEXENVCOMBFUNC_DOT3_RGBA",
+                 "grApiSmall.inl", 1444) != 0)
+        grDie(0);
+    if (state->textureUnit[2 * texIndex].envFuncAlpha != (unsigned char)func)
+    {
+        state->textureUnit[2 * texIndex].envFuncAlpha = (unsigned char)func;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+int grGetTexEnvAlphaCombFunc(Gerbera_s *state, int texIndex)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1457) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1458) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texIndex].envFuncAlpha;
+}
+
+void grSetTexEnvRGBCombSrc(Gerbera_s *state, int texIndex, int srcIndex, int src)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1467) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1468) != 0)
+        grDie(0);
+    if (hgInRange32(srcIndex, 0, 2) == 0 &&
+        grAssert("hgInRange32(srcIndex, 0, 2)", "grApiSmall.inl", 1469) != 0)
+        grDie(0);
+    if (hgInRange32(src, 0, GR_TEXENVCOMBSRC_MAX - 1) == 0 &&
+        grAssert("hgInRange32(src, 0, GR_TEXENVCOMBSRC_MAX - 1)", "grApiSmall.inl", 1470) != 0)
+        grDie(0);
+    if (state->textureUnit[2 * texIndex].envSrcRGB[srcIndex] != (unsigned char)src)
+    {
+        state->textureUnit[2 * texIndex].envSrcRGB[srcIndex] = (unsigned char)src;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+int grGetTexEnvRGBCombSrc(Gerbera_s *state, int texIndex, int srcIndex)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1483) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1484) != 0)
+        grDie(0);
+    if (hgInRange32(srcIndex, 0, 2) == 0 &&
+        grAssert("hgInRange32(srcIndex, 0, 2)", "grApiSmall.inl", 1485) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texIndex].envSrcRGB[srcIndex];
+}
+
+void grSetTexEnvAlphaCombSrc(Gerbera_s *state, int texIndex, int srcIndex, int src)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1494) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1495) != 0)
+        grDie(0);
+    if (hgInRange32(srcIndex, 0, 2) == 0 &&
+        grAssert("hgInRange32(srcIndex, 0, 2)", "grApiSmall.inl", 1496) != 0)
+        grDie(0);
+    if (hgInRange32(src, 0, GR_TEXENVCOMBSRC_MAX - 1) == 0 &&
+        grAssert("hgInRange32(src, 0, GR_TEXENVCOMBSRC_MAX - 1)", "grApiSmall.inl", 1497) != 0)
+        grDie(0);
+    if (state->textureUnit[2 * texIndex].envSrcAlpha[srcIndex] != (unsigned char)src)
+    {
+        state->textureUnit[2 * texIndex].envSrcAlpha[srcIndex] = (unsigned char)src;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+int grGetTexEnvAlphaCombSrc(Gerbera_s *state, int texIndex, int srcIndex)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1510) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1511) != 0)
+        grDie(0);
+    if (hgInRange32(srcIndex, 0, 2) == 0 &&
+        grAssert("hgInRange32(srcIndex, 0, 2)", "grApiSmall.inl", 1512) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texIndex].envSrcAlpha[srcIndex];
+}
+
+void grSetTexEnvRGBCombOperand(Gerbera_s *state, int texIndex, int opIndex, int op)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1521) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1522) != 0)
+        grDie(0);
+    if (hgInRange32(opIndex, 0, 2) == 0 &&
+        grAssert("hgInRange32(opIndex, 0, 2)", "grApiSmall.inl", 1523) != 0)
+        grDie(0);
+    if (hgInRange32(op, 0, GR_TEXENVCOMBOPERAND_MAX - 1) == 0 &&
+        grAssert("hgInRange32(op, 0, GR_TEXENVCOMBOPERAND_MAX - 1)", "grApiSmall.inl", 1524) != 0)
+        grDie(0);
+    if (state->textureUnit[2 * texIndex].envOpRGB[opIndex] != (unsigned char)op)
+    {
+        state->textureUnit[2 * texIndex].envOpRGB[opIndex] = (unsigned char)op;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+int grGetTexEnvRGBCombOperand(Gerbera_s *state, int texIndex, int opIndex)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1537) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1538) != 0)
+        grDie(0);
+    if (hgInRange32(opIndex, 0, 2) == 0 &&
+        grAssert("hgInRange32(opIndex, 0, 2)", "grApiSmall.inl", 1539) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texIndex].envOpRGB[opIndex];
+}
+
+void grSetTexEnvAlphaCombOperand(Gerbera_s *state, int texIndex, int opIndex, int op)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1548) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1549) != 0)
+        grDie(0);
+    if (hgInRange32(opIndex, 0, 2) == 0 &&
+        grAssert("hgInRange32(opIndex, 0, 2)", "grApiSmall.inl", 1550) != 0)
+        grDie(0);
+    if (!(op == GR_TEXENVCOMBOPERAND_SRC_ALPHA || op == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA) &&
+        grAssert("op == GR_TEXENVCOMBOPERAND_SRC_ALPHA || op == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA",
+                 "grApiSmall.inl", 1552) != 0)
+        grDie(0);
+    if (state->textureUnit[2 * texIndex].envOpAlpha[opIndex] != (unsigned char)op)
+    {
+        state->textureUnit[2 * texIndex].envOpAlpha[opIndex] = (unsigned char)op;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+int grGetTexEnvAlphaCombOperand(Gerbera_s *state, int texIndex, int opIndex)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1565) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1566) != 0)
+        grDie(0);
+    if (hgInRange32(opIndex, 0, 2) == 0 &&
+        grAssert("hgInRange32(opIndex, 0, 2)", "grApiSmall.inl", 1567) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texIndex].envOpAlpha[opIndex];
+}
+
+void grSetTexEnvRGBCombScale(Gerbera_s *state, int texIndex, int scale)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1576) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1577) != 0)
+        grDie(0);
+    if (!(scale == 1 || scale == 2 || scale == 4) &&
+        grAssert("scale == 1 || scale == 2 || scale == 4", "grApiSmall.inl", 1578) != 0)
+        grDie(0);
+    if (state->textureUnit[2 * texIndex].envScaleRGB != (unsigned char)scale)
+    {
+        state->textureUnit[2 * texIndex].envScaleRGB = (unsigned char)scale;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+int grGetTexEnvRGBCombScale(Gerbera_s *state, int texIndex)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1591) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1592) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texIndex].envScaleRGB;
+}
+
+void grSetTexEnvAlphaCombScale(Gerbera_s *state, int texIndex, int scale)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1601) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1602) != 0)
+        grDie(0);
+    if (!(scale == 1 || scale == 2 || scale == 4) &&
+        grAssert("scale == 1 || scale == 2 || scale == 4", "grApiSmall.inl", 1603) != 0)
+        grDie(0);
+    if (state->textureUnit[2 * texIndex].envScaleAlpha != (unsigned char)scale)
+    {
+        state->textureUnit[2 * texIndex].envScaleAlpha = (unsigned char)scale;
+        state->pixelPipelineDirty = 1;
+    }
+}
+
+int grGetTexEnvAlphaCombScale(Gerbera_s *state, int texIndex)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1616) != 0)
+        grDie(0);
+    if (hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texIndex, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1617) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texIndex].envScaleAlpha;
+}
+
+int grGetTexEnvMode(Gerbera_s *state, int texUnit)
+{
+    if (hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS-1)", "grApiSmall.inl", 1626) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texUnit].envMode;
+}
+
+unsigned int grGetTexEnvColor(Gerbera_s *state, int texUnit)
+{
+    if (hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS-1)", "grApiSmall.inl", 1632) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texUnit].envColor;
+}
+
+void grSetTexCoordReplace(Gerbera_s *state, int texUnit, int replace)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1638) != 0)
+        grDie(0);
+    if (hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1639) != 0)
+        grDie(0);
+    if (!(replace == 1 || replace == 0) &&
+        grAssert("replace == HG_TRUE || replace == HG_FALSE", "grApiSmall.inl", 1640) != 0)
+        grDie(0);
+    state->textureUnit[2 * texUnit].texCoordReplace = replace;
+}
+
+int grGetTexCoordReplace(Gerbera_s *state, int texUnit)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1647) != 0)
+        grDie(0);
+    if (hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(texUnit, 0, GR_MAX_TEXTURE_UNITS - 1)", "grApiSmall.inl", 1648) != 0)
+        grDie(0);
+    return state->textureUnit[2 * texUnit].texCoordReplace;
+}
+
+/* --- grSetVertexArray / point & line state / default vertex attribs -------- */
+
+void grSetVertexArray(Gerbera_s *state, int arrayType, int dataType, int numComponents,
+                      int stride, void *pointer, unsigned int binding, void *origPointer)
+{
+    _grVertexArray *array;
+
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1664) != 0)
+        grDie(0);
+    if (hgInRange32(arrayType, 0, GR_VERTEXARRAY_MAX - 1) == 0 &&
+        grAssert("hgInRange32(arrayType, 0, GR_VERTEXARRAY_MAX-1)", "grApiSmall.inl", 1665) != 0)
+        grDie(0);
+    if (hgInRange32(dataType, 0, 8) == 0 &&
+        grAssert("hgInRange32(dataType, 0, GR_DATATYPE_MAX-1)", "grApiSmall.inl", 1666) != 0)
+        grDie(0);
+    if (hgInRange32(numComponents, 1, 4) == 0 &&
+        grAssert("hgInRange32(numComponents, 1, 4)", "grApiSmall.inl", 1667) != 0)
+        grDie(0);
+    switch (arrayType)
+    {
+    case GR_VERTEXARRAY_POSITION:
+    case GR_VERTEXARRAY_COLOR:
+    case GR_VERTEXARRAY_WEIGHT:
+    case GR_VERTEXARRAY_MATRIX_INDEX:
+        break;
+    case GR_VERTEXARRAY_NORMAL:
+        if (numComponents != 3 && grAssert("numComponents == 3", "grApiSmall.inl", 1684) != 0)
+            grDie(0);
+        break;
+    case GR_VERTEXARRAY_POINT_SIZE:
+        if (numComponents != 1 && grAssert("numComponents == 1", "grApiSmall.inl", 1679) != 0)
+            grDie(0);
+        break;
+    default:
+        if (hgInRange32(arrayType, GR_VERTEXARRAY_TEXCOORD0,
+                        GR_VERTEXARRAY_TEXCOORD0 + GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+            grAssert("hgInRange32(arrayType, GR_VERTEXARRAY_TEXCOORD0, GR_VERTEXARRAY_TEXCOORD0+GR_MAX_TEXTURE_UNITS-1)",
+                     "grApiSmall.inl", 1688) != 0)
+            grDie(0);
+        break;
+    }
+    array = &state->vertexArray[arrayType];
+    array->type = (unsigned char)dataType;
+    array->size = (unsigned char)numComponents;
+    array->stride = stride;
+    array->data = pointer;
+    array->binding = binding;
+    array->origPointer = origPointer;
+}
+
+void grSetPointSize(Gerbera_s *state, int size)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1757) != 0)
+        grDie(0);
+    if (hgInRange32(size, 0, GR_MAX_POINT_SIZE << 16) == 0 &&
+        grAssert("hgInRange32(size, 0, GR_MAX_POINT_SIZE<<16)", "grApiSmall.inl", 1758) != 0)
+        grDie(0);
+    state->pointSize = size;
+}
+
+void grSetLineWidth(Gerbera_s *state, int width)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1764) != 0)
+        grDie(0);
+    if (hgInRange32(width, 0, GR_MAX_LINE_WIDTH << 16) == 0 &&
+        grAssert("hgInRange32(width, 0, GR_MAX_LINE_WIDTH<<16)", "grApiSmall.inl", 1765) != 0)
+        grDie(0);
+    state->lineWidth = width;
+}
+
+void grSetPointSizeMin(Gerbera_s *state, int min)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1771) != 0)
+        grDie(0);
+    state->pointSizeMin = min;
+}
+
+void grSetPointSizeMax(Gerbera_s *state, int max)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1778) != 0)
+        grDie(0);
+    state->pointSizeMax = max;
+}
+
+void grSetPointFadeThreshold(Gerbera_s *state, int size)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1785) != 0)
+        grDie(0);
+    state->pointFadeThreshold = size;
+}
+
+void grSetPointDistAttn(Gerbera_s *state, int *attn)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1792) != 0)
+        grDie(0);
+    if (attn == NULL && grAssert("attn", "grApiSmall.inl", 1793) != 0)
+        grDie(0);
+    if (IScalar_testge(attn[0]) == 0 && grAssert("IScalar_testge(attn[0])", "grApiSmall.inl", 1794) != 0)
+        grDie(0);
+    if (IScalar_testge(attn[1]) == 0 && grAssert("IScalar_testge(attn[1])", "grApiSmall.inl", 1795) != 0)
+        grDie(0);
+    if (IScalar_testge(attn[2]) == 0 && grAssert("IScalar_testge(attn[2])", "grApiSmall.inl", 1796) != 0)
+        grDie(0);
+    IFVector3_setfv3(&state->pointDistAttn, attn);
+}
+
+void grSetVertexColor(Gerbera_s *state, _XColor3 *color, unsigned short alpha)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1813) != 0)
+        grDie(0);
+    state->defaultColor = *color;
+    if (grTestCapability(state, GR_CAPABILITY_COLOR_MATERIAL) != 0)
+    {
+        grSetMaterialColor(state, GR_MATERIALCOLOR_AMBIENT, color);
+        grSetMaterialColor(state, GR_MATERIALCOLOR_DIFFUSE, color);
+    }
+    XColor3_tousv(state->defaultColorRGBA, &state->defaultColor);
+    state->defaultColorRGBA[3] = alpha;
+}
+
+void grSetVertexNormal(Gerbera_s *state, int *normal)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1829) != 0)
+        grDie(0);
+    XNormal3_copy(state->defaultNormal, normal);
+}
+
+void grSetVertexTexCoord(Gerbera_s *state, int ndx, int *texCoord)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1835) != 0)
+        grDie(0);
+    if (texCoord == NULL && grAssert("texCoord", "grApiSmall.inl", 1836) != 0)
+        grDie(0);
+    if (hgInRange32(ndx, 0, GR_MAX_TEXTURE_UNITS - 1) == 0 &&
+        grAssert("hgInRange32(ndx, 0, GR_MAX_TEXTURE_UNITS-1)", "grApiSmall.inl", 1837) != 0)
+        grDie(0);
+    state->defaultTexCoord.x[ndx][0] = texCoord[0];
+    state->defaultTexCoord.x[ndx][1] = texCoord[1];
+    state->defaultTexCoord.x[ndx][2] = texCoord[2];
+    state->defaultTexCoord.x[ndx][3] = texCoord[3];
+}
+
+/* --- grScratchGrowMemory / grCreateGerbera / grDestroyGerbera / surfaces --- */
+
+static const int scratchSizes[7] =
+{
+    30720, 40960, 51200, 81920, 102400, 153600, 204800
+};
+
+int grScratchGrowMemory(Gerbera_s *state)
+{
+    int currSize;
+    void *scratch;
+    int i;
+    int nextSize;
+    void *nextScratch;
+
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 1858) != 0)
+        grDie(0);
+    currSize = state->scratchMemorySize;
+    scratch = state->scratchMemory;
+    if (currSize != 0)
+    {
+        if (scratch == NULL && grAssert("scratch", "grApiSmall.inl", 1887) != 0)
+            grDie(0);
+        if ((currSize & 1023) != 0 && grAssert("!(currSize & 1023)", "grApiSmall.inl", 1888) != 0)
+            grDie(0);
+        for (i = 0; currSize != scratchSizes[i]; ++i)
+        {
+            if (i >= 6 && grAssert("i < nSizes - 1", "grApiSmall.inl", 1900) != 0)
+                grDie(0);
+        }
+        if (i == 6)
+            return 0;
+        if (grStackGetFreeSpace(&state->scratchAllocator) != currSize &&
+            grAssert("grStackGetFreeSpace(&state->scratchAllocator) == currSize",
+                     "grApiSmall.inl", 1908) != 0)
+            grDie(0);
+        if (grStackGetPtr(&state->scratchAllocator, 0) != scratch &&
+            grAssert("grStackGetPtr(&state->scratchAllocator, 0) == scratch",
+                     "grApiSmall.inl", 1909) != 0)
+            grDie(0);
+        eglFree(scratch);
+    }
+    else
+    {
+        if (scratch != NULL && grAssert("!scratch", "grApiSmall.inl", 1919) != 0)
+            grDie(0);
+        i = -1;
+    }
+    nextSize = scratchSizes[i + 1];
+    nextScratch = eglAlloc((unsigned int)nextSize);
+    if (nextScratch != NULL)
+        grStackInit(&state->scratchAllocator, nextScratch, nextSize);
+    else
+        nextSize = 0;
+    state->scratchMemory = nextScratch;
+    state->scratchMemorySize = nextSize;
+    if (nextScratch != NULL)
+    {
+        int j;
+        for (j = 0; j < nextSize; ++j)
+            ((unsigned char *)nextScratch)[j] = 0xABu;
+    }
+    return nextScratch != NULL;
+}
+
+Gerbera_s *grCreateGerbera(int workMemorySize, unsigned char *workMemory,
+                           unsigned char *sharedWorkMem, int sharedWorkMemSize)
+{
+    unsigned int magic0 = 0xDEADBEEFu;
+    unsigned int magic1 = 0xC001D00Eu;
+    int stateBytes = ((int)sizeof(Gerbera_s) + 7) & ~7;
+    int entryBytes = 32 * (((int)sizeof(_grCacheEntry) + 7) & ~7);
+    Gerbera_s *state;
+    _grCacheEntry *entries;
+    grExecutable_s *exec;
+    int i, c;
+
+    (void)sharedWorkMem;
+    (void)sharedWorkMemSize;
+
+    if (workMemorySize < 0 && grAssert("workMemorySize >= 0", "grApiSmall.inl", 1978) != 0)
+        grDie(0);
+    if (workMemory == NULL && grAssert("workMemory", "grApiSmall.inl", 1979) != 0)
+        grDie(0);
+    if (((uintptr_t)workMemory & 3u) != 0 &&
+        grAssert("!((HGuint32)workMemory & 3)", "grApiSmall.inl", 1980) != 0)
+        grDie(0);
+
+    for (i = 0; i < workMemorySize; ++i)
+        workMemory[i] = 0xABu;
+
+    state = (Gerbera_s *)workMemory;
+    hgFill8(workMemory, 0, stateBytes);
+    grStackInit(&state->allocator, workMemory, workMemorySize);
+    grStackAllocate(&state->allocator, stateBytes);
+    entries = (_grCacheEntry *)grStackAllocate(&state->allocator, entryBytes);
+
+    exec = eglAllocExecutable(0x3000u);
+    state->pipelineCacheExecutable = exec;
+    if (exec == NULL)
+        return NULL;
+
+    state->pipelineCache = &state->pipelineCacheStorage;
+    grCacheInit(state->pipelineCache, eglGetExecutableData(exec), entries,
+                eglGetExecutableSize(exec), 32);
+
+    state->setjmpConfigStorage.longjmp = eglHCWrapLongjmp;
+    state->setjmpConfigStorage.setjmpWrap = eglHCWrapSetjmp;
+    state->setjmpConfigStorage.jmpbufSize = (unsigned int)eglGetJmpbufSize();
+    state->setjmpConfig = &state->setjmpConfigStorage;
+
+    if (!(state->scratchMemory == NULL && state->scratchMemorySize == 0) &&
+        grAssert("!state->scratchMemory && !state->scratchMemorySize", "grApiSmall.inl", 2030) != 0)
+        grDie(0);
+
+    if (grScratchGrowMemory(state) == 0)
+    {
+        eglFreeExecutable((grExecutable_s *)state->pipelineCacheExecutable);
+        return NULL;
+    }
+
+    state->rejectAllStateDirty = 1;
+    state->pixelPipelineDirty = 1;
+    state->vertexPipelineDirty = 1;
+    state->lineWidth = 0x10000;
+    state->pointSize = 0x10000;
+    state->pointFadeThreshold = 0;
+    IFVector3_init100(&state->pointDistAttn);
+    state->computePointDistAttn = 0;
+    state->colorMask = 0xFu;
+    state->stencilTestMask = 0xFFu;
+    state->stencilWriteMask = 0xFFu;
+    state->alphaFunc = GR_FUNC_ALWAYS;
+    state->depthFunc = GR_FUNC_LESS;
+    state->depthMask = 1;
+    state->cullMask = 2u;
+    state->frontFace = GR_WINDING_CCW;
+    state->srcBlendFactor = GR_BLENDFACTOR_ONE;
+    state->dstBlendFactor = GR_BLENDFACTOR_ZERO;
+    state->logicOp = GR_LOGICOP_COPY;
+    state->clearDepth = 0x3FFFFFFF;
+    state->pixelPipelineDirty = 1;
+    state->vertexArray[GR_VERTEXARRAY_NORMAL].size = 3;
+    state->defaultColor.r = 0x200000;
+    state->defaultColor.g = 0x200000;
+    state->defaultColor.b = 0x200000;
+    state->defaultColorRGBA[0] = 0xFFFFu;
+    state->defaultColorRGBA[1] = 0xFFFFu;
+    state->defaultColorRGBA[2] = 0xFFFFu;
+    state->defaultColorRGBA[3] = 0xFFFFu;
+    XNormal3_init001p(state->defaultNormal);
+
+    for (i = GR_MAX_TEXTURE_UNITS - 1; i >= 0; --i)
+    {
+        _grTextureUnitState *tu = &state->textureUnit[2 * i];
+        tu->envMode = GR_TEXENVMODE_MODULATE;
+        tu->texCoordReplace = 0;
+        tu->envScaleRGB = 1;
+        tu->envScaleAlpha = 1;
+        state->defaultTexCoord.x[i][0] = IScalar_zero();
+        state->defaultTexCoord.x[i][1] = IScalar_zero();
+        state->defaultTexCoord.x[i][2] = IScalar_zero();
+        state->defaultTexCoord.x[i][3] = IScalar_one();
+    }
+
+    state->fogMode = GR_FOGMODE_EXP;
+    state->fogStart = IScalar_zero();
+    state->fogEnd = IScalar_one();
+    state->fogDensity = IScalar_one();
+    state->fogOORange = IScalar_one();
+    state->fogAtZero = 0;
+
+    state->lightTypeDirtyMask = 0xFFu;
+    state->lightDirectionalMask = 0;
+    state->lightColorDirtyMask = 0xFFu;
+    state->lightActiveMask = 0;
+    state->lightActiveDirtyMask = 0xFFu;
+    state->ambientLightSumDirty = 1;
+    state->ambientLightSumMask = 0;
+    state->baseColorDirty = 1;
+
+    for (c = 0; c < 4; ++c)
+        XColor3_zero(&state->material.colors[c]);
+    state->material.shininess = 0;
+
+    for (i = 0; i < GR_MAX_LIGHTS; ++i)
+    {
+        _grLight *light = &state->lights[i];
+        for (c = 0; c <= 2; ++c)
+            XColor3_zero(&light->colors[c]);
+        IVector3_init001p(light->positionXYZ);
+        light->positional = 0;
+        XNormal3_init001n(light->spotDirectionNegated);
+        IFVector3_init100(&light->attenuation);
+        light->exponent = 0;
+        light->spotCutoff = IScalar_immediate(180.0f);
+    }
+
+    grEnableCapability(state, GR_CAPABILITY_SMOOTH_SHADING);
+    grSetViewport(state, 0, 0, 0, 0);
+    grSetScissor(state, 0, 0, 0, 0);
+    grSetDepthRange(state, IScalar_zero(), IScalar_one());
+    grUpdateCullMode(state);
+    grrSelfTest();
+
+    if (!(magic0 == 0xDEADBEEFu && magic1 == 0xC001D00Eu) &&
+        grAssert("__grMemoryCheck[0]==GR_STACK_CHECK_MAGIC0 && __grMemoryCheck[1]==GR_STACK_CHECK_MAGIC1",
+                 "grApiSmall.inl", 2195) != 0)
+        grDie(0);
+
+    return state;
+}
+
+void grDestroyGerbera(Gerbera_s *state)
+{
+    unsigned char *allocData;
+    int allocSize;
+
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 2203) != 0)
+        grDie(0);
+    eglFreeExecutable((grExecutable_s *)state->pipelineCacheExecutable);
+    if (state->scratchMemory != NULL)
+    {
+        if (state->scratchMemorySize == 0 &&
+            grAssert("state->scratchMemorySize", "grApiSmall.inl", 2209) != 0)
+            grDie(0);
+        eglFree(state->scratchMemory);
+    }
+    allocData = (unsigned char *)state->allocator.data;
+    allocSize = state->allocator.size;
+    hgFill8(allocData, 0xBEu, allocSize);
+}
+
+int grIsValidSurfaceInfo(_grDrawSurface *info)
+{
+    if (info == NULL && grAssert("info", "grApiSmall.inl", 2233) != 0)
+        grDie(0);
+    if (grIsValidDescriptor((_grSurfaceDescriptor *)info) == 0 &&
+        grAssert("grIsValidDescriptor(&info->descriptor)", "grApiSmall.inl", 2236) != 0)
+        grDie(0);
+    return 1;
+}
+
+void grSetSurfaces(Gerbera_s *state, _grDrawSurface *drawInfo, _grDrawSurface *readInfo)
+{
+    if (state == NULL && grAssert("state", "grApiSmall.inl", 2243) != 0)
+        grDie(0);
+    if (grIsValidSurfaceInfo(drawInfo) == 0 &&
+        grAssert("grIsValidSurfaceInfo(drawInfo)", "grApiSmall.inl", 2244) != 0)
+        grDie(0);
+    if (grIsValidSurfaceInfo(readInfo) == 0 &&
+        grAssert("grIsValidSurfaceInfo(readInfo)", "grApiSmall.inl", 2245) != 0)
+        grDie(0);
+    hgMemCopy(&state->drawSurface, drawInfo, (unsigned int)sizeof(_grDrawSurface));
+    hgMemCopy(&state->readSurface, readInfo, (unsigned int)sizeof(_grDrawSurface));
+    grUpdateDither(state);
+    grUpdateScissor(state);
+    state->pixelPipelineDirty = 1;
 }
