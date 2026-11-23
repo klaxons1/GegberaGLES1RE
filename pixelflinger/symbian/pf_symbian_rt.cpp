@@ -12,14 +12,23 @@
 #include <new>
 
 #include "symbian_os.h"
+#include <pf_symbian_tls.h>
+#include "../libpixelflinger/codeflinger/CodeCache.h"
 #include "../libagl/context.h"
 
+#define PF_EXEC_CHUNK_BYTES (256 * 1024)
+#define PF_CODE_CACHE_BYTES (128 * 1024)
 #define PF_HEAP_MAX_BYTES   (32 * 1024 * 1024)
 
 struct PfSymbianTls {
     android::gl::ogles_context_t*   glContext;
     void*                           chunkHeap;
+    int                             codeChunkHandle;
+    int                             codeChunkOpen;
+    int                             codeChunkTried;
     int                             inInit;
+    PfExecArena                     execArena;
+    android::CodeCache*             codeCache;
     void*                           eglState;
     void                          (*eglDestroyFn)(void*);
 };
@@ -58,6 +67,30 @@ PfSymbianTls* pf_symbian_tls_ensure(void)
     return tls;
 }
 
+static void pf_ensure_exec_chunk(PfSymbianTls* tls)
+{
+    if (!tls || tls->codeChunkTried)
+        return;
+    tls->codeChunkTried = 1;
+
+    static const int kSizes[3] = { 256 * 1024, 128 * 1024, 64 * 1024 };
+    for (int i = 0; i < 3; ++i) {
+        tls->codeChunkHandle = 0;
+        if (sym_RChunk_CreateLocalCode(&tls->codeChunkHandle,
+                                       kSizes[i], kSizes[i], 0) == 0) {
+            void* base = sym_RChunk_Base(&tls->codeChunkHandle);
+            int sz = sym_RChunk_Size(&tls->codeChunkHandle);
+            if (base && sz >= 16384) {
+                tls->codeChunkOpen = 1;
+                pf_exec_arena_init(&tls->execArena, base, (size_t)sz);
+                return;
+            }
+            sym_RHandleBase_Close(&tls->codeChunkHandle);
+            tls->codeChunkHandle = 0;
+        }
+    }
+}
+
 void pf_symbian_set_egl_state(void* state, void (*destroyFn)(void*))
 {
     PfSymbianTls* tls = pf_symbian_tls_ensure();
@@ -73,6 +106,33 @@ void* pf_symbian_get_egl_state(void)
     return tls ? tls->eglState : 0;
 }
 
+PfExecArena* pf_symbian_get_exec_arena(void)
+{
+    PfSymbianTls* tls = pf_symbian_tls_ensure();
+    if (!tls)
+        return 0;
+    pf_ensure_exec_chunk(tls);
+    return tls->execArena.base ? &tls->execArena : 0;
+}
+
+android::CodeCache* pf_symbian_get_code_cache(void)
+{
+    PfSymbianTls* tls = pf_symbian_tls_ensure();
+    if (!tls)
+        return 0;
+    pf_ensure_exec_chunk(tls);
+    if (!tls->execArena.base)
+        return 0;
+    if (!tls->codeCache) {
+        uint32_t cap = tls->execArena.capacity;
+        size_t cacheBytes = (cap * 3u) / 4u;
+        if (cacheBytes > PF_CODE_CACHE_BYTES)
+            cacheBytes = PF_CODE_CACHE_BYTES;
+        tls->codeCache = new (std::nothrow) android::CodeCache(cacheBytes);
+    }
+    return tls->codeCache;
+}
+
 extern "C" void pf_symbian_on_thread_detach(void)
 {
     PfSymbianTls* tls = (PfSymbianTls*)sym_DllTls();
@@ -85,6 +145,17 @@ extern "C" void pf_symbian_on_thread_detach(void)
         tls->eglState = 0;
         tls->eglDestroyFn = 0;
         fn(st);
+    }
+
+    if (tls->codeCache) {
+        delete tls->codeCache;
+        tls->codeCache = 0;
+    }
+
+    if (tls->codeChunkOpen) {
+        sym_RHandleBase_Close(&tls->codeChunkHandle);
+        tls->codeChunkOpen = 0;
+        tls->codeChunkHandle = 0;
     }
 
     void* heap = tls->chunkHeap;

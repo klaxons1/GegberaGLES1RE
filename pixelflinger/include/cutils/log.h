@@ -26,10 +26,15 @@
 #define ALOG_ASSERT(cond, ...) ((void)(cond))
 #define LOG_ASSERT(cond, ...)  ((void)(cond))
 
-#define LOG_FATAL(...)      do { PF_ABORT(); } while (0)
-#define LOG_ALWAYS_FATAL(...) do { PF_ABORT(); } while (0)
-#define LOG_FATAL_IF(cond, ...) \
-    do { if (CONDITION(cond)) { PF_ABORT(); } } while (0)
+#ifdef NDEBUG
+#define LOG_FATAL(...)          ((void)0)
+#define LOG_FATAL_IF(cond, ...) ((void)(cond))
+#else
+#define LOG_FATAL(...)          do { PF_ABORT(); } while (0)
+#define LOG_FATAL_IF(cond, ...) do { if (CONDITION(cond)) { PF_ABORT(); } } while (0)
+#endif
+
+#define LOG_ALWAYS_FATAL(...)   do { PF_ABORT(); } while (0)
 #define LOG_ALWAYS_FATAL_IF(cond, ...) \
     do { if (CONDITION(cond)) { PF_ABORT(); } } while (0)
 

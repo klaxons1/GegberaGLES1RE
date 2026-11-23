@@ -1094,9 +1094,10 @@ void RegisterAllocator::RegisterFile::reset()
 int RegisterAllocator::RegisterFile::reserve(int reg)
 {
     reg += mRegisterOffset;
-    LOG_ALWAYS_FATAL_IF(isUsed(reg),
-                        "reserving register %d, but already in use",
-                        reg);
+    if (isUsed(reg)) {
+        mStatus |= OUT_OF_REGISTERS;
+        return reg;
+    }
     mRegs |= (1<<reg);
     mTouched |= mRegs;
     return reg;

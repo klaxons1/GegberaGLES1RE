@@ -165,8 +165,14 @@ private:
     sp<Assembly>    mAssembly;
     uint32_t*       mBase;
     uint32_t*       mPC;
+    uint32_t*       mLimit;
     uint32_t*       mPrologPC;
     int64_t         mDuration;
+    bool            mOverflow;
+    inline void     emit(uint32_t insn) {
+        if (__builtin_expect(mPC < mLimit, 1)) *mPC++ = insn;
+        else mOverflow = true;
+    }
 #if defined(WITH_LIB_HARDWARE)
     bool            mQemuTracing;
 #endif

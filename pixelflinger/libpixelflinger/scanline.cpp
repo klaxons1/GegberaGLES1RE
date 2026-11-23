@@ -40,17 +40,21 @@
 #define ANDROID_CODEGEN_ASM         2   // hand-written asm, fallback generic
 #define ANDROID_CODEGEN_GENERATED   3   // hand-written asm, fallback codegen
 
-/* JIT disabled on Symbian OS EKA2: use pure verified C++ fast-paths + full
- * generic C++ scanline pipeline (matching platform_system_core). */
+/* ARMv5TE CodeFlinger JIT + ASM shortcuts enabled, with the full verified C++
+ * scanline(context_t*) pipeline ALWAYS compiled in as a guaranteed fallback! */
 #ifdef NDEBUG
 #   define ANDROID_RELEASE
-#   define ANDROID_CODEGEN      ANDROID_CODEGEN_C
+#   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
 #else
 #   define ANDROID_DEBUG
-#   define ANDROID_CODEGEN      ANDROID_CODEGEN_C
+#   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
 #endif
 
-#define ANDROID_ARM_CODEGEN     0
+#if defined(__arm__)
+#   define ANDROID_ARM_CODEGEN  1
+#else
+#   define ANDROID_ARM_CODEGEN  0
+#endif
 
 #if ANDROID_ARM_CODEGEN
 #include "codeflinger/CodeCache.h"
@@ -72,13 +76,8 @@
  */
 #define DEBUG_NEEDS  0
 
-#if defined( __mips__) && !defined(__LP64__)
-#define ASSEMBLY_SCRATCH_SIZE   4096
-#elif defined(__aarch64__)
+/* 8 KB scratch (2048 ARM instructions) prevents multi-TMU shader truncation */
 #define ASSEMBLY_SCRATCH_SIZE   8192
-#else
-#define ASSEMBLY_SCRATCH_SIZE   2048
-#endif
 
 // ----------------------------------------------------------------------------
 namespace android {
@@ -461,7 +460,9 @@ static void blend_factor(context_t* c, pixel_t* r, uint32_t factor,
         const pixel_t* src, const pixel_t* dst);
 static void rescale(uint32_t& u, uint8_t& su, uint32_t& v, uint8_t& sv);
 
-#if ANDROID_ARM_CODEGEN && (ANDROID_CODEGEN == ANDROID_CODEGEN_GENERATED)
+/* ALWAYS compile the full C++ scanline(context_t*) pipeline even when
+ * ANDROID_ARM_CODEGEN == 1 so any JIT allocation/cap fallback renders 100%! */
+#if 0
 
 // no need to compile the generic-pipeline, it can't be reached
 void scanline(context_t*)

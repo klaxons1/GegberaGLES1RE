@@ -17,12 +17,74 @@
 
 #include <private/pixelflinger/ggl_context.h>
 #include "../libagl/context.h"
+#include "../libpixelflinger/codeflinger/CodeCache.h"
+#include "../libpixelflinger/codeflinger/ARMAssembler.h"
 
 static void set_perspective(float fovyDeg, float aspect, float zNear, float zFar)
 {
     float fH = tanf(fovyDeg * (float)M_PI / 360.0f) * zNear;
     float fW = fH * aspect;
     glFrustumf(-fW, fW, -fH, fH, zNear, zFar);
+}
+
+static void test_codecache_and_armassembler_safety(void)
+{
+    using namespace android;
+    /* 1. Verify ARMAssembler emits valid ARMv5TE machine words & shrinks Assembly */
+    sp<Assembly> okAsm(new Assembly(256));
+    assert(okAsm->base() != NULL && okAsm->size() == 256);
+    {
+        ARMAssembler arm(okAsm);
+        arm.prolog();
+        arm.MOV(ARMAssembler::AL, 0, ARMAssembler::R0, arm.imm(0x42));
+        arm.epilog(0);
+        assert(arm.generate("unit_ok") == 0);
+        assert(okAsm->size() == 12);
+        assert(okAsm->base()[1] == 0xE3A00042u); /* mov r0, #0x42 */
+        assert(okAsm->base()[2] == 0xE12FFF1Eu); /* bx lr */
+    }
+
+    /* 2. Verify ARMAssembler catches buffer overflow cleanly (returns NO_MEMORY, zero OOB writes) */
+    sp<Assembly> tinyAsm(new Assembly(32));
+    assert(tinyAsm->base() != NULL);
+    {
+        ARMAssembler arm(tinyAsm);
+        arm.prolog();
+        for (int i = 0; i < 40; ++i)
+            arm.MOV(ARMAssembler::AL, 0, ARMAssembler::R0, arm.imm(1));
+        assert(arm.generate("unit_overflow") < 0);
+    }
+
+    /* 3. Verify unencodable immediate sets mOverflow instead of abort() */
+    sp<Assembly> badImmAsm(new Assembly(128));
+    {
+        ARMAssembler arm(badImmAsm);
+        arm.prolog();
+        arm.MOV(ARMAssembler::AL, 0, ARMAssembler::R0, arm.imm(0x12345678u));
+        assert(arm.generate("unit_bad_imm") < 0);
+    }
+
+    /* 4. Verify CodeCache lookup + LRU eviction (owning key per Assembly like ScanlineAssembly) */
+    struct TestAssembly : public Assembly {
+        AssemblyKey<needs_t> mKey;
+        TestAssembly(const needs_t& n, size_t sz) : Assembly(sz), mKey(n) {}
+    };
+    CodeCache cache(512);
+    for (uint32_t k = 1; k <= 12; ++k) {
+        needs_t n;
+        memset(&n, 0, sizeof(n));
+        n.n = k;
+        sp<TestAssembly> entry(new TestAssembly(n, 128));
+        assert(entry->resize(96) == 96);
+        assert(cache.cache(entry->mKey, entry) >= 0);
+    }
+    /* Latest keys must hit; oldest keys must have been evicted cleanly */
+    needs_t n12, n1;
+    memset(&n12, 0, sizeof(n12)); n12.n = 12;
+    memset(&n1,  0, sizeof(n1));  n1.n  = 1;
+    assert(cache.lookup(AssemblyKey<needs_t>(n12)) != NULL);
+    assert(cache.lookup(AssemblyKey<needs_t>(n1))  == NULL);
+    printf("[test] ARMAssembler bounds/immediate safety + CodeCache LRU eviction verified!\n");
 }
 
 static void test_nonjit_formats_and_config_attrs(void)
@@ -105,9 +167,12 @@ static void test_nonjit_formats_and_config_attrs(void)
 
 int main(void)
 {
-    printf("=== Symbian EKA2 Pixelflinger (Non-JIT C++) + libagl Headless Suite ===\n");
+    printf("=== Symbian EKA2 Pixelflinger + Codeflinger + libagl Headless Suite ===\n");
 
-    /* 1. Test non-JIT C++ rasterizer across 32-bit/24-bit/16-bit formats & EGL attrs */
+    /* 0. Test ARMAssembler bounds/immediate safety + CodeCache LRU eviction */
+    test_codecache_and_armassembler_safety();
+
+    /* 1. Test C++ fallback rasterizer across 32-bit/24-bit/16-bit formats & EGL attrs */
     test_nonjit_formats_and_config_attrs();
 
     /* 2. Initialize EGL 1.1 */

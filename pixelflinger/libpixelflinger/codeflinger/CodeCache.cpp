@@ -1,7 +1,7 @@
 /* libs/pixelflinger/codeflinger/CodeCache.cpp
 **
-** Symbian OS EKA2 (zero-WSD RChunk::CreateLocalCode + User::IMB_Range)
-** and POSIX mmap CodeCache implementation for Pixelflinger / Codeflinger.
+** Symbian OS EKA2 (zero-WSD RChunk::CreateLocalCode + User::IMB_Range with
+** out-of-band RAM slot table) and POSIX mmap CodeCache for Codeflinger.
 */
 
 #define LOG_TAG "CodeCache"
@@ -20,54 +20,72 @@
 #include <pf_symbian_tls.h>
 #include "CodeCache.h"
 
-static inline size_t pf_align16(size_t n)
+/* 32-byte ARM9/ARM11 cache-line alignment for all executable code blocks */
+static inline uint32_t pf_align32(size_t n)
 {
-    return (n + 15u) & ~(size_t)15u;
+    return (uint32_t)((n + 31u) & ~(size_t)31u);
 }
 
 void pf_exec_arena_init(PfExecArena* arena, void* mem, size_t totalBytes)
 {
-    uintptr_t raw = (uintptr_t)mem;
-    uintptr_t aligned = (raw + 15u) & ~(uintptr_t)15u;
-    size_t adj = (size_t)(aligned - raw);
-    if (!mem || totalBytes <= adj + sizeof(PfExecBlock) + 16u) {
-        arena->base = 0;
-        arena->capacity = 0;
-        arena->head = 0;
+    memset(arena, 0, sizeof(PfExecArena));
+    if (!mem || totalBytes < 64u)
         return;
+
+    uintptr_t raw = (uintptr_t)mem;
+    uintptr_t aligned = (raw + 31u) & ~(uintptr_t)31u;
+    size_t adj = (size_t)(aligned - raw);
+    if (totalBytes <= adj + 64u)
+        return;
+
+    arena->base      = (uint8_t*)aligned;
+    arena->capacity  = (uint32_t)((totalBytes - adj) & ~(size_t)31u);
+    arena->slotCount = 1;
+    arena->slots[0].offset = 0;
+    arena->slots[0].size   = arena->capacity;
+    arena->slots[0].used   = 0;
+}
+
+static void pf_coalesce_slots(PfExecArena* arena)
+{
+    uint32_t i = 0;
+    while (i + 1 < arena->slotCount) {
+        if (!arena->slots[i].used && !arena->slots[i + 1].used) {
+            arena->slots[i].size += arena->slots[i + 1].size;
+            uint32_t rem = arena->slotCount - (i + 2);
+            if (rem > 0) {
+                memmove(&arena->slots[i + 1], &arena->slots[i + 2],
+                        rem * sizeof(PfExecSlot));
+            }
+            arena->slotCount--;
+        } else {
+            ++i;
+        }
     }
-    arena->base = (uint8_t*)aligned;
-    arena->capacity = (totalBytes - adj) & ~(size_t)15u;
-    PfExecBlock* b = (PfExecBlock*)arena->base;
-    b->size = arena->capacity - sizeof(PfExecBlock);
-    b->used = 0;
-    b->pad  = 0x45584543u;
-    b->prev = 0;
-    b->next = 0;
-    arena->head = b;
 }
 
 uint32_t* pf_exec_alloc(PfExecArena* arena, size_t reqBytes)
 {
-    if (!arena || !arena->head)
+    if (!arena || !arena->base || arena->slotCount == 0)
         return 0;
-    size_t need = pf_align16(reqBytes ? reqBytes : 16u);
-    for (PfExecBlock* b = arena->head; b != 0; b = b->next) {
-        if (!b->used && b->size >= need) {
-            if (b->size >= need + sizeof(PfExecBlock) + 32u) {
-                PfExecBlock* tail = (PfExecBlock*)((uint8_t*)(b + 1) + need);
-                tail->size = b->size - need - sizeof(PfExecBlock);
-                tail->used = 0;
-                tail->pad  = 0x45584543u;
-                tail->prev = b;
-                tail->next = b->next;
-                if (b->next)
-                    b->next->prev = tail;
-                b->next = tail;
-                b->size = need;
+    uint32_t need = pf_align32(reqBytes ? reqBytes : 32u);
+    for (uint32_t i = 0; i < arena->slotCount; ++i) {
+        if (!arena->slots[i].used && arena->slots[i].size >= need) {
+            uint32_t rem = arena->slots[i].size - need;
+            if (rem >= 32u && arena->slotCount < PF_EXEC_MAX_SLOTS) {
+                uint32_t tailCnt = arena->slotCount - (i + 1);
+                if (tailCnt > 0) {
+                    memmove(&arena->slots[i + 2], &arena->slots[i + 1],
+                            tailCnt * sizeof(PfExecSlot));
+                }
+                arena->slots[i + 1].offset = arena->slots[i].offset + need;
+                arena->slots[i + 1].size   = rem;
+                arena->slots[i + 1].used   = 0;
+                arena->slots[i].size       = need;
+                arena->slotCount++;
             }
-            b->used = 1;
-            return (uint32_t*)(b + 1);
+            arena->slots[i].used = 1;
+            return (uint32_t*)(arena->base + arena->slots[i].offset);
         }
     }
     return 0;
@@ -75,30 +93,30 @@ uint32_t* pf_exec_alloc(PfExecArena* arena, size_t reqBytes)
 
 uint32_t* pf_exec_shrink(PfExecArena* arena, void* ptr, size_t newBytes)
 {
-    (void)arena;
-    if (!ptr)
-        return 0;
-    PfExecBlock* b = ((PfExecBlock*)ptr) - 1;
-    size_t need = pf_align16(newBytes ? newBytes : 16u);
-    if (b->size >= need + sizeof(PfExecBlock) + 16u) {
-        PfExecBlock* tail = (PfExecBlock*)((uint8_t*)(b + 1) + need);
-        tail->size = b->size - need - sizeof(PfExecBlock);
-        tail->used = 0;
-        tail->pad  = 0x45584543u;
-        tail->prev = b;
-        tail->next = b->next;
-        if (b->next)
-            b->next->prev = tail;
-        b->next = tail;
-        b->size = need;
+    if (!arena || !arena->base || !ptr)
+        return (uint32_t*)ptr;
+    uintptr_t off = (uintptr_t)ptr - (uintptr_t)arena->base;
+    if (off >= arena->capacity)
+        return (uint32_t*)ptr;
 
-        /* Coalesce newly freed tail with following free block if present */
-        PfExecBlock* nxt = tail->next;
-        if (nxt && !nxt->used) {
-            tail->size += sizeof(PfExecBlock) + nxt->size;
-            tail->next = nxt->next;
-            if (tail->next)
-                tail->next->prev = tail;
+    uint32_t need = pf_align32(newBytes ? newBytes : 32u);
+    for (uint32_t i = 0; i < arena->slotCount; ++i) {
+        if (arena->slots[i].offset == (uint32_t)off && arena->slots[i].used) {
+            if (arena->slots[i].size >= need + 32u && arena->slotCount < PF_EXEC_MAX_SLOTS) {
+                uint32_t rem = arena->slots[i].size - need;
+                uint32_t tailCnt = arena->slotCount - (i + 1);
+                if (tailCnt > 0) {
+                    memmove(&arena->slots[i + 2], &arena->slots[i + 1],
+                            tailCnt * sizeof(PfExecSlot));
+                }
+                arena->slots[i + 1].offset = arena->slots[i].offset + need;
+                arena->slots[i + 1].size   = rem;
+                arena->slots[i + 1].used   = 0;
+                arena->slots[i].size       = need;
+                arena->slotCount++;
+                pf_coalesce_slots(arena);
+            }
+            break;
         }
     }
     return (uint32_t*)ptr;
@@ -106,25 +124,18 @@ uint32_t* pf_exec_shrink(PfExecArena* arena, void* ptr, size_t newBytes)
 
 void pf_exec_free(PfExecArena* arena, void* ptr)
 {
-    (void)arena;
-    if (!ptr)
+    if (!arena || !arena->base || !ptr)
         return;
-    PfExecBlock* b = ((PfExecBlock*)ptr) - 1;
-    b->used = 0;
+    uintptr_t off = (uintptr_t)ptr - (uintptr_t)arena->base;
+    if (off >= arena->capacity)
+        return;
 
-    if (b->next && !b->next->used) {
-        PfExecBlock* nxt = b->next;
-        b->size += sizeof(PfExecBlock) + nxt->size;
-        b->next = nxt->next;
-        if (b->next)
-            b->next->prev = b;
-    }
-    if (b->prev && !b->prev->used) {
-        PfExecBlock* prv = b->prev;
-        prv->size += sizeof(PfExecBlock) + b->size;
-        prv->next = b->next;
-        if (prv->next)
-            prv->next->prev = prv;
+    for (uint32_t i = 0; i < arena->slotCount; ++i) {
+        if (arena->slots[i].offset == (uint32_t)off) {
+            arena->slots[i].used = 0;
+            pf_coalesce_slots(arena);
+            break;
+        }
     }
 }
 
@@ -145,7 +156,7 @@ static PfExecArena* getExecArena()
             pf_exec_arena_init(&sArena, mem, kCap);
         sInit = true;
     }
-    return sArena.head ? &sArena : 0;
+    return sArena.base ? &sArena : 0;
 #endif
 }
 
@@ -154,7 +165,7 @@ CodeCache* ggl_get_code_cache()
 #ifdef __SYMBIAN32__
     return pf_symbian_get_code_cache();
 #else
-    static CodeCache sCache(64 * 1024);
+    static CodeCache sCache(128 * 1024);
     return &sCache;
 #endif
 }
@@ -167,6 +178,12 @@ Assembly::Assembly(size_t size)
     PfExecArena* arena = getExecArena();
     if (arena) {
         mBase = pf_exec_alloc(arena, size);
+        if (!mBase) {
+            CodeCache* cc = ggl_get_code_cache();
+            while (!mBase && cc && cc->evictLru()) {
+                mBase = pf_exec_alloc(arena, size);
+            }
+        }
         if (mBase)
             mSize = size;
     }
@@ -240,6 +257,25 @@ sp<Assembly> CodeCache::lookup(const AssemblyKeyBase& keyBase) const
     return r;
 }
 
+bool CodeCache::evictLru()
+{
+    Mutex::Autolock _l(mLock);
+    size_t count = mCacheData.size();
+    if (count == 0)
+        return false;
+    size_t lru = 0;
+    for (size_t i = 1; i < count; i++) {
+        const cache_entry_t& e = mCacheData.valueAt(i);
+        if (e.when < mCacheData.valueAt(lru).when) {
+            lru = i;
+        }
+    }
+    const cache_entry_t& e = mCacheData.valueAt(lru);
+    mCacheInUse -= (size_t)e.entry->size();
+    mCacheData.removeItemsAt(lru);
+    return true;
+}
+
 int CodeCache::cache(const AssemblyKeyBase& keyBase,
                      const sp<Assembly>& assembly)
 {
@@ -270,7 +306,8 @@ int CodeCache::cache(const AssemblyKeyBase& keyBase,
         mCacheInUse += (size_t)assemblySize;
         mWhen++;
         void* base = assembly->base();
-        void* curr = (uint8_t*)base + assemblySize;
+        uint32_t alignedBytes = pf_align32((size_t)assemblySize);
+        void* curr = (uint8_t*)base + alignedBytes;
 #ifdef __SYMBIAN32__
         sym_User_IMB_Range(base, curr);
 #elif defined(__GNUC__)

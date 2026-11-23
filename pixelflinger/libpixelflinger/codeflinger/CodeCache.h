@@ -87,6 +87,7 @@ public:
 
             int                 cache(  const AssemblyKeyBase& key,
                                         const sp<Assembly>& assembly);
+            bool                evictLru();
 
 private:
     // nothing to see here...

@@ -8,20 +8,22 @@ namespace android {
 class CodeCache;
 }
 
-struct PfExecBlock {
-    size_t          size;   /* Payload bytes (excluding sizeof(PfExecBlock)) */
-    uint32_t        used;
-    uint32_t        pad;
-    PfExecBlock*    prev;
-    PfExecBlock*    next;
+#define PF_EXEC_MAX_SLOTS 256
+
+/* Metadata lives 100% in normal RAM (PfExecArena), NEVER inside executable
+ * RChunk pages — avoiding self-modifying-code page invalidations on ARM9/ARM11
+ * hardware and EKA2L1's Dynarmic JIT recompiler. */
+struct PfExecSlot {
+    uint32_t    offset;
+    uint32_t    size;
+    uint32_t    used;
 };
 
-/* sizeof(PfExecBlock) == 16 on 32-bit ARM, 32 on 64-bit host (both 16-byte aligned) */
-
 struct PfExecArena {
-    uint8_t*        base;
-    size_t          capacity;
-    PfExecBlock*    head;
+    uint8_t*    base;
+    uint32_t    capacity;
+    uint32_t    slotCount;
+    PfExecSlot  slots[PF_EXEC_MAX_SLOTS];
 };
 
 #ifdef __SYMBIAN32__
