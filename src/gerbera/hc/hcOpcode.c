@@ -12,13 +12,22 @@
 
 const unsigned char HC_opcodeDecls[55] =
 {
-    '#', '#', '\x03', '\x03', '\x03', '\x03', '\x03', '\x03',
-    '#', '#', '#', '#', '#', '#', '\"', '\"', '\xE0', '#',
-    '\x03', '\x03', '\x03', '\x03', '#', '+', '+', '+',
-    '+', '\v', '\v', '+', '\v', 'k', 'k', 'K', 'k', 'K',
-    'K', 'K', 'K', '\xD0', '\x91', '\xB3', '\xB3', '\x93',
-    '\x93', '\x93', '\x93', '\x93', '\x93', '\x93', '\xB3',
-    '\xB3', '\xD0', '\xD1'
+    '#',    '#',    '\x03', '\x03', '\x03', '\x03', '\x03', '\x03',
+    '#',    '#',    '#',    '#',    '#',    '#',    '\"',   '\"',
+    '\xE0', '#',    '\x03', '\x03', '\x03', '\x03', '#',    '+',
+    '+',    '+',    '+',    '\v',   '\v',   '+',    '\v',   'k',
+    'k',    'K',    'k',    'K',    'K',    'K',    'K',    '\xD0',
+    '\x91', '\xB3', '\xB3', '\x93', '\x93', '\x93', '\x93', '\x93',
+    '\x93', '\x93', '\x93', '\xB3', '\xB3', '\xD0', '\xD1'
+};
+
+static const unsigned char indexSize[10] =
+{
+    0x1B, 2, /* HCOP_LW2S */
+    0x1C, 2, /* HCOP_LW2U */
+    0x1E, 4, /* HCOP_LD4  */
+    0x21, 2, /* HCOP_SW2  */
+    0x23, 4  /* HCOP_SD4  */
 };
 
 /* --- assert --------------------------------------------------------------- */
@@ -284,10 +293,177 @@ void HC_setOpcodeNoImm(HCInstr_s *instr)
 
 void HC_setOpcodeSrc0(HCInstr_s *instr, int v)
 {
+    if (HC_getOpcodeArgCount(instr) < 1)
+        HC_assertFail("HC_getOpcodeArgCount(instr) >= 1", "hcOpcode.c", 131, NULL);
+    if (v >= 2048)
+        HC_assertFail("v < HC_MAX_REG_INDEX", "hcOpcode.c", 132, NULL);
     instr->instr0 = (instr->instr0 & 0x001FFFFFu) | ((unsigned int)v << 21);
 }
 
 int HC_isBranchOp(int op)
 {
     return (unsigned int)(op - 40) <= 0xC;
+}
+
+int HC_getMemOpIndexSizeOp(int op)
+{
+    int i;
+
+    for (i = 0; i < 10; i += 2)
+    {
+        if (indexSize[i] == (unsigned char)op)
+            return (int)indexSize[i + 1];
+    }
+    return 1;
+}
+
+int HC_getMemOpIndexSize(HCInstr_s *instr)
+{
+    int op;
+
+    if (HC_getOpcodeType(instr) != HCOP_TYPE_MEMOP)
+        HC_assertFail("HC_getOpcodeType(instr) == HCOP_TYPE_MEMOP", "hcOpcode.c", 297, NULL);
+    op = HC_getOpcodeOper(instr);
+    return HC_getMemOpIndexSizeOp(op);
+}
+
+int HC_getDef(HCInstr_s *instr)
+{
+    int op;
+
+    op = HC_getOpcodeOper(instr);
+    if (HC_opcodeDstFlagsOp(op) != HCOP_DST_NORMAL)
+        return -1;
+    else
+        return HC_getOpcodeDst(instr);
+}
+
+int HC_getRegUses(int *dst, HCInstr_s *instr)
+{
+    int t;
+    int argCount;
+    int dstCount;
+    int op;
+
+    op = HC_getOpcodeOper(instr);
+    argCount = HC_getOpcodeArgCountOp(op);
+    if (argCount < 2)
+        return 0;
+    dstCount = 2;
+    if (HC_opcodeDstFlagsOp(op) == HCOP_DST_AS_SRC)
+    {
+        int d = HC_getOpcodeDst(instr);
+        *dst++ = d;
+        dstCount = 3;
+    }
+    dst[0] = HC_getOpcodeSrc0Raw(instr);
+    dst[1] = HC_getOpcodeSrc1Raw(instr);
+    t = HC_opcodeHasImm(instr) != 0;
+    if (argCount == 2)
+        ++t;
+    if (t != (argCount == 2) + HC_opcodeHasImm(instr))
+        HC_assertFail("t == (HC_opcodeHasImm(instr) + (argCount == 2))", "hcOpcode.c", 333, NULL);
+    return dstCount - (3 - argCount + HC_opcodeHasImm(instr));
+}
+
+int HC_getUses(HCInstr_s *instr, int *uses)
+{
+    int result;
+    int c;
+    int b;
+    int cnt;
+
+    switch (HC_getRegUses(uses, instr))
+    {
+    case 0:
+        result = 0;
+        break;
+    case 1:
+        result = 1;
+        break;
+    case 2:
+        if (uses[0] == uses[1])
+            result = 1;
+        else
+            result = 2;
+        break;
+    case 3:
+        cnt = 1;
+        b = uses[1];
+        c = uses[2];
+        if (b != uses[0])
+            cnt = 2;
+        if (c != uses[0] && c != b)
+        {
+            uses[cnt] = c;
+            ++cnt;
+        }
+        result = cnt;
+        break;
+    default:
+        HC_assertFail("HC_FALSE", "hcOpcode.c", 195, NULL);
+        result = 0;
+        break;
+    }
+    return result;
+}
+
+void HC_setUse(HCInstr_s *instr, int which, int newVal)
+{
+    int op;
+    int w;
+
+    w = which;
+    op = HC_getOpcodeOper(instr);
+    if (which >= HC_getOpcodeArgCountOp(op))
+        HC_assertFail("which < argCount", "hcOpcode.c", 345, NULL);
+    if (HC_opcodeDstFlagsOp(op) != HCOP_DST_AS_SRC)
+        w = which + 1;
+    if (w != 0)
+    {
+        if (w == 1)
+        {
+            HC_setOpcodeSrc0(instr, newVal);
+        }
+        else
+        {
+            if (w != 2)
+                HC_assertFail("w == 2", "hcOpcode.c", 359, NULL);
+            HC_setOpcodeSrc1(instr, newVal);
+        }
+    }
+    else
+    {
+        HC_setOpcodeDst(instr, newVal);
+    }
+}
+
+int HC_bsf(unsigned int x)
+{
+    int bits;
+
+    bits = 0;
+    if (x == 0)
+        HC_assertFail("x != 0", "hcDefs.c", 64, NULL);
+    if ((x << 16) == 0)
+    {
+        x >>= 16;
+        bits = 16;
+    }
+    if ((x << 24) == 0)
+    {
+        x >>= 8;
+        bits += 8;
+    }
+    if ((x << 28) == 0)
+    {
+        x >>= 4;
+        bits += 4;
+    }
+    if ((x << 30) == 0)
+    {
+        x >>= 2;
+        bits += 2;
+    }
+    return ((x & 1u) == 0) + bits;
 }

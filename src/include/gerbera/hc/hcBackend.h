@@ -38,6 +38,10 @@
 
 #include "gerbera/hc/hcOpcode.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct HCBackend_s
 {
     int (*canCreateImmediate)(HCInstr_s *instr);                    /* +0  */
@@ -56,5 +60,12 @@ typedef struct HCBackend_s
     int (*isNative)(void);                                          /* +40 */
     int (*optimizationMask)(void);                                  /* +44 */
 } HCBackend_s;
+
+HCBackend_s *HCX86Backend_create(void);
+HCBackend_s *HCARMBackend_create(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* GERBERA_HC_BACKEND_H */

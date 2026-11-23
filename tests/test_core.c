@@ -142,6 +142,7 @@ static void test_texturerect(void);
 static void test_renderrect(void);
 static void test_hcopcode(void);
 static void test_interpreter(void);
+static void test_hcx86backend(void);
 static void test_gradients(void);
 
 int main(void)
@@ -184,6 +185,7 @@ int main(void)
     test_renderrect();
     test_hcopcode();
     test_interpreter();
+    test_hcx86backend();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -3719,4 +3721,262 @@ static void test_interpreter(void)
     /* all instructions have valid opcodes */
     for (i = 0; i < count; ++i)
         CHECK(HC_getOpcodeOper(&prog[i]) < HCOP_MAX);
+}
+
+/* --- test_hcx86backend: hcMemory + hcBackendInfo + hcX86Backend ----------- */
+#include "gerbera/hc/hcBackend.h"
+#include "gerbera/hc/hcBackendInfo.h"
+#include "gerbera/hc/hcMemory.h"
+
+static void test_hcx86backend(void)
+{
+    static unsigned char arenaBuf[65536];
+    HCArena_s arena;
+    HCMemory_s lowMem, hiMem;
+    HCBackend_s *be;
+    unsigned char *remap;
+    HCInstr_s prog[32];
+    HCInstr_s *fixed = NULL;
+    int freeMasks[32];
+    unsigned short duZero[32];
+    void *udZero[32];
+    HCBackendInfo_s beInfo;
+    void *codePtr = NULL;
+    unsigned char *code;
+    int codeLen;
+    int mark;
+    int uses[4];
+    int i;
+
+    /* 1. CodeView HCOP_e & new hcOpcode helper checks */
+    CHECK(HCOP_ADD == 0);
+    CHECK(HCOP_MOV == 14);
+    CHECK(HCOP_NOP == 16);
+    CHECK(HCOP_EOP == 53);
+    CHECK(HCOP_LABEL == 54);
+    CHECK(HC_opcodeDecls[HCOP_EOP] == 0xD0);
+    CHECK(HC_opcodeDecls[HCOP_LABEL] == 0xD1);
+    CHECK(HC_getMemOpIndexSizeOp(HCOP_LW2S) == 2);
+    CHECK(HC_getMemOpIndexSizeOp(HCOP_LD4) == 4);
+    CHECK(HC_getMemOpIndexSizeOp(HCOP_SD4) == 4);
+    CHECK(HC_getMemOpIndexSizeOp(HCOP_LD) == 1);
+    CHECK(HC_bsf(1u) == 0);
+    CHECK(HC_bsf(0x10u) == 4);
+    CHECK(HC_bsf(0x80000000u) == 31);
+    {
+        HCInstr_s st = HC_genOp3(HCOP_SD, 5, 2, 7);
+        CHECK(HC_getDef(&st) == -1);
+        CHECK(HC_getUses(&st, uses) == 3);
+        CHECK(uses[0] == 5 && uses[1] == 2 && uses[2] == 7);
+        HC_setUse(&st, 0, 6);
+        HC_setUse(&st, 2, 9);
+        CHECK(HC_getOpcodeDst(&st) == 6);
+        CHECK(HC_getOpcodeSrc1(&st) == 9);
+    }
+
+    /* 2. HCArena / HCMemory checks */
+    HCArena_init(&arena, arenaBuf, (int)sizeof(arenaBuf));
+    CHECK(arena.bottom == 0);
+    CHECK(arena.top == (int)sizeof(arenaBuf));
+    lowMem = HCArena_bottomInterface(&arena);
+    hiMem = HCArena_topInterface(&arena);
+    mark = HCMemory_mark(&lowMem);
+    CHECK(mark == 0);
+    {
+        void *p1 = HCMemory_alloc(&lowMem, 5);
+        void *p2 = HCMemory_alloc(&hiMem, 7);
+        CHECK(p1 == arenaBuf);
+        CHECK(arena.bottom == 8);
+        CHECK(arena.top == (int)sizeof(arenaBuf) - 8);
+        CHECK(HCArena_inLowMem(&arena, p1) != 0);
+        CHECK(HCArena_inLowMem(&arena, p2) == 0);
+    }
+    HCMemory_release(&lowMem, mark);
+    CHECK(arena.bottom == 0);
+    HCArena_init(&arena, arenaBuf, (int)sizeof(arenaBuf));
+
+    /* 3. HCX86Backend vtable verification */
+    be = HCX86Backend_create();
+    CHECK(be != NULL);
+    CHECK(be->canCreateImmediate != NULL && be->canCreateImmediate(NULL) == 1);
+    CHECK(be->internalStackSpace != NULL && be->internalStackSpace() == 40);
+    CHECK(be->internalStackSpaceAfterInvars == NULL);
+    CHECK(be->targetRegisterMapping != NULL);
+    remap = be->targetRegisterMapping();
+    CHECK(remap[0] == 4 && remap[1] == 0 && remap[2] == 3 && remap[3] == 1);
+    CHECK(remap[4] == 2 && remap[5] == 6 && remap[6] == 7 && remap[7] == 5);
+    CHECK(be->numHardRegs != NULL && be->numHardRegs() == 8);
+    CHECK(be->preRegallocFixer != NULL);
+    CHECK(be->codegen != NULL);
+    CHECK(be->postRegallocFixer != NULL);
+    CHECK(be->emulate != NULL);
+    CHECK(be->reserved9 == NULL);
+    CHECK(be->isNative != NULL && be->isNative() == 1);
+    CHECK(be->optimizationMask == NULL);
+
+    /* 4. preRegallocFixer: var-shift != r3, var-shift == r3, BIC imm & reg */
+    prog[0] = HC_genOp3(HCOP_LSL, 1, 2, 5);        /* expands to 4 instrs   */
+    prog[1] = HC_genOp3(HCOP_LSR, 1, 2, 3);        /* src1==3: 1 instr      */
+    prog[2] = HC_genOp3Imm(HCOP_BIC, 4, 2, 0x0F);  /* -> AND 4, 2, ~0x0F    */
+    prog[3] = HC_genOp3(HCOP_BIC, 4, 2, 5);        /* -> MOVN tmp,5; AND    */
+    prog[4] = HC_genOp0(HCOP_EOP);
+    mark = be->preRegallocFixer(&arena, &fixed, prog, NULL);
+    CHECK(fixed != NULL);
+    /* maxReg of prog is max(1,2,5,3,4)+1 = 6 */
+    CHECK(HC_getOpcodeOper(&fixed[0]) == HCOP_MOV && HC_getOpcodeDst(&fixed[0]) == 6 && HC_getOpcodeSrc0(&fixed[0]) == 3);
+    CHECK(HC_getOpcodeOper(&fixed[1]) == HCOP_MOV && HC_getOpcodeDst(&fixed[1]) == 3 && HC_getOpcodeSrc0(&fixed[1]) == 5);
+    CHECK(HC_getOpcodeOper(&fixed[2]) == HCOP_LSL && HC_getOpcodeSrc1(&fixed[2]) == 3);
+    CHECK(HC_getOpcodeOper(&fixed[3]) == HCOP_MOV && HC_getOpcodeDst(&fixed[3]) == 3 && HC_getOpcodeSrc0(&fixed[3]) == 6);
+    CHECK(HC_getOpcodeOper(&fixed[4]) == HCOP_LSR && HC_getOpcodeSrc1(&fixed[4]) == 3);
+    CHECK(HC_getOpcodeOper(&fixed[5]) == HCOP_AND && HC_opcodeHasImm(&fixed[5]) != 0 && HC_getOpcodeImm(&fixed[5]) == ~0x0F);
+    CHECK(HC_getOpcodeOper(&fixed[6]) == HCOP_MOVN && HC_getOpcodeDst(&fixed[6]) == 6 && HC_getOpcodeSrc0(&fixed[6]) == 5);
+    CHECK(HC_getOpcodeOper(&fixed[7]) == HCOP_AND && HC_getOpcodeSrc1(&fixed[7]) == 6);
+    CHECK(HC_getOpcodeOper(&fixed[8]) == HCOP_EOP);
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 5. postRegallocFixer: SUB imm->ADD -imm, LSL 2 kept, non-comm dst==s1
+     *    with & without free reg, SB from HC reg 5 (ESI) with spill */
+    memset(duZero, 0, sizeof(duZero));
+    memset(udZero, 0, sizeof(udZero));
+    for (i = 0; i < 32; ++i)
+        freeMasks[i] = 0xFF;
+    freeMasks[2] = 0x00; /* force spill on prog[2] (non-comm SUB dst==s1)   */
+    freeMasks[3] = 0x00; /* force spill on prog[3] (SB from non-byte reg 5) */
+    prog[0] = HC_genOp3Imm(HCOP_SUB, 1, 2, 10);
+    prog[1] = HC_genOp3Imm(HCOP_LSL, 1, 2, 2);
+    prog[2] = HC_genOp3(HCOP_SUB, 1, 2, 1);        /* dst==s1, non-comm     */
+    prog[3] = HC_genOp3Imm(HCOP_SB, 5, 2, 4);      /* reg 5 not in 0x1E     */
+    prog[4] = HC_genOp0(HCOP_EOP);
+    beInfo.lst = prog;
+    beInfo.freeHardRegMasks = freeMasks;
+    beInfo.liveRegs = NULL;
+    beInfo.chains.duChains = duZero;
+    beInfo.chains.udChains = udZero;
+    mark = be->postRegallocFixer(&arena, &fixed, prog, &beInfo);
+    /* [0]: ADD 1, 2, -10 */
+    CHECK(HC_getOpcodeOper(&fixed[0]) == HCOP_ADD && HC_getOpcodeImm(&fixed[0]) == -10);
+    /* [1]: LSL 1, 2, 2 (kept 3-operand) */
+    CHECK(HC_getOpcodeOper(&fixed[1]) == HCOP_LSL && HC_getOpcodeDst(&fixed[1]) == 1 && HC_getOpcodeSrc0(&fixed[1]) == 2);
+    /* [2..6]: SD 3,0,8; MOV 3,2; SUB 3,3,1; MOV 1,3; LD 3,0,8 */
+    CHECK(HC_getOpcodeOper(&fixed[2]) == HCOP_SD && HC_getOpcodeDst(&fixed[2]) == 3 && HC_getOpcodeImm(&fixed[2]) == 8);
+    CHECK(HC_getOpcodeOper(&fixed[3]) == HCOP_MOV && HC_getOpcodeDst(&fixed[3]) == 3 && HC_getOpcodeSrc0(&fixed[3]) == 2);
+    CHECK(HC_getOpcodeOper(&fixed[4]) == HCOP_SUB && HC_getOpcodeDst(&fixed[4]) == 3 && HC_getOpcodeSrc1(&fixed[4]) == 1);
+    CHECK(HC_getOpcodeOper(&fixed[5]) == HCOP_MOV && HC_getOpcodeDst(&fixed[5]) == 1 && HC_getOpcodeSrc0(&fixed[5]) == 3);
+    CHECK(HC_getOpcodeOper(&fixed[6]) == HCOP_LD && HC_getOpcodeDst(&fixed[6]) == 3 && HC_getOpcodeImm(&fixed[6]) == 8);
+    /* [7..10]: SD 1,0,8; MOV 1,5; SB 1,2,4; LD 1,0,8 */
+    CHECK(HC_getOpcodeOper(&fixed[7]) == HCOP_SD && HC_getOpcodeDst(&fixed[7]) == 1);
+    CHECK(HC_getOpcodeOper(&fixed[8]) == HCOP_MOV && HC_getOpcodeDst(&fixed[8]) == 1 && HC_getOpcodeSrc0(&fixed[8]) == 5);
+    CHECK(HC_getOpcodeOper(&fixed[9]) == HCOP_SB && HC_getOpcodeDst(&fixed[9]) == 1);
+    CHECK(HC_getOpcodeOper(&fixed[10]) == HCOP_LD && HC_getOpcodeDst(&fixed[10]) == 1);
+    CHECK(HC_getOpcodeOper(&fixed[11]) == HCOP_EOP);
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 6. codegen: empty EOP -> exact 33-byte prologue + 29-byte epilogue */
+    prog[0] = HC_genOp0(HCOP_EOP);
+    mark = HCArena_markBottom(&arena);
+    codeLen = be->codegen(&arena, &codePtr, prog, &beInfo, 40);
+    code = (unsigned char *)codePtr;
+    CHECK(codeLen == 62);
+    /* mov eax, [esp+4]: 8B 44 24 04; mov [eax+4], esp: 89 60 04 */
+    CHECK(code[0] == 0x8B && code[1] == 0x44 && code[2] == 0x24 && code[3] == 0x04);
+    CHECK(code[4] == 0x89 && code[5] == 0x60 && code[6] == 0x04);
+    /* mov esp, eax at [31..32]: 89 C4 */
+    CHECK(code[31] == 0x89 && code[32] == 0xC4);
+    /* epilogue starts at [33]: mov esp, [esp+4] = 8B 64 24 04; ends with C3 */
+    CHECK(code[33] == 0x8B && code[34] == 0x64 && code[35] == 0x24 && code[36] == 0x04);
+    CHECK(code[61] == 0xC3);
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 7. codegen: ALU/LEA/MUL/ANSA/MAXS(Imm32Set) byte-exact sequence */
+    prog[0] = HC_genOp2Imm(HCOP_MOV, 0, 0);            /* 31 C0 (2B)             */
+    prog[1] = HC_genOp2Imm(HCOP_MOV, 1, 0x12345678);   /* C7 C1 78 56 34 12 (6B) */
+    prog[2] = HC_genOp3(HCOP_ADD, 2, 1, 3);            /* 8D 54 0B 00 (4B)       */
+    prog[3] = HC_genOp3Imm(HCOP_ADD, 0, 0, 0x1000);    /* 05 00 10 00 00 (5B)    */
+    prog[4] = HC_genOp3(HCOP_SUB, 1, 1, 2);            /* 2B CA (2B)             */
+    prog[5] = HC_genOp3Imm(HCOP_LSL, 3, 1, 2);         /* 8D 1C 8D 00..00 (7B)   */
+    prog[6] = HC_genOp3(HCOP_MULS, 1, 1, 2);           /* 0F AF CA (3B)          */
+    prog[7] = HC_genOp0(HCOP_ANSA);                    /* CD 03 (2B)             */
+    prog[8] = HC_genOp3Imm(HCOP_MAXS, 1, 1, 42);       /* +11B pool + 12B body   */
+    prog[9] = HC_genOp0(HCOP_EOP);
+    mark = HCArena_markBottom(&arena);
+    codeLen = be->codegen(&arena, &codePtr, prog, &beInfo, 40);
+    code = (unsigned char *)codePtr;
+    /* 33B prologue + 11B Imm32Set init + 43B body + 29B epilogue = 116B */
+    CHECK(codeLen == 116);
+    /* Imm32Set slot [esp+12] = 42 at [33..43]: C7 84 24 0C 00 00 00 2A 00 00 00 */
+    CHECK(code[33] == 0xC7 && code[34] == 0x84 && code[35] == 0x24 && code[36] == 0x0C);
+    CHECK(code[40] == 0x2A && code[41] == 0x00 && code[42] == 0x00 && code[43] == 0x00);
+    {
+        unsigned char *b = code + 44;
+        CHECK(b[0] == 0x31 && b[1] == 0xC0);
+        CHECK(b[2] == 0xC7 && b[3] == 0xC1 && b[4] == 0x78 && b[7] == 0x12);
+        CHECK(b[8] == 0x8D && b[9] == 0x54 && b[10] == 0x0B && b[11] == 0x00);
+        CHECK(b[12] == 0x05 && b[13] == 0x00 && b[14] == 0x10 && b[16] == 0x00);
+        CHECK(b[17] == 0x2B && b[18] == 0xCA);
+        CHECK(b[19] == 0x8D && b[20] == 0x1C && b[21] == 0x8D);
+        CHECK(b[26] == 0x0F && b[27] == 0xAF && b[28] == 0xCA);
+        CHECK(b[29] == 0xCD && b[30] == 0x03);
+        /* MAXS: 3B 4C 24 0C | 7D 06 | C7 C1 2A 00 00 00 */
+        CHECK(b[31] == 0x3B && b[32] == 0x4C && b[33] == 0x24 && b[34] == 0x0C);
+        CHECK(b[35] == 0x7D && b[36] == 0x06);
+        CHECK(b[37] == 0xC7 && b[38] == 0xC1 && b[39] == 0x2A);
+    }
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 8. codegen: EFLAGS CMP-elision + forward rel32 + backward rel8 branch */
+    prog[0] = HC_genOp2Imm(HCOP_MOV, 0, 0);            /* 31 C0 (sets ZF/SF EAX) */
+    prog[1] = HC_genOp3ImmRaw(HCOP_CBEQ, 0, 0, 0);     /* elides CMP! 0F 84 +2   */
+    prog[2] = HC_genOp2(HCOP_MOV, 1, 2);               /* 89 D1 (2B)             */
+    prog[3] = HC_genOp1Imm(HCOP_LABEL, 0);             /* body+10                */
+    prog[4] = HC_genOp1Imm(HCOP_LABEL, 1);             /* body+10                */
+    prog[5] = HC_genOp3Imm(HCOP_ADD, 1, 1, -1);        /* 83 C1 FF (sets ECX)    */
+    prog[6] = HC_genOp3ImmRaw(HCOP_CBNEQ, 1, 1, 0);    /* elides CMP! 75 FB      */
+    prog[7] = HC_genOp0(HCOP_EOP);
+    mark = HCArena_markBottom(&arena);
+    codeLen = be->codegen(&arena, &codePtr, prog, &beInfo, 40);
+    code = (unsigned char *)codePtr;
+    /* 33B prologue + 15B body + 29B epilogue = 77B */
+    CHECK(codeLen == 77);
+    {
+        unsigned char *b = code + 33;
+        CHECK(b[0] == 0x31 && b[1] == 0xC0);
+        CHECK(b[2] == 0x0F && b[3] == 0x84 && b[4] == 0x02 && b[5] == 0x00 && b[6] == 0x00 && b[7] == 0x00);
+        CHECK(b[8] == 0x89 && b[9] == 0xD1);
+        CHECK(b[10] == 0x83 && b[11] == 0xC1 && b[12] == 0xFF);
+        CHECK(b[13] == 0x75 && b[14] == 0xFB);
+    }
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 9. codegen: stack-load fusion (checkLoad) via synthetic DU/UD chains */
+    {
+        unsigned short duBuf[5] = { 1, 1, 2, 0, 0 }; /* chain at [0..1]: len=1, val=1 */
+        unsigned short udLink[2] = { 1, 0 };         /* chain: len=1, defSite=0       */
+        void *perUse1[2];
+        void *udArr[3];
+        HCBackendInfo_s fuseInfo;
+
+        prog[0] = HC_genOp3Imm(HCOP_LD, 2, 4, 16);   /* LD EDX, [ESP+16] -> fused!    */
+        prog[1] = HC_genOp3(HCOP_ADD, 1, 1, 2);      /* ADD ECX, [ESP+16]: 03 4C 24 10 */
+        prog[2] = HC_genOp0(HCOP_EOP);
+
+        perUse1[0] = NULL;
+        perUse1[1] = udLink;
+        udArr[0] = NULL;
+        udArr[1] = perUse1;
+        udArr[2] = NULL;
+
+        fuseInfo.lst = prog;
+        fuseInfo.freeHardRegMasks = freeMasks;
+        fuseInfo.liveRegs = NULL;
+        fuseInfo.chains.duChains = &duBuf[2];
+        fuseInfo.chains.udChains = udArr;
+
+        mark = HCArena_markBottom(&arena);
+        codeLen = be->codegen(&arena, &codePtr, prog, &fuseInfo, 40);
+        code = (unsigned char *)codePtr;
+        /* 33B prologue + 4B fused addMem + 29B epilogue = 66B */
+        CHECK(codeLen == 66);
+        CHECK(code[33] == 0x03 && code[34] == 0x4C && code[35] == 0x24 && code[36] == 0x10);
+        HCArena_releaseBottom(&arena, mark);
+    }
 }
