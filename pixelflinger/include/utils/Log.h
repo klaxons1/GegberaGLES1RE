@@ -1,0 +1,6 @@
+#ifndef PIXELFLINGER_SHIM_UTILS_LOG_H
+#define PIXELFLINGER_SHIM_UTILS_LOG_H
+
+#include <cutils/log.h>
+
+#endif /* PIXELFLINGER_SHIM_UTILS_LOG_H */

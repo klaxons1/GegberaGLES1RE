@@ -1,0 +1,6 @@
+#ifndef PIXELFLINGER_SHIM_UTILS_ATOMIC_H
+#define PIXELFLINGER_SHIM_UTILS_ATOMIC_H
+
+#include <cutils/atomic.h>
+
+#endif /* PIXELFLINGER_SHIM_UTILS_ATOMIC_H */
