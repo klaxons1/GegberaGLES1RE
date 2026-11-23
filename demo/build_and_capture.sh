@@ -19,7 +19,7 @@ fi
 
 echo "[2/4] Applying Gerbera EGL 1.1 + OpenGL ES 1.1 window/GL1 patch..."
 git -C "${CC_DIR}" checkout -- src/Graphics_GL1.c src/_GLShared.h src/Server.c
-git -C "${CC_DIR}" apply "${DEMO_DIR}/classicube_gles1.patch"
+git -C "${CC_DIR}" apply --ignore-space-change --ignore-whitespace "${DEMO_DIR}/classicube_gles1.patch"
 cp "${DEMO_DIR}/Window_Gerbera.c" "${CC_DIR}/src/Window_Gerbera.c"
 
 mkdir -p "${CC_DIR}/texpacks"
