@@ -32,7 +32,7 @@ static const unsigned char indexSize[10] =
 
 /* --- assert --------------------------------------------------------------- */
 
-void HC_assertFail(const char *expr, const char *file, int line, const char *msg)
+void (HC_assertFail)(const char *expr, const char *file, int line, const char *msg)
 {
     (void)msg;
     grAssert(expr, file, line);

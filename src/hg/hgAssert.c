@@ -6,6 +6,17 @@
  */
 #include "hg/hgDefs.h"
 
+#ifdef __SYMBIAN32__
+#include "symbian_os.h"
+
+void __assert(const char *file, int line, const char *expr)
+{
+    HG_UNUSED(file);
+    HG_UNUSED(line);
+    HG_UNUSED(expr);
+    sym_User_Invariant();
+}
+#else
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -16,3 +27,4 @@ void __assert(const char *file, int line, const char *expr)
     fflush(stderr);
     abort();
 }
+#endif

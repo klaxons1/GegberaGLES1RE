@@ -16,12 +16,20 @@
 /* ------------------------------------------------------------------ */
 typedef int8_t   HGint8;
 typedef int16_t  HGint16;
+#ifdef __SYMBIAN32__
+typedef int      HGint32;
+#else
 typedef int32_t  HGint32;
+#endif
 typedef int64_t  HGint64;
 
 typedef uint8_t   HGuint8;
 typedef uint16_t  HGuint16;
+#ifdef __SYMBIAN32__
+typedef unsigned int HGuint32;
+#else
 typedef uint32_t  HGuint32;
+#endif
 typedef uint64_t  HGuint64;
 
 typedef float     HGfloat;
@@ -74,7 +82,7 @@ HG_EXTERN_C_BEGIN
 
 void __assert(const char *file, int line, const char *expr);
 
-#ifndef HG_NO_ASSERTS
+#if !defined(HG_NO_ASSERTS) && !defined(NDEBUG)
 #define HG_ASSERT_ENABLED 1
 #else
 #define HG_ASSERT_ENABLED 0

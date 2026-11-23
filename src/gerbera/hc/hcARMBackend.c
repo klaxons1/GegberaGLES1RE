@@ -39,7 +39,7 @@ static const unsigned short armOpcodeInfo[55] =
 };
 
 /* VA 0x36F2A: maps HC hard register 0..13 -> ARM register r0..r12, lr(r14). */
-static unsigned char armRegRemap[14] =
+static const unsigned char armRegRemap[14] =
 {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14
 };
@@ -223,7 +223,7 @@ static unsigned int armEmitMemOp(ArmEmitCtx_s *ctx, int cond, int opKind,
 /* sub_23D7C */
 static unsigned char *HCARMBackend_targetRegisterMapping(void)
 {
-    return armRegRemap;
+    return (unsigned char *)armRegRemap;
 }
 
 /* sub_23D84 (3rd arg `excludeMask` in r2 verified from VA 0x23DA8 & 0x251E4). */
@@ -1160,7 +1160,7 @@ static int HCARMBackend_codegen(void *mgrVoid, void **destination,
 
 /* --- vtable & factory (VA 0x36F6C, sub_25484) ----------------------------- */
 
-static HCBackend_s armBackendDecl =
+static const HCBackend_s armBackendDecl =
 {
     &HCARMBackend_canCreateImmediate,
     &HCARMBackend_internalStackSpace,
@@ -1178,5 +1178,5 @@ static HCBackend_s armBackendDecl =
 
 HCBackend_s *HCARMBackend_create(void)
 {
-    return &armBackendDecl;
+    return (HCBackend_s *)&armBackendDecl;
 }

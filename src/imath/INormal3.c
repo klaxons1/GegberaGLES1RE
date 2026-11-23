@@ -8,8 +8,8 @@
 #include "gerbera/grUtil.h"
 
 /* the rsqrt seed tables live in IVector3.c (shared data, one definition) */
-extern HGint32 rsqLUTm[256];
-extern HGint16 rsqLUTa[256];
+extern const HGint32 rsqLUTm[256];
+extern const HGint16 rsqLUTa[256];
 
 void XNormal3_init001n(int *pD)
 {

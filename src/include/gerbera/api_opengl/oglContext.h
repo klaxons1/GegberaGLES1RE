@@ -582,11 +582,15 @@ void oglShareListRemoveBufObj(oglContext_s *context, unsigned int bufObjIndex);
 
 HG_EXTERN_C_END
 
+#if HG_ASSERT_ENABLED
 #define OGL_ASSERT_AT(file, line, expr_str, cond)                 \
     do                                                            \
     {                                                             \
         if (!(cond) && grAssert((expr_str), (file), (line)) != 0) \
             grDie(0);                                             \
     } while (0)
+#else
+#define OGL_ASSERT_AT(file, line, expr_str, cond) ((void)0)
+#endif
 
 #endif /* OGL_CONTEXT_H */

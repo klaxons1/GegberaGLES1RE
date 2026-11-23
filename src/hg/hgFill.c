@@ -6,11 +6,22 @@
  */
 #include "hg/hgFill.h"
 #include "hg/hgDefs.h"
+#ifdef __SYMBIAN32__
+#include "symbian_os.h"
+#endif
 
 void hgFill32_inner(HGuint32 *d, HGuint32 v, int N)
 {
     /* original assert: hgFill.c:114 "d != 0 && N >= 0 && (N == 0 || !((HGuintptr)(d) & 3))" */
     HG_ASSERT_AT("hgFill.c", 114, d != 0 && N >= 0 && (N == 0 || !((HGuintptr)d & 3)));
+
+#ifdef __SYMBIAN32__
+    if (v == 0u && N >= 16)
+    {
+        sym_memclr(d, (unsigned int)N << 2);
+        return;
+    }
+#endif
 
     switch (N & 7)
     {
@@ -27,6 +38,24 @@ void hgFill32_inner(HGuint32 *d, HGuint32 v, int N)
     {
         HGuint32 *da = &d[N & 7];
         int Na = N >> 3;
+#if defined(__arm__) && !defined(__thumb__)
+        if (Na > 0)
+        {
+            register HGuint32 v0 __asm__("r2") = v;
+            register HGuint32 v1 __asm__("r3") = v;
+            register HGuint32 v2 __asm__("r4") = v;
+            register HGuint32 v3 __asm__("r5") = v;
+            do
+            {
+                __asm__ volatile(
+                    "stmia %0!, {%1, %2, %3, %4}\n\t"
+                    "stmia %0!, {%1, %2, %3, %4}"
+                    : "+r"(da)
+                    : "r"(v0), "r"(v1), "r"(v2), "r"(v3)
+                    : "memory");
+            } while (--Na != 0);
+        }
+#else
         while (Na-- != 0)
         {
             da[0] = v;
@@ -39,6 +68,7 @@ void hgFill32_inner(HGuint32 *d, HGuint32 v, int N)
             da[7] = v;
             da += 8;
         }
+#endif
     }
 }
 

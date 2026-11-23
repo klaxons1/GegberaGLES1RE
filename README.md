@@ -13,6 +13,7 @@ What is in this repository:
 | `tools/`          | scripts that split and attribute the decompilation                |
 | `generated/`      | tool output (fragments + manifest), regenerable, not committed    |
 | `src/`            | complete C99 reconstruction (`hg`, `imath`, `gerbera/core`, `grr`, `hc`, `api_opengl`, `egl`) |
+| `symbian/`        | native Symbian OS v9.x (EKA2 / S60 3rd Ed+) ARMv5 build (`libgles_cm.dll` + `libgles_cm.dso`) |
 | `tests/`          | automated unit & integration test suites (`test_hg`, `test_imath`, `test_core`, `test_opengl`, `test_egl`) |
 | `demo/`           | end-to-end **ClassiCube** OpenGL ES 1.1 + EGL 1.1 showcase & 6 captured 960x540 screenshots |
 | `AGENTS.md`       | how to work on this repo (agent guide)                            |
@@ -24,6 +25,7 @@ Build and test:
 ```
 make test      # builds build/libgerbera.a (65 .c files) and runs all 5 test suites
 make win32     # cross-compiles Win32 (i386 PE32) libGLES_CM.dll + ClassiCube.exe in demo/win32/
+make symbian   # cross-compiles Symbian OS v9.x (EKA2 ARMv5) libgles_cm.dll + libgles_cm.dso in symbian/out/
 ```
 
 Status: **100% of all modules (`hg`, `imath`, `gerbera/core`, `grr`, `hc`,

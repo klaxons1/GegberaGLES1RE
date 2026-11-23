@@ -106,7 +106,7 @@ static const ALUOpEncode_s ALUOpEncode[6] =
 };
 
 /* Maps HC hard register 0..7 -> IA-32 register encoding (0 -> ESP frame). */
-static unsigned char regRemap[8] = { 4, 0, 3, 1, 2, 6, 7, 5 };
+static const unsigned char regRemap[8] = { 4, 0, 3, 1, 2, 6, 7, 5 };
 
 /* Unary ops: NEG = F7 /3, NOT = F7 /2. */
 static const unsigned char unaryOps[4] = { 0xF7u, 0x03u, 0xF7u, 0x02u };
@@ -300,7 +300,7 @@ static int HCX86Backend_internalStackSpace(void)
 
 static unsigned char *HCX86Backend_targetRegisterMapping(void)
 {
-    return regRemap;
+    return (unsigned char *)regRemap;
 }
 
 static int HCX86Backend_numHardRegs(void)
@@ -1883,7 +1883,7 @@ static int HCX86Backend_postRegallocFixer(void *mgrVoid, HCInstr_s **dest,
 
 /* --- vtable & factory ----------------------------------------------------- */
 
-static HCBackend_s backendDecl =
+static const HCBackend_s backendDecl =
 {
     &HCX86Backend_canCreateImmediate,
     &HCX86Backend_internalStackSpace,
@@ -1901,5 +1901,5 @@ static HCBackend_s backendDecl =
 
 HCBackend_s *HCX86Backend_create(void)
 {
-    return &backendDecl;
+    return (HCBackend_s *)&backendDecl;
 }

@@ -10,7 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__unix__) || defined(__APPLE__)
+#ifdef __SYMBIAN32__
+#include "symbian_os.h"
+#elif defined(__unix__) || defined(__APPLE__)
 #include <sys/mman.h>
 #ifndef MAP_ANONYMOUS
 #ifdef MAP_ANON
@@ -37,6 +39,626 @@ static const eglValidColorInfo_s s_validColors[6] =
     { 8, 8, 8, 0, EGL_SYMBIAN_ECOLOR16MA },
     { 4, 4, 4, 0, EGL_SYMBIAN_ECOLOR4K   }
 };
+
+#ifdef __SYMBIAN32__
+
+/* ===========================================================================
+ * Native Symbian OS v9.x (EKA2 / S60 3rd Ed+) Platform Backend
+ * Zero Writable Static Data (WSD); matches docs/libgles_cm.dll.epoc ABI.
+ * =========================================================================== */
+
+void egliSetDefaultDisplayMode(int displayMode)
+{
+    (void)displayMode;
+}
+
+void egliSetGlobal(void *data)
+{
+    (void)sym_DllSetTls(data);
+}
+
+void *egliGetGlobal(void)
+{
+    return sym_DllTls();
+}
+
+eglState_s *egliGetState(void)
+{
+    void *state = egliGetGlobal();
+
+    if ((uintptr_t)state <= 3u)
+        return NULL;
+    return (eglState_s *)state;
+}
+
+void *eglAlloc(unsigned int size)
+{
+    eglState_s *state = egliGetState();
+
+    EGL_ASSERT_AT("eglSymbian.inl", 252, "size > 0", size > 0);
+    if (state == NULL || state->heap == NULL)
+        return NULL;
+    return sym_RHeap_Alloc(state->heap, (int)size);
+}
+
+void eglFree(void *ptr)
+{
+    if (ptr != NULL)
+    {
+        eglState_s *state = egliGetState();
+        if (state != NULL && state->heap != NULL)
+            sym_RHeap_Free(state->heap, ptr);
+    }
+}
+
+struct grExecutable_s
+{
+    int handle; /* Symbian RChunk (4-byte RHandleBase) */
+};
+
+grExecutable_s *eglAllocExecutable(unsigned int size)
+{
+    grExecutable_s *chunk = (grExecutable_s *)sym_User_Alloc(sizeof(grExecutable_s));
+
+    if (chunk == NULL)
+        return NULL;
+    chunk->handle = 0;
+    if (sym_RChunk_CreateLocalCode(chunk, (int)size, (int)size, 0) != 0)
+    {
+        sym_User_Free(chunk);
+        return NULL;
+    }
+    return chunk;
+}
+
+void eglFreeExecutable(grExecutable_s *executable)
+{
+    if (executable != NULL)
+    {
+        sym_RHandleBase_Close(executable);
+        sym_User_Free(executable);
+    }
+}
+
+int eglGetExecutableSize(grExecutable_s *executable)
+{
+    return sym_RChunk_Size(executable);
+}
+
+void *eglGetExecutableData(grExecutable_s *executable)
+{
+    return sym_RChunk_Base(executable);
+}
+
+void *grGetBackend(void)
+{
+    return HCARMBackend_create();
+}
+
+int egliNextPowerOfTwo(int v)
+{
+    unsigned int u = (unsigned int)v;
+    if (u == 0u)
+        return 1;
+    return 1 << (32 - hgClz32(u));
+}
+
+int egliGetTotalConfigs(void)
+{
+    return EGL_NUM_BUFFER_FORMATS;
+}
+
+eglState_s *egliInitState(void)
+{
+    eglState_s *state;
+    void *coe;
+    int ownEnv = 0;
+    int maxRam = 0x1000000;
+    int numColors = 0;
+    int numGrays = 0;
+
+    state = (eglState_s *)sym_User_Alloc((int)sizeof(eglState_s));
+    if (state == NULL)
+        return NULL;
+    hgMemSet(state, 0, sizeof(*state));
+
+    if (sym_CCoeEnv_Static() == NULL)
+    {
+        void *env = sym_User_AllocZL(SYM_CCOEENV_SIZE);
+        void *mark;
+        env = sym_CCoeEnv_Ctor(env);
+        mark = sym_User_MarkCleanupStack();
+        sym_CCoeEnv_ConstructL(env);
+        sym_User_UnMarkCleanupStack(mark);
+        ownEnv = 1;
+    }
+    state->ownEnvironment = ownEnv;
+
+    if (sym_HAL_Get(SYM_HAL_MEMORY_RAM, &maxRam) != 0 || maxRam <= 0)
+        maxRam = 0x1000000;
+
+    state->heap = sym_UserHeap_ChunkHeap(NULL, 0, maxRam, 1, 0, 0);
+    if (state->heap == NULL)
+    {
+        if (ownEnv != 0)
+            sym_CCoeEnv_DestroyEnvironment(sym_CCoeEnv_Static());
+        sym_User_Free(state);
+        return NULL;
+    }
+
+    coe = sym_CCoeEnv_Static();
+    if (coe != NULL && SYM_CCOEENV_SCREENDEV(coe) != NULL)
+    {
+        state->displayMode = sym_RWsSession_GetDefModeMaxNumColors(
+            SYM_CCOEENV_WSSESSION(coe), &numColors, &numGrays);
+    }
+    else
+    {
+        state->displayMode = EGL_SYMBIAN_ECOLOR64K;
+    }
+
+    state->errorCode = EGL_SUCCESS;
+    egliSetGlobal(state);
+    return state;
+}
+
+__attribute__((externally_visible)) void egliDestroyState(void)
+{
+    eglState_s *state = egliGetState();
+
+    if (state != NULL)
+    {
+        if (state->heap != NULL)
+        {
+            sym_RAllocator_Close(state->heap);
+            state->heap = NULL;
+        }
+        if (state->ownEnvironment != 0)
+        {
+            sym_CCoeEnv_DestroyEnvironment(sym_CCoeEnv_Static());
+            state->ownEnvironment = 0;
+        }
+        sym_User_Free(state);
+    }
+    egliSetGlobal(NULL);
+}
+
+int egliIsValidNativeWindow(eglNativeWindow_s *window)
+{
+    (void)window;
+    return 1;
+}
+
+int egliIsValidNativePixmap(eglNativePixmap_s *pixmap)
+{
+    return pixmap != NULL;
+}
+
+void egliGetNativeWindowSize(eglWindowSurface *winSurface, int *width, int *height)
+{
+    SymTSize sz;
+    sz.iWidth = 0;
+    sz.iHeight = 0;
+    if (winSurface != NULL && winSurface->nativeWindow != NULL)
+        sym_RWindowBase_Size(&sz, winSurface->nativeWindow);
+    *width = sz.iWidth;
+    *height = sz.iHeight;
+}
+
+void egliGetNativePixmapSize(eglNativePixmap_s *pixmap, int *width, int *height)
+{
+    SymTSize sz;
+    sz.iWidth = 0;
+    sz.iHeight = 0;
+    if (pixmap != NULL)
+        sym_CFbsBitmap_SizeInPixels(&sz, pixmap);
+    *width = sz.iWidth;
+    *height = sz.iHeight;
+}
+
+int egliInitWindowSurface(eglWindowSurface *winSurface)
+{
+    eglState_s *state = egliGetState();
+    void *coe = sym_CCoeEnv_Static();
+    void *gc = NULL;
+    void *bmp = NULL;
+    SymTSize sz;
+
+    if (winSurface == NULL || state == NULL || coe == NULL)
+        return 0;
+
+    if (winSurface->nativeWindow != NULL)
+    {
+        winSurface->ownWindow = 0;
+    }
+    else
+    {
+        void *win = sym_User_Alloc(SYM_RWINDOW_SIZE);
+        if (win == NULL)
+            return 0;
+        win = sym_RWindow_Ctor(win, SYM_CCOEENV_WSSESSION(coe));
+        winSurface->nativeWindow = (eglNativeWindow_s *)win;
+        winSurface->ownWindow = 1;
+        if (sym_RWindow_Construct(win, SYM_CCOEENV_ROOTWIN(coe),
+                                  (unsigned int)(uintptr_t)winSurface) != 0)
+        {
+            return 0;
+        }
+    }
+
+    gc = sym_User_AllocZ(SYM_CWINDOWGC_SIZE);
+    if (gc != NULL)
+        gc = sym_CWindowGc_Ctor(gc, SYM_CCOEENV_SCREENDEV(coe));
+
+    bmp = sym_User_AllocZ(SYM_CWSBITMAP_SIZE);
+    if (bmp != NULL)
+        bmp = sym_CWsBitmap_Ctor(bmp, SYM_CCOEENV_WSSESSION(coe));
+
+    sz.iWidth = 0;
+    sz.iHeight = 0;
+    sym_RWindowBase_Size(&sz, winSurface->nativeWindow);
+
+    if (gc != NULL && sym_CWindowGc_Construct(gc) == 0 &&
+        bmp != NULL && sym_CWsBitmap_Create(bmp, &sz, state->displayMode) == 0)
+    {
+        winSurface->backBufferBitmap = (eglNativePixmap_s *)bmp;
+        winSurface->windowGc = gc;
+        return 1;
+    }
+
+    if (bmp != NULL)
+    {
+        sym_CWsBitmap_Reset(bmp);
+        sym_CBase_Delete(bmp);
+    }
+    if (gc != NULL)
+        sym_CBase_Delete(gc);
+
+    return 0;
+}
+
+void egliWindowSurfaceDestroy(eglWindowSurface *winSurface)
+{
+    eglState_s *state = egliGetState();
+
+    if (winSurface == NULL)
+        return;
+
+    if (winSurface->ownWindow != 0 && winSurface->nativeWindow != NULL)
+    {
+        sym_RWindowTreeNode_Close(winSurface->nativeWindow);
+        sym_User_Free(winSurface->nativeWindow);
+        winSurface->nativeWindow = NULL;
+        winSurface->ownWindow = 0;
+    }
+
+    if (winSurface->backBufferBitmap != NULL)
+    {
+        sym_CFbsBitmap_Reset(winSurface->backBufferBitmap);
+        sym_CBase_Delete(winSurface->backBufferBitmap);
+        winSurface->backBufferBitmap = NULL;
+    }
+
+    if (winSurface->windowGc != NULL)
+    {
+        sym_CBase_Delete(winSurface->windowGc);
+        winSurface->windowGc = NULL;
+    }
+
+    winSurface->surface.colorBuffer = NULL;
+    if (state != NULL && state->heap != NULL)
+        (void)sym_RHeap_Compress(state->heap);
+}
+
+int egliConfigPixmapMatch(int configID, eglNativePixmap_s *pixmap)
+{
+    eglConfig cfg;
+    int dispMode;
+    int i;
+
+    if (pixmap == NULL)
+        return 0;
+
+    dispMode = sym_CFbsBitmap_DisplayMode(pixmap);
+    eglFillConfig(&cfg, configID);
+    for (i = 0; i < 6; ++i)
+    {
+        if (cfg.redBits == s_validColors[i].r &&
+            cfg.greenBits == s_validColors[i].g &&
+            cfg.blueBits == s_validColors[i].b &&
+            cfg.alphaBits == s_validColors[i].a &&
+            dispMode == s_validColors[i].displayMode)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int egliInitPixmapSurface(eglPixmapSurface *pixSurface)
+{
+    SymTSize sz;
+    int dispMode;
+
+    if (pixSurface == NULL || pixSurface->nativePixmap == NULL)
+        return 0;
+
+    sz.iWidth = 0;
+    sz.iHeight = 0;
+    sym_CFbsBitmap_SizeInPixels(&sz, pixSurface->nativePixmap);
+    dispMode = sym_CFbsBitmap_DisplayMode(pixSurface->nativePixmap);
+    pixSurface->surface.colorBuffer = NULL;
+    pixSurface->surface.colorBufferStride = sym_CFbsBitmap_ScanLineLength(sz.iWidth, dispMode);
+    return 1;
+}
+
+void egliPixmapSurfaceDestroy(eglPixmapSurface *pixSurface)
+{
+    eglState_s *state = egliGetState();
+
+    if (pixSurface != NULL)
+    {
+        pixSurface->nativePixmap = NULL;
+        pixSurface->surface.colorBuffer = NULL;
+    }
+    if (state != NULL && state->heap != NULL)
+        (void)sym_RHeap_Compress(state->heap);
+}
+
+int egliSurfaceResized(eglSurface_s *surface)
+{
+    if (surface == NULL)
+        return 0;
+
+    if (surface->type == EGL_SURFACE_WINDOW)
+    {
+        eglWindowSurface *winSurf = (eglWindowSurface *)surface;
+        if (winSurf->backBufferBitmap != NULL)
+        {
+            SymTSize curSz;
+            SymTSize newSz;
+            int dispMode;
+
+            curSz.iWidth = 0;
+            curSz.iHeight = 0;
+            sym_CFbsBitmap_SizeInPixels(&curSz, winSurf->backBufferBitmap);
+            newSz.iWidth = surface->width;
+            newSz.iHeight = surface->height;
+            if (curSz.iWidth != newSz.iWidth || curSz.iHeight != newSz.iHeight)
+            {
+                if (sym_CFbsBitmap_Resize(winSurf->backBufferBitmap, &newSz) != 0)
+                    return 0;
+            }
+            dispMode = sym_CFbsBitmap_DisplayMode(winSurf->backBufferBitmap);
+            surface->colorBuffer = NULL;
+            surface->colorBufferStride = sym_CFbsBitmap_ScanLineLength(surface->width, dispMode);
+        }
+    }
+    else if (surface->type == EGL_SURFACE_PIXMAP)
+    {
+        eglPixmapSurface *pixSurf = (eglPixmapSurface *)surface;
+        if (pixSurf->nativePixmap != NULL)
+        {
+            int dispMode = sym_CFbsBitmap_DisplayMode(pixSurf->nativePixmap);
+            surface->colorBuffer = NULL;
+            surface->colorBufferStride = sym_CFbsBitmap_ScanLineLength(surface->width, dispMode);
+        }
+    }
+
+    return 1;
+}
+
+void egliSwapWindowSurface(eglWindowSurface *winSurface)
+{
+    void *win;
+    void *gc;
+    void *bmp;
+    SymTRect drawRect;
+    SymTPoint origin;
+    int isEmpty;
+
+    if (winSurface == NULL || winSurface->nativeWindow == NULL ||
+        winSurface->windowGc == NULL || winSurface->backBufferBitmap == NULL)
+    {
+        return;
+    }
+
+    win = winSurface->nativeWindow;
+    gc = winSurface->windowGc;
+    bmp = winSurface->backBufferBitmap;
+
+    sym_RDrawableWindow_GetDrawRect(&drawRect, win);
+    isEmpty = sym_TRect_IsEmpty(&drawRect);
+    if (isEmpty != 0)
+        sym_RWindow_Invalidate(win);
+
+    sym_CWindowGc_Activate(gc, win);
+    if (isEmpty != 0)
+        sym_RWindow_BeginRedraw(win);
+
+    origin.iX = 0;
+    origin.iY = 0;
+    sym_CWindowGc_BitBlt(gc, &origin, bmp);
+
+    if (isEmpty != 0)
+        sym_RWindow_EndRedraw(win);
+    sym_CWindowGc_Deactivate(gc);
+}
+
+int egliBlitToPixmap(eglSurface_s *surface, eglNativePixmap_s *target)
+{
+    eglConfig cfg;
+    int srcBpp;
+    int dstDispMode;
+    int dstBpp;
+    int dstStride;
+    SymTSize dstSize;
+    int w, h;
+    int lockedDraw;
+    void *dstData;
+
+    if (surface == NULL || target == NULL || egliConfigPixmapMatch(surface->configID, target) == 0)
+        return 0;
+
+    lockedDraw = grLockSurface(GR_SURFACE_DRAW);
+    if (lockedDraw == 0)
+        sym_CFbsBitmap_LockHeap(target, 0);
+
+    eglFillConfig(&cfg, surface->configID);
+    srcBpp = egliNextPowerOfTwo((cfg.colorBits - 1) >> 3);
+
+    if (surface->colorBuffer != NULL)
+    {
+        dstData = sym_CFbsBitmap_DataAddress(target);
+        dstDispMode = sym_CFbsBitmap_DisplayMode(target);
+        dstSize.iWidth = 0;
+        dstSize.iHeight = 0;
+        sym_CFbsBitmap_SizeInPixels(&dstSize, target);
+        dstStride = sym_CFbsBitmap_ScanLineLength(dstSize.iWidth, dstDispMode);
+        dstBpp = sym_TDisplayModeUtils_NumDisplayModeBitsPerPixel(dstDispMode) >> 3;
+        w = hgMin32(surface->width, dstSize.iWidth);
+        h = hgMin32(surface->height, dstSize.iHeight);
+        if (dstData != NULL && w > 0 && h > 0)
+        {
+            eglBlit(dstData, dstStride,
+                    surface->colorBuffer, surface->colorBufferStride,
+                    w, h, srcBpp, dstBpp);
+        }
+    }
+
+    if (grReleaseSurface(GR_SURFACE_DRAW) == 0)
+        sym_CFbsBitmap_UnlockHeap(target, 0);
+
+    return 1;
+}
+
+eglNativePixmap_s *eglGetActiveBitmap(int op)
+{
+    eglState_s *state = egliGetState();
+    eglSurface_s *surf;
+
+    if (state == NULL || state->currentDrawSurface == NULL || state->currentReadSurface == NULL)
+        return NULL;
+
+    surf = (op == GR_SURFACE_DRAW) ? state->currentDrawSurface : state->currentReadSurface;
+    if (surf->type == EGL_SURFACE_WINDOW)
+        return ((eglWindowSurface *)surf)->backBufferBitmap;
+    if (surf->type == EGL_SURFACE_PIXMAP)
+        return ((eglPixmapSurface *)surf)->nativePixmap;
+    return NULL;
+}
+
+int egliCheckSurfaceSize(eglSurface_s *surface)
+{
+    int width = 0;
+    int height = 0;
+
+    switch (surface->type)
+    {
+    case EGL_SURFACE_WINDOW:
+        egliGetNativeWindowSize((eglWindowSurface *)surface, &width, &height);
+        break;
+    case EGL_SURFACE_PBUFFER:
+        return 0;
+    case EGL_SURFACE_PIXMAP:
+        egliGetNativePixmapSize(((eglPixmapSurface *)surface)->nativePixmap, &width, &height);
+        break;
+    default:
+        return 0;
+    }
+
+    return (width != surface->width || height != surface->height) ? 1 : 0;
+}
+
+int egliUpdateSurfaceRenderTarget(eglSurface_s *surface)
+{
+    void *bmp;
+    void *newBuf;
+    int dispMode;
+    int newStride;
+    int changed;
+
+    if (surface->type == EGL_SURFACE_WINDOW)
+        bmp = ((eglWindowSurface *)surface)->backBufferBitmap;
+    else if (surface->type == EGL_SURFACE_PIXMAP)
+        bmp = ((eglPixmapSurface *)surface)->nativePixmap;
+    else
+        return 0;
+
+    if (bmp == NULL)
+        return 0;
+
+    newBuf = sym_CFbsBitmap_DataAddress(bmp);
+    dispMode = sym_CFbsBitmap_DisplayMode(bmp);
+    newStride = sym_CFbsBitmap_ScanLineLength(surface->width, dispMode);
+    changed = (newBuf != surface->colorBuffer || newStride != surface->colorBufferStride) ? 1 : 0;
+    surface->colorBuffer = newBuf;
+    surface->colorBufferStride = newStride;
+    return changed;
+}
+
+int grLockSurface(int op)
+{
+    eglState_s *state;
+    eglSurface_s *surf;
+    eglNativePixmap_s *bmp;
+    int sizeChanged;
+    int addrChanged;
+    int locked = 0;
+
+    state = egliGetState();
+    if (state == NULL || state->currentDrawSurface == NULL || state->currentReadSurface == NULL)
+        return 0;
+
+    surf = (op == GR_SURFACE_DRAW) ? state->currentDrawSurface : state->currentReadSurface;
+    bmp = eglGetActiveBitmap(op);
+    sizeChanged = egliCheckSurfaceSize(surf);
+
+    if (sizeChanged != 0 && surf->type == EGL_SURFACE_WINDOW)
+    {
+        eglWindowSurface *winSurf = (eglWindowSurface *)surf;
+        if (winSurf->backBufferBitmap != NULL)
+        {
+            SymTSize newSz;
+            egliGetNativeWindowSize(winSurf, &newSz.iWidth, &newSz.iHeight);
+            if (sym_CFbsBitmap_Resize(winSurf->backBufferBitmap, &newSz) != 0)
+            {
+                eglSetError(EGL_BAD_ALLOC);
+                return 0;
+            }
+        }
+    }
+
+    if (bmp != NULL)
+    {
+        sym_CFbsBitmap_LockHeap(bmp, 0);
+        locked = 1;
+    }
+
+    addrChanged = egliUpdateSurfaceRenderTarget(surf);
+    if ((addrChanged | sizeChanged) != 0 && state->currentESContext != NULL)
+    {
+        eglUpdateSurfaces(state->currentESContext,
+                          state->currentDrawSurface,
+                          state->currentReadSurface);
+    }
+
+    return locked;
+}
+
+int grReleaseSurface(int op)
+{
+    eglNativePixmap_s *bmp = eglGetActiveBitmap(op);
+
+    if (bmp != NULL)
+    {
+        sym_CFbsBitmap_UnlockHeap(bmp, 0);
+        return 1;
+    }
+    return 0;
+}
+
+#else /* !__SYMBIAN32__ */
 
 /* --- Hosted TLS & default display mode ------------------------------------- */
 static void      *s_tlsSlot = NULL;
@@ -113,6 +735,21 @@ grExecutable_s *eglAllocExecutable(unsigned int size)
     exec = (grExecutable_s *)malloc(sizeof(grExecutable_s));
     if (exec == NULL)
         return NULL;
+#if defined(__arm__) && (defined(__unix__) || defined(__APPLE__))
+    {
+        size_t mapSize = ((size_t)size + 4095u) & ~(size_t)4095u;
+        void *mem = mmap(NULL, mapSize, PROT_READ | PROT_WRITE | PROT_EXEC,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (mem == MAP_FAILED)
+        {
+            free(exec);
+            return NULL;
+        }
+        exec->data = mem;
+        exec->size = (int)mapSize;
+        return exec;
+    }
+#else
     exec->data = malloc((size_t)size);
     if (exec->data == NULL)
     {
@@ -121,12 +758,17 @@ grExecutable_s *eglAllocExecutable(unsigned int size)
     }
     exec->size = (int)size;
     return exec;
+#endif
 }
 
 void eglFreeExecutable(grExecutable_s *executable)
 {
     EGL_ASSERT_AT("eglSymbian.inl", 306, "executable", executable != NULL);
+#if defined(__arm__) && (defined(__unix__) || defined(__APPLE__))
+    munmap(executable->data, (size_t)executable->size);
+#else
     free(executable->data);
+#endif
     free(executable);
 }
 
@@ -144,7 +786,11 @@ void *eglGetExecutableData(grExecutable_s *executable)
 
 void *grGetBackend(void)
 {
+#ifdef __arm__
+    return HCARMBackend_create();
+#else
     return HCX86Backend_create();
+#endif
 }
 
 /* --- Numeric & Config Helpers ---------------------------------------------- */
@@ -625,6 +1271,8 @@ int grReleaseSurface(int op)
     return 0;
 }
 
+#endif /* __SYMBIAN32__ */
+
 /* --- Symbian Config & Pixel Offset Fixups ---------------------------------- */
 
 void egliFixConfig(eglConfig *config)
@@ -633,6 +1281,49 @@ void egliFixConfig(eglConfig *config)
 
     EGL_ASSERT_AT("eglSymbian.inl", 1554, "config", config != NULL);
 
+#ifdef __SYMBIAN32__
+    /* Matches sub_83AC (VA 0x83AC) in docs/libgles_cm.dll.epoc:
+     * filter EGL_PIXMAP_BIT against supported CFbsBitmap color formats and
+     * filter EGL_WINDOW_BIT against the active WServ screen TDisplayMode. */
+    if (state != NULL)
+    {
+        int i;
+        config->nativeRenderable = EGL_FALSE;
+        if ((config->surfaceType & EGL_PIXMAP_BIT) != 0)
+        {
+            config->surfaceType &= ~EGL_PIXMAP_BIT;
+            for (i = 0; i < 6; ++i)
+            {
+                if (config->redBits == s_validColors[i].r &&
+                    config->greenBits == s_validColors[i].g &&
+                    config->blueBits == s_validColors[i].b &&
+                    config->alphaBits == s_validColors[i].a)
+                {
+                    config->surfaceType |= EGL_PIXMAP_BIT;
+                    config->nativeRenderable = EGL_TRUE;
+                    break;
+                }
+            }
+        }
+        if ((config->surfaceType & EGL_WINDOW_BIT) != 0)
+        {
+            config->surfaceType &= ~EGL_WINDOW_BIT;
+            for (i = 0; i < 6; ++i)
+            {
+                if (config->redBits == s_validColors[i].r &&
+                    config->greenBits == s_validColors[i].g &&
+                    config->blueBits == s_validColors[i].b &&
+                    config->alphaBits == s_validColors[i].a &&
+                    state->displayMode == s_validColors[i].displayMode)
+                {
+                    config->surfaceType |= EGL_WINDOW_BIT;
+                    config->nativeRenderable = EGL_TRUE;
+                    break;
+                }
+            }
+        }
+    }
+#else
     if (config->alphaBits == 4)
     {
         config->colorBits -= 4;
@@ -658,6 +1349,7 @@ void egliFixConfig(eglConfig *config)
                 config->configCaveat = EGL_SLOW_CONFIG;
         }
     }
+#endif
 }
 
 void egliFixPixelOffsets(oglSurfaceDescriptor_s *desc, const eglSurface_s *surface)

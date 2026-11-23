@@ -1,0 +1,22 @@
+__GERBERA_LOCAL {
+    local:
+        Image$$ER_RO$$Base;
+        Image$$ER_RO$$Limit;
+        .ARM.exidx$$Base;
+        .ARM.exidx$$Limit;
+        egliSetDefaultDisplayMode;
+        grGetStatistic;
+        grResetStatistics;
+        glCurrentPaletteMatrixOES;
+        glDrawTexfOES;
+        glDrawTexfvOES;
+        glDrawTexiOES;
+        glDrawTexivOES;
+        glDrawTexsOES;
+        glDrawTexsvOES;
+        glDrawTexxOES;
+        glDrawTexxvOES;
+        glLoadPaletteFromModelViewMatrixOES;
+        glMatrixIndexPointerOES;
+        glWeightPointerOES;
+};

@@ -15,11 +15,9 @@
 #include <stdint.h>
 #include <string.h>
 
-/* g_mutableParamsMask (VA 0x4785B4): bitmask of mutable pixel-pipe stack
- * parameters among the 78 words (params 0..77). */
-static unsigned char g_mutableParamsMask[10] = {
-    0xFEu, 0xFFu, 0xFEu, 0xFFu, 0x00u, 0xFCu, 0xFFu, 0xFFu, 0xFFu, 0xFFu
-};
+/* g_mutableParamsMask (VA 0x4785B4, defined in grSmall.c): bitmask of mutable
+ * pixel-pipe stack parameters among the 78 words (params 0..77). */
+extern const unsigned char g_mutableParamsMask[12];
 
 /* stack canary words kept by the decompile's locals (grSmall.c 86) */
 #define GR_STACK_CHECK_MAGIC0 (-559038737)
@@ -1681,7 +1679,7 @@ void grEnsureValidPixelPipeline(Gerbera_s *state)
                 backend,
                 0x3FFu,
                 paramMask,
-                g_mutableParamsMask,
+                (unsigned char *)g_mutableParamsMask,
                 78);
             if (lengthInBytes != -1)
             {

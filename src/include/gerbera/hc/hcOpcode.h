@@ -168,6 +168,9 @@ void HC_setUse(HCInstr_s *instr, int which, int newVal);
 /* --- hcDefs.c helpers ----------------------------------------------------- */
 int HC_bsf(unsigned int x);
 void HC_assertFail(const char *expr, const char *file, int line, const char *msg);
+#if defined(HG_NO_ASSERTS) || defined(NDEBUG)
+#define HC_assertFail(expr, file, line, msg) ((void)0)
+#endif
 
 #ifdef __cplusplus
 }

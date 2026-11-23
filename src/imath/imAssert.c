@@ -10,7 +10,7 @@
 #include "imath/imApi.h"
 #include "gerbera/grUtil.h"
 
-void imAssert(const char *expr, const char *file, unsigned int line)
+void (imAssert)(const char *expr, const char *file, unsigned int line)
 {
     if (grAssert(expr, file, (int)line) != 0)
         grDie(0);   /* reference: deliberate null write */

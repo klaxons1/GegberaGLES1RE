@@ -1855,11 +1855,11 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
   - `demo/win32/libGLES_CM.dll` (`546 KB`, `-O3 -DNDEBUG -DHG_NO_ASSERTS`) + `libGLES_CM.lib`: exports all **177 / 177** original `libGLES_CM.dll` symbols plus OES & hosted EGL entry points (`190` exports total), importing only Windows `KERNEL32.dll` + UCRT.
   - `demo/win32/ClassiCube.exe` (`1.40 MB`, `IMAGE_SUBSYSTEM_WINDOWS_GUI` PE32): interactive Win32 ClassiCube release dynamically importing `52` OpenGL ES 1.1 + EGL 1.1 entry points from `libGLES_CM.dll` (zero `OPENGL32.dll` or Direct3D dependencies), presenting `eglSwapBuffers` via a top-down 32-bpp GDI `DIBSection` with live window resizing and bundled offline `texpacks/default.zip`.
 
+## DONE session 9 (Native Symbian OS v9.x EKA2 ARMv5 Release Build: `libgles_cm.dll` + `libgles_cm.dso`)
 
-
-
-
-
-
-
-
+- **Zero-WSD & Symbian EKA2 ARMv5 Hardware Fast-Paths (`src/`, `symbian/`)**:
+  - Eliminated all Writable Static Data across all 65 C sources (`DataSize = 0`, `BssSize = 0`, enforced by `ASSERT` in `symbian/symbian_dll.ld`), moving all LUTs/dispatch tables to `.rodata` and compiling with Whole-Program Unity IPA (`-march=armv5t -mtune=arm1136jf-s -O2 -fwhole-program`) to inline 650+ cross-module math/rasterizer helpers.
+  - Enabled native 32-bit ARM JIT code generation (`HCARMBackend` + `RChunk::CreateLocalCode` + `User::IMB_Range` I-cache flush), branchless ARMv5T `clz` division (`symbian/arm_divmod.S`), zero `__aeabi_f*` soft-float dependencies, and direct XIP ROM `euser` `wordmove`/`memclr` burst transfers.
+  - Implemented full native Symbian EKA2 platform backend in `src/gerbera/egl/eglSymbian.c` (`Dll::Tls` with `0..3` pre-init error tags + `_E32Dll` thread-detach cleanup, `UserHeap::ChunkHeap` up to `HAL::EMemoryRAM` + `RHeap::Compress`, `CCoeEnv` / `RWindow` / `CWindowGc` / `CWsBitmap` swapchain presentation, and `CFbsBitmap::LockHeap` global heap-lock discipline).
+- **100% Binary-Compatible E32Image Drop-In (`symbian/out/`, built via `make symbian` / `symbian/build_symbian.sh`)**:
+  - `symbian/out/libgles_cm.dll` (`231 KB`) + `symbian/out/libgles_cm.dso` (`7.9 KB`) + `symbian/out/Gerbera-GLES1-Symbian-EKA2-ARMv5.zip`: matches `docs/libgles_cm.dll.epoc` & `docs/libgles_cm.dso` (`UIDs 10000079 1000008d 101fcabd`, `SID 101fcabd`, `Caps ALL -TCB`, `Ver 10.0`, `175 / 175` exact ordinal exports + 18 OES `eglGetProcAddress` procs), importing only 6 core Symbian ROM DLLs (`euser`, `ws32`, `fbscli`, `cone`, `gdi`, `hal`).

@@ -62,6 +62,9 @@ typedef struct _IVertexTransform
 /* imath assert: same semantics as in the reference build - prints through
  * grAssert and dies.  Call sites keep the original file/line strings. */
 void imAssert(const char *expr, const char *file, unsigned int line);
+#if !HG_ASSERT_ENABLED
+#define imAssert(expr, file, line) ((void)0)
+#endif
 
 /* --- construction / conversion (IScalar.c) -------------------------- */
 

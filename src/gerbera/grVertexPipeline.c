@@ -274,6 +274,7 @@ int grUpdateLights(Gerbera_s *state)
 
 #define GR_RENDER_STACK_BYTE(state, offset) \
     ((unsigned char *)(state)->renderStack + (offset))
+#undef GR_VERTEX_BUFFER
 #define GR_VERTEX_BUFFER(state) \
     ((_grVertex *)GR_RENDER_STACK_BYTE(state, 1332))
 

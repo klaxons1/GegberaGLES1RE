@@ -11,6 +11,28 @@
 #include "gerbera/grRGBA.h"
 #include "hg/hgInt32.h"
 
+#ifdef __SYMBIAN32__
+#include "symbian_os.h"
+
+void grPrintf(const char *format, ...)
+{
+    HG_UNUSED(format);
+}
+
+int (grAssert)(const char *expr, const char *file, int line)
+{
+    HG_UNUSED(expr);
+    HG_UNUSED(file);
+    HG_UNUSED(line);
+    return 1;
+}
+
+void grDie(int v)
+{
+    HG_UNUSED(v);
+    sym_User_Invariant();
+}
+#else
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +46,7 @@ void grPrintf(const char *format, ...)
     fflush(stderr);
 }
 
-int grAssert(const char *expr, const char *file, int line)
+int (grAssert)(const char *expr, const char *file, int line)
 {
     grPrintf("\nAssertion: %s (%s %d)\n", expr, file, line);
     return 1;
@@ -40,6 +62,7 @@ void grDie(int v)
     fflush(stderr);
     abort();
 }
+#endif
 
 /* --- matrix dirty helpers (grUtil.h inlines, decompile 24642-24672 and
  * 34783-34798; both grFast/grSmall TU variants share this source) --------- */

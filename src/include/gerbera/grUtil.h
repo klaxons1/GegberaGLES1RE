@@ -31,6 +31,7 @@ unsigned int grSetIndices(int i0, int i1, int i2);
 int grMaskedColorsEqual(unsigned int color, unsigned int mask);
 
 /* combined check used by the ported .inl code */
+#if HG_ASSERT_ENABLED
 #define GR_CHECK(cond, file, line)                                          \
     do {                                                                    \
         HGbool gr_ok_ = HG_TRUE;                                            \
@@ -39,15 +40,23 @@ int grMaskedColorsEqual(unsigned int color, unsigned int mask);
         if (!gr_ok_)                                                        \
             grDie(0);                                                       \
     } while (0)
+#else
+#define GR_CHECK(cond, file, line) ((void)0)
+#endif
 
 HG_EXTERN_C_END
 
+#if HG_ASSERT_ENABLED
 #define GR_UTIL_CHECK(cond, file, line)          \
     do                                           \
     {                                            \
         if (!(cond) && grAssert(#cond, (file), (line)) != 0) \
             grDie(0);                            \
     } while (0)
+#else
+#define grAssert(expr, file, line) (0)
+#define GR_UTIL_CHECK(cond, file, line) ((void)0)
+#endif
 
 /* --- fills (grFill.inl, implemented in grFill.c) ---------------------------
  * grFillNMasked writes `value` through `mask` into N-bit elements;

@@ -13,7 +13,7 @@
  */
 #include "gerbera/grState.h"
 
-extern int g_orderedDitherKernel[4];
+extern const int g_orderedDitherKernel[4];
 #include "gerbera/grDefs.h"
 #include "imath/imApi.h"
 #include "hg/hgInt32.h"

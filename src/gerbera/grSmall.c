@@ -4,6 +4,9 @@
 #include "gerbera/grDefs.h"
 #include "hg/hgInt32.h"
 #include <stdint.h>
+#ifdef __SYMBIAN32__
+#include "symbian_os.h"
+#endif
 
 /* grIsAligned - verbatim (docs/libGLES_CM.dll.c:13072-13075, 3 TU copies) */
 int grIsAligned(void *ptr, int alignment)
@@ -160,11 +163,13 @@ void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
             pixelPipe->reference[g] += pixelPipe->yAdder[g] * yStart;
         }
         grExecutePixelPipeline(state);
+#if HG_ASSERT_ENABLED
         for (i = 0; i < GR_MUTABLE_PARAM_COUNT; ++i)
         {
             if ((g_mutableParamsMask[i >> 3] & (1 << (i & 7))) != 0)
                 pixelPipe->mutableParams[i] = -623195394;
         }
+#endif
         /* the decompile checks __grMemoryCheck[] canaries on the C stack
          * here (grRasterizer.inl 906); hosted builds have no smashed-stack
          * window to re-check - magic0/magic1 keep the locals alive */
@@ -178,8 +183,16 @@ void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
 
 void grICacheFlush(void *start, unsigned int numBytes)
 {
+#ifdef __SYMBIAN32__
+    if (start != NULL && numBytes != 0u)
+        sym_User_IMB_Range(start, (unsigned char *)start + numBytes);
+#elif defined(__arm__) && defined(__GNUC__)
+    if (start != NULL && numBytes != 0u)
+        __builtin___clear_cache((char *)start, (char *)start + numBytes);
+#else
     (void)start;
     (void)numBytes;
+#endif
 }
 
 /* --- grSmall.c prefix getters (DLL 34729-34780) -------------------------------

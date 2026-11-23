@@ -137,7 +137,7 @@ unsigned int grUnpackColor(unsigned int color, _grSurfaceDescriptor *desc)
 }
 
 /* --- g_orderedDitherKernel (DLL data, libGLES_CM.dll.c:2389) --------------- */
-int g_orderedDitherKernel[4] = { -7803290, 1140859562, -581579657, 295252923 };
+const int g_orderedDitherKernel[4] = { -7803290, 1140859562, -581579657, 295252923 };
 
 /* --- grDitherColor (grUtilSmall.inl 273; DLL 00439440) --------------------- */
 

@@ -16,6 +16,8 @@ extern "C" {
 #    define GL_API __declspec(dllexport)
 #  elif defined(_WIN32) && defined(GERBERA_DLL_IMPORTS)
 #    define GL_API __declspec(dllimport)
+#  elif defined(__SYMBIAN32__) && defined(__GNUC__)
+#    define GL_API __attribute__((externally_visible, visibility("default"))) extern
 #  else
 #    define GL_API extern
 #  endif

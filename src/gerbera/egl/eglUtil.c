@@ -485,6 +485,27 @@ void eglBlit(void *dstBuffer, int dstStride, const void *srcBuffer, int srcStrid
     EGL_ASSERT_AT("eglUtil.inl", 565, "srcBytesPerPixel == dstBytesPerPixel",
                   srcBytesPerPixel == dstBytesPerPixel);
 
+    if (srcBytesPerPixel == dstBytesPerPixel)
+    {
+        int rowBytes = width * srcBytesPerPixel;
+        if (srcStride == dstStride && srcStride == rowBytes)
+        {
+            if (rowBytes * height > 0)
+                hgMemMove(dstBuffer, srcBuffer, rowBytes * height);
+            return;
+        }
+        if (rowBytes > 0)
+        {
+            for (y = 0; y < height; ++y)
+            {
+                hgMemMove(dstRow, srcRow, rowBytes);
+                srcRow += srcStride;
+                dstRow += dstStride;
+            }
+        }
+        return;
+    }
+
     switch (srcBytesPerPixel)
     {
     case 1:

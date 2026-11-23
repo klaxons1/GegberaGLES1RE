@@ -12,12 +12,16 @@
 extern "C" {
 #endif
 
+#if HG_ASSERT_ENABLED
 #define EGL_ASSERT_AT(file, line, expr, cond)                     \
     do                                                            \
     {                                                             \
         if (!(cond) && grAssert((expr), (file), (line)) != 0)     \
             grDie(0);                                             \
     } while (0)
+#else
+#define EGL_ASSERT_AT(file, line, expr, cond) ((void)0)
+#endif
 
 #define EGL_NUM_COLOR_FORMATS    4
 #define EGL_NUM_DEPTH_FORMATS    3

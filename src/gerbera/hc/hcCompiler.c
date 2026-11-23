@@ -3036,6 +3036,7 @@ static int pruneGraph(HCArena_s *mgr, HCInstr_s **outputLst,
 
             if (nNeigh > 0)
             {
+#if !defined(NDEBUG) && !defined(HG_NO_ASSERTS)
                 if (HCBitSet_contains(onStack, hNode) != 0)
                     HC_assertFail("!HCBitSet_contains(onStack, hNode)", "hcCompiler.c", 4421, NULL);
                 if (!((double)spCost * (double)spillNeigh < (double)0x7FFFFFFF))
@@ -3044,6 +3045,7 @@ static int pruneGraph(HCArena_s *mgr, HCInstr_s **outputLst,
                 if (!((double)spillCost * (double)nNeigh < (double)0x7FFFFFFF))
                     HC_assertFail("(double)spillCost*(double)nNeigh < (double)0x7FFFFFFF",
                                   "hcCompiler.c", 4423, NULL);
+#endif
 
                 /* Binary-faithful to 0x459D5F..0x459DDD: original C assigned
                  * spillNode/spillCost/spillNeigh before checking equality for

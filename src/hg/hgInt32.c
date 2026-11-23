@@ -13,6 +13,13 @@
 
 int hgClz32(HGuint32 value)
 {
+#if defined(__arm__) && defined(__ARM_ARCH) && (__ARM_ARCH >= 5) && !defined(__thumb__)
+    int res;
+    __asm__("clz %0, %1" : "=r"(res) : "r"(value));
+    return res;
+#elif defined(__GNUC__) || defined(__clang__)
+    return value != 0u ? __builtin_clz((unsigned int)value) : 32;
+#else
     int c = 0;
     if (value >= 0x10000u) { value >>= 16; } else { c = 16; }
     if (value >= 0x100u)   { value >>= 8;  } else { c += 8; }
@@ -20,6 +27,7 @@ int hgClz32(HGuint32 value)
     if (value >= 4u)       { value >>= 2;  } else { c += 2; }
     /* value is 0, 1, 2 or 3 here: 2 >> value maps {0,1,2,3} -> {2,1,0,0} */
     return (int)(2u >> value) + c;
+#endif
 }
 
 int hgInRange32(int a, int lo, int hi)
@@ -101,11 +109,10 @@ int hgDiff32(int a, int b)
 
 int hgRor32(int a, int sh)
 {
+    HGuint32 u = (HGuint32)a;
+    HGuint32 s = (HGuint32)sh & 31u;
     HG_ASSERT_AT("hgInt32.inl", 503, sh >= 0 && sh <= 32);
-    sh &= 31;
-    if (sh == 0)
-        return a;
-    return (int)((HGuint32)a >> sh) | (int)((HGuint32)a << ((32 - sh) & 31));
+    return (int)((u >> s) | (u << ((0u - s) & 31u)));
 }
 
 int hgCopySign32(int d, int s)

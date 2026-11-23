@@ -19,8 +19,8 @@
     } while (0)
 
 /* verbatim from PE .rdata @ file+0x793D4 / 0x793DC (2x uint32 bitmasks for 45 caps) */
-int grCapChangesRejectAllState_affectingCapabilities[2] = { 98306, 0 };
-int grCapChangesPixelPipeline_affectingCapabilities[2] = { 32766, 0 };
+const int grCapChangesRejectAllState_affectingCapabilities[2] = { 98306, 0 };
+const int grCapChangesPixelPipeline_affectingCapabilities[2] = { 32766, 0 };
 
 /* --- capabilities (grUtil.h) ---------------------------------------------- */
 
@@ -1252,12 +1252,14 @@ int grScratchGrowMemory(Gerbera_s *state)
         nextSize = 0;
     state->scratchMemory = nextScratch;
     state->scratchMemorySize = nextSize;
+#if HG_ASSERT_ENABLED
     if (nextScratch != NULL)
     {
         int j;
         for (j = 0; j < nextSize; ++j)
             ((unsigned char *)nextScratch)[j] = 0xABu;
     }
+#endif
     return nextScratch != NULL;
 }
 
@@ -1275,6 +1277,7 @@ Gerbera_s *grCreateGerbera(int workMemorySize, unsigned char *workMemory,
 
     (void)sharedWorkMem;
     (void)sharedWorkMemSize;
+    (void)i;
 
     if (workMemorySize < 0 && grAssert("workMemorySize >= 0", "grApiSmall.inl", 1978) != 0)
         grDie(0);
@@ -1284,8 +1287,10 @@ Gerbera_s *grCreateGerbera(int workMemorySize, unsigned char *workMemory,
         grAssert("!((HGuint32)workMemory & 3)", "grApiSmall.inl", 1980) != 0)
         grDie(0);
 
+#if HG_ASSERT_ENABLED
     for (i = 0; i < workMemorySize; ++i)
         workMemory[i] = 0xABu;
+#endif
 
     state = (Gerbera_s *)workMemory;
     hgFill8(workMemory, 0, stateBytes);
@@ -1293,7 +1298,13 @@ Gerbera_s *grCreateGerbera(int workMemorySize, unsigned char *workMemory,
     grStackAllocate(&state->allocator, stateBytes);
     entries = (_grCacheEntry *)grStackAllocate(&state->allocator, entryBytes);
 
+#if defined(__arm__) || defined(__SYMBIAN32__)
+    /* ARM 32-bit fixed-width JIT code is ~2x denser than IA-32; matches
+     * 24576 (0x6000u) in docs/libgles_cm.dll.epoc.c:28589. */
+    exec = eglAllocExecutable(0x6000u);
+#else
     exec = eglAllocExecutable(0x3000u);
+#endif
     state->pipelineCacheExecutable = exec;
     if (exec == NULL)
         return NULL;

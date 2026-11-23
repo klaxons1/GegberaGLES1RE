@@ -43,7 +43,7 @@ static const unsigned short ops[12] =
     (unsigned short)((HCOP_CBNEQ << 8) | HCOP_CBNEQ)
 };
 
-static unsigned int rol32(unsigned int x, unsigned int s)
+static unsigned int emu_rol32(unsigned int x, unsigned int s)
 {
     s &= 31u;
     if (s == 0)
@@ -51,7 +51,7 @@ static unsigned int rol32(unsigned int x, unsigned int s)
     return (x << s) | (x >> (32u - s));
 }
 
-static unsigned int ror32(unsigned int x, unsigned int s)
+static unsigned int emu_ror32(unsigned int x, unsigned int s)
 {
     s &= 31u;
     if (s == 0)
@@ -166,12 +166,12 @@ int emulator_evalALUOp(HCOP_e op, unsigned int s0, unsigned int s1)
     case HCOP_ROL:
         if (s1 >= 32u)
             HC_assertFail("s1 < 32", "hcEmulator.c", 140, NULL);
-        res = (int)rol32(s0, s1);
+        res = (int)emu_rol32(s0, s1);
         break;
     case HCOP_ROR:
         if (s1 >= 32u)
             HC_assertFail("s1 < 32", "hcEmulator.c", 141, NULL);
-        res = (int)ror32(s0, s1);
+        res = (int)emu_ror32(s0, s1);
         break;
     case HCOP_SUB:
         res = (int)(s0 - s1);
