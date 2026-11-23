@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 4c)
+Last updated: 2026-11-22 (session 4e)
 
 ## Legend
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-22 (session 4c)
 | gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z) - all functions ported, 1088 checks green |
 | gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z) - clears, blit, texture rect |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | SCAFFOLDED |
-| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - opcode layer + interpreter done (4a/4b); ARM backend mapped from EPOC decomp+binary (4c); HC_compile, backends, emulator next |
+| gerbera/hc | .../gerbera/hc | 296 | **IN PROGRESS** - opcode + interpreter + memory/arena + backendInfo + **BOTH x86 & ARM JIT backends** done (4a-4e, 1498 core checks); HC_compile & hcEmulator next |
 | egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
 | egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
 | crt/platform | Symbian + MSL runtime | 44 | n/a (reference) |
@@ -1535,3 +1535,60 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
 - Next: HC_compile port (shared), hcEmulator, then x86/ARM backend bodies
   (ARM: sub_24AEC region 0x24090-0x24AEC + emit helpers; x86: fragments in
   generated/fragments/hc/).
+
+## Session 4d - hcMemory, hcBackendInfo, CodeView HCOP_e, and full hcX86Backend
+
+- **hcOpcode.h / hcOpcode.c**: complete CodeView `HCOP_e` enum (`0..55`,
+  extracted from CodeView LF_ENUM records in `docs/libGLES_CM.dll`), full
+  55-byte `HC_opcodeDecls` (`HCOP_EOP=0xD0`, `HCOP_LABEL=0xD1`), `indexSize[10]`
+  at VA `0x47F9CC`, `HC_getMemOpIndexSize*`, `HC_getDef`, `HC_getRegUses`,
+  `HC_getUses`, `HC_setUse`, and `HC_bsf`.
+- **hcMemory.h / hcMemory.c**: double-ended `HCArena_s` allocator (`bottom`
+  grows up 4-byte aligned unless unaligned code buffer, `top` grows down),
+  `HCMemory_s` callback vtables, and `HCRandom_*` PRNG.
+- **hcBackendInfo.h / hcBackendInfo.c**: `HCBackendInfo_s`, `hcChains_s`,
+  `HC_getFreeHardRegs`, `DUChains_getDUChain`, `HC_getDUChain`, `HCChain_*`,
+  and `HC_getUDChain`.
+- **hcX86Backend.c**: complete IA-32 JIT backend (`HCX86Backend_create`,
+  `EncodeContext`, all IA-32 instruction emitters, `Imm32Set` constant pool at
+  `[ESP+12+4*i]`, `checkLoad` `[ESP+imm]` stack-load fusion, EFLAGS tracking to
+  elide `CMP reg, 0`, 2-byte short backward `EB`/`7x` branches, `preRegallocFixer`
+  lowering `ANSA`/`FILLB`/`FILLW`/`FILLD` and scaled memops, and
+  `postRegallocFixer`). All x86 static tables verified from `docs/libGLES_CM.dll`
+  (`0x47D808..0x47D8B0`), catching IDA's truncated `cops__cv_7D868[12]`.
+- **test_hcx86backend** (`tests/test_core.c`): +93 byte-exact checks (`core`:
+  1418 checks, 0 failures).
+
+## Session 4e - Full hcARMBackend ported & verified from ARM32 binary
+
+- **hcARMBackend.c**: complete 32-bit ARM (`A32`) JIT backend ported from
+  `docs/libgles_cm.dll.epoc.c` (`sub_23B4C..sub_25484`) and verified directly
+  against raw ARM32 machine words & `.rodata`/`.data` bytes in
+  `docs/libgles_cm.dll.epoc` (`file_off = VA - 0x7F64`):
+  - All 7 static tables dumped verbatim from image bytes: `armMinMaxCond[4]`
+    (`0x36EB8`), `armOpcodeInfo[55]` (`0x36EBC`), `armRegRemap[14]` (`0x36F2A`),
+    `armAutoSetFlags[16]` (`0x36F38`), `armMemScaleFix[9]` (`0x36F48`),
+    `armMemDesc[13]` (`0x36F51`), `armBranchCond[12]` (`0x36F5E`).
+  - Disassembled raw ARM32 instructions at 3 sites where IDA's ARM decompiler
+    lost caller-saved registers across `sub_23BB8` or missed a 3rd register
+    parameter:
+    1. `sub_23BF8` (`VA 0x23D14..0x23D20`): `r0 + 0x02000000` setting bit 25
+       (`I=1`, register offset) on word/byte `LDR`/`STR` before adding the
+       barrel-shifter immediate field.
+    2. `sub_23D84` (`VA 0x23DA8` & caller `0x251E4`): 3rd parameter
+       `excludeMask` in `r2`, passed as `1u << rd` for `MUL rd, rd, rd` so the
+       allocated/spilled scratch register satisfies ARMv4 `Rd != Rm`.
+    3. `sub_23F2C` (`VA 0x2406C`): `+ rm` (`((unsigned char)regsPacked) >> 4`)
+       in the immediate-shifted register data-processing path.
+  - Full `canCreateImmediate`, `preRegallocFixer` (scaled memop lowering,
+    `ROR #0 -> MOV`, 3-op imm & 5-op reg `ROL` lowering, `0xFFF`/`0xFFFF` mask
+    synthesis), `HCARMBackend_codegen` (`STMFD`/`LDMFD` prologue/epilogue,
+    multi-chunk `MOV/ORR` vs `MVN/BIC` immediate synthesis, barrel-shifter ALU
+    consumer fusion with `SUB<->SUBR` swap, CPSR `S`-bit branch fusion eliding
+    `CMP`/`TST`, 24-bit `B<cond>` word-offset patching), and `HCARMBackend_create`.
+- **test_hcarmbackend** (`tests/test_core.c`): +80 word-exact checks (`hg`:
+  295, `imath`: 311, `core`: 1498 checks, 0 failures).
+- Next: `hcEmulator.c` (compile-time constant folding/substitution helpers) +
+  `HC_compile` core (`hcCompiler` / CFG / SSA / liveness / regalloc) +
+  `grrStubs.c` wiring.
+

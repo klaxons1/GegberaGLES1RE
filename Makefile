@@ -31,6 +31,7 @@ LIB_SRC := \
              src/gerbera/hc/hcMemory.c \
              src/gerbera/hc/hcBackendInfo.c \
              src/gerbera/hc/hcX86Backend.c \
+             src/gerbera/hc/hcARMBackend.c \
              src/gerbera/hc/grInterpreter.c \
              src/gerbera/hc/g_pixelPipeBytecode.c \
 src/gerbera/grrTexture.c \

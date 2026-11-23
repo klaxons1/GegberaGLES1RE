@@ -177,11 +177,16 @@ same data order as x86 `backendDecl`:
 | +40 | isNative | sub_24110 | **1** | 1 |
 | +44 | optimizationMask | NULL | compileWrap checks NULL before `&1` | NULL |
 
-ARM codegen emits 32-bit ARM instruction words via helpers sub_23F2C (emit
-word + track used-reg mask), sub_24090 (data-processing field assembly:
-cond in bits 31-28, I/opc/S fields), sub_24674/24734/2488C/248F4/2496C
-(load/store + operand decoding), sub_24ABC (128-byte code-buffer growth).
-`HC_opcodeDecls`-driven switch inside sub_24AEC (cases 4,5,6,7,8,0xB).
+ARM codegen emits 32-bit ARM instruction words via helpers sub_23BF8
+(word/byte/halfword/signed load-store), sub_23F04 (`B<cond>` branch), sub_23F2C
+(data-processing + barrel-shifter + rotated-imm8), sub_24090 (`STMFD`/`LDMFD`
+block transfer), sub_24674/24734/2488C/248F4/2496C (memop/minmax/ALU/shifted-ALU
+/S-bit-fused cond-branch), and sub_24ABC (128-byte code-buffer growth), driven
+by the 55-entry `armOpcodeInfo` table at VA `0x36EBC` (cases 1..8, 11, 12).
+Ported in full to `src/gerbera/hc/hcARMBackend.c` (session 4e) after verifying
+all 7 static tables (`VA 0x36EB8..0x36F69`) and disassembling 3 IDA
+register-loss sites (`0x23D14` `+0x02000000` LDR/STR I-bit, `0x23DA8`/`0x251E4`
+`excludeMask` in `r2` for `MUL rd,rd,rd`, and `0x2406C` `+ rm` in shifted DP).
 
 The ARM `grExecuteProgram` (sub_1F87C, bytecode VM) matches the x86
 semantics line-for-line (verified against the session-4b port): big-endian

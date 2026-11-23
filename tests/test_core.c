@@ -143,6 +143,7 @@ static void test_renderrect(void);
 static void test_hcopcode(void);
 static void test_interpreter(void);
 static void test_hcx86backend(void);
+static void test_hcarmbackend(void);
 static void test_gradients(void);
 
 int main(void)
@@ -186,6 +187,7 @@ int main(void)
     test_hcopcode();
     test_interpreter();
     test_hcx86backend();
+    test_hcarmbackend();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
@@ -3980,3 +3982,267 @@ static void test_hcx86backend(void)
         HCArena_releaseBottom(&arena, mark);
     }
 }
+
+/* --- test_hcarmbackend: 32-bit ARM backend (hcARMBackend.c) --------------- */
+
+static void armEmulateProbeCallback(void *stackPtr)
+{
+    *((int *)stackPtr) = 0x5A5AA5A5;
+}
+
+static void test_hcarmbackend(void)
+{
+    static unsigned char arenaBuf[65536];
+    HCArena_s arena;
+    HCBackend_s *be;
+    unsigned char *remap;
+    HCInstr_s prog[32];
+    HCInstr_s *fixed = NULL;
+    int freeMasks[32];
+    unsigned short duZero[32];
+    void *udZero[32];
+    HCBackendInfo_s beInfo;
+    void *codePtr = NULL;
+    unsigned int *words;
+    int codeLen;
+    int mark;
+    int probeSlot = 0;
+
+    HCArena_init(&arena, arenaBuf, (int)sizeof(arenaBuf));
+
+    /* 1. vtable & singleton properties */
+    be = HCARMBackend_create();
+    CHECK(be != NULL);
+    CHECK(be == HCARMBackend_create());
+    CHECK(be->internalStackSpace() == 60);
+    CHECK(be->numHardRegs() == 14);
+    CHECK(be->isNative() == 1);
+    CHECK(be->internalStackSpaceAfterInvars == NULL);
+    CHECK(be->postRegallocFixer == NULL);
+    CHECK(be->optimizationMask == NULL);
+    CHECK(be->reserved9 != NULL);
+    be->reserved9();
+    be->emulate(&armEmulateProbeCallback, &probeSlot);
+    CHECK(probeSlot == 0x5A5AA5A5);
+
+    remap = be->targetRegisterMapping();
+    CHECK(remap != NULL);
+    CHECK(remap[0] == 0 && remap[1] == 1 && remap[12] == 12 && remap[13] == 14);
+
+    /* 2. canCreateImmediate across ARM rotated-imm8 & load/store classes */
+    {
+        HCInstr_s ins;
+        /* Class 0 (MOV/MOVN/MIN/MAX/CBcc): 1 chunk in imm OR ~imm */
+        ins = HC_genOp2Imm(HCOP_MOV, 1, 0);
+        CHECK(be->canCreateImmediate(&ins) == 1);
+        ins = HC_genOp2Imm(HCOP_MOV, 1, 0x00FF0000);
+        CHECK(be->canCreateImmediate(&ins) == 1);
+        ins = HC_genOp2Imm(HCOP_MOV, 1, (int)0xFF00FFFFu);
+        CHECK(be->canCreateImmediate(&ins) == 1);
+        ins = HC_genOp2Imm(HCOP_MOV, 1, 0x12345678);
+        CHECK(be->canCreateImmediate(&ins) == 0);
+
+        /* Class 1 (ADD/SUB/AND/OR/XOR/BIC): 1 chunk in positive imm only */
+        ins = HC_genOp3Imm(HCOP_ADD, 1, 2, 0x00FF0000);
+        CHECK(be->canCreateImmediate(&ins) == 1);
+        ins = HC_genOp3Imm(HCOP_ADD, 1, 2, (int)0xFF00FFFFu);
+        CHECK(be->canCreateImmediate(&ins) == 0);
+        ins = HC_genOp3Imm(HCOP_AND, 1, 2, 0x0101);
+        CHECK(be->canCreateImmediate(&ins) == 0);
+
+        /* Class 2 (shifts/ROR): always immediate-capable */
+        ins = HC_genOp3Imm(HCOP_LSL, 1, 2, 19);
+        CHECK(be->canCreateImmediate(&ins) == 1);
+
+        /* Class 4 (halfword / signed-byte load/store): (-256, 256) */
+        ins = HC_genOp3Imm(HCOP_LWS, 1, 0, 255);
+        CHECK(be->canCreateImmediate(&ins) == 1);
+        ins = HC_genOp3Imm(HCOP_LWS, 1, 0, -255);
+        CHECK(be->canCreateImmediate(&ins) == 1);
+        ins = HC_genOp3Imm(HCOP_LWS, 1, 0, 256);
+        CHECK(be->canCreateImmediate(&ins) == 0);
+        ins = HC_genOp3Imm(HCOP_SW, 1, 0, -256);
+        CHECK(be->canCreateImmediate(&ins) == 0);
+
+        /* Class 5 (word / unsigned-byte load/store): (-4096, 4096) */
+        ins = HC_genOp3Imm(HCOP_LD, 1, 0, 4095);
+        CHECK(be->canCreateImmediate(&ins) == 1);
+        ins = HC_genOp3Imm(HCOP_SD, 1, 0, -4095);
+        CHECK(be->canCreateImmediate(&ins) == 1);
+        ins = HC_genOp3Imm(HCOP_LD, 1, 0, 4096);
+        CHECK(be->canCreateImmediate(&ins) == 0);
+        ins = HC_genOp3Imm(HCOP_SD, 1, 0, -4096);
+        CHECK(be->canCreateImmediate(&ins) == 0);
+
+        /* Default class (MULS, scaled LD4): 0 */
+        ins = HC_genOp3Imm(HCOP_MULS, 1, 2, 3);
+        CHECK(be->canCreateImmediate(&ins) == 0);
+        ins = HC_genOp3Imm(HCOP_LD4, 1, 0, 4);
+        CHECK(be->canCreateImmediate(&ins) == 0);
+    }
+
+    /* 3. preRegallocFixer: scaled memops, ROR #0, ROL lowering, 0xFFFF mask */
+    prog[0] = HC_genOp3Imm(HCOP_LD4, 1, 0, 3);       /* -> LD r1, r0, #12   */
+    prog[1] = HC_genOp3Imm(HCOP_LW2U, 2, 0, 5);      /* -> LWU r2, r0, #10  */
+    prog[2] = HC_genOp3(HCOP_LW2S, 3, 0, 4);         /* -> LSL t,r4,#1; LWS */
+    prog[3] = HC_genOp3(HCOP_LD4, 1, 0, 2);          /* kept as LD4 reg     */
+    prog[4] = HC_genOp3Imm(HCOP_ROR, 1, 2, 0);       /* -> MOV r1, r2       */
+    prog[5] = HC_genOp3Imm(HCOP_ROL, 1, 2, 5);       /* -> LSR + LSL + OR   */
+    prog[6] = HC_genOp3(HCOP_ROL, 1, 2, 3);          /* -> 5-op reg ROL     */
+    prog[7] = HC_genOp3Imm(HCOP_AND, 1, 2, 0xFFFF);  /* -> MOVN+LSR+AND     */
+    prog[8] = HC_genOp0(HCOP_EOP);
+
+    mark = be->preRegallocFixer(&arena, &fixed, prog, NULL);
+    CHECK(fixed != NULL);
+    /* [0]: LD r1, r0, #12 */
+    CHECK(HC_getOpcodeOper(&fixed[0]) == HCOP_LD && fixed[0].instr1 == 12u);
+    /* [1]: LWU r2, r0, #10 */
+    CHECK(HC_getOpcodeOper(&fixed[1]) == HCOP_LWU && fixed[1].instr1 == 10u);
+    /* [2..3]: LSL r5, r4, #1; LWS r3, r0, r5 */
+    CHECK(HC_getOpcodeOper(&fixed[2]) == HCOP_LSL && fixed[2].instr1 == 1u);
+    CHECK(HC_getOpcodeOper(&fixed[3]) == HCOP_LWS && (fixed[3].instr1 & 0x7FFu) == 5u);
+    /* [4]: LD4 r1, r0, r2 preserved for native [Rn, Rm, LSL #2] */
+    CHECK(HC_getOpcodeOper(&fixed[4]) == HCOP_LD4);
+    /* [5]: ROR #0 -> MOV r1, r2 */
+    CHECK(HC_getOpcodeOper(&fixed[5]) == HCOP_MOV && (fixed[5].instr0 & 0x100u) == 0);
+    /* [6..8]: ROL #5 -> LSR #27 + LSL #5 + OR */
+    CHECK(HC_getOpcodeOper(&fixed[6]) == HCOP_LSR && fixed[6].instr1 == 27u);
+    CHECK(HC_getOpcodeOper(&fixed[7]) == HCOP_LSL && fixed[7].instr1 == 5u);
+    CHECK(HC_getOpcodeOper(&fixed[8]) == HCOP_OR);
+    /* [9..13]: ROL reg -> SUBR #32, AND #31, LSR, LSL, OR */
+    CHECK(HC_getOpcodeOper(&fixed[9]) == HCOP_SUBR && fixed[9].instr1 == 32u);
+    CHECK(HC_getOpcodeOper(&fixed[10]) == HCOP_AND && fixed[10].instr1 == 31u);
+    CHECK(HC_getOpcodeOper(&fixed[11]) == HCOP_LSR);
+    CHECK(HC_getOpcodeOper(&fixed[12]) == HCOP_LSL);
+    CHECK(HC_getOpcodeOper(&fixed[13]) == HCOP_OR);
+    /* [14..16]: AND #0xFFFF -> MOVN #0, LSR #16, AND */
+    CHECK(HC_getOpcodeOper(&fixed[14]) == HCOP_MOVN && fixed[14].instr1 == 0u);
+    CHECK(HC_getOpcodeOper(&fixed[15]) == HCOP_LSR && fixed[15].instr1 == 16u);
+    CHECK(HC_getOpcodeOper(&fixed[16]) == HCOP_AND);
+    CHECK(HC_getOpcodeOper(&fixed[17]) == HCOP_EOP);
+    HCArena_releaseBottom(&arena, mark);
+
+    /* Common backend info setup */
+    memset(freeMasks, 0, sizeof(freeMasks));
+    memset(duZero, 0, sizeof(duZero));
+    memset(udZero, 0, sizeof(udZero));
+    beInfo.lst = prog;
+    beInfo.freeHardRegMasks = freeMasks;
+    beInfo.liveRegs = NULL;
+    beInfo.chains.duChains = duZero;
+    beInfo.chains.udChains = udZero;
+
+    /* 4. codegen: minimal EOP -> STMFD sp!,{r0-r12,lr}; LDMFD sp!,{r0-r12,pc} */
+    prog[0] = HC_genOp0(HCOP_EOP);
+    mark = HCArena_markBottom(&arena);
+    codeLen = be->codegen(&arena, &codePtr, prog, &beInfo, 0);
+    words = (unsigned int *)codePtr;
+    CHECK(codeLen == 8);
+    CHECK(words[0] == 0xE92D5FFFu);
+    CHECK(words[1] == 0xE8BD9FFFu);
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 5. codegen: multi-chunk MOV/ORR & inverted MVN immediate synthesis */
+    prog[0] = HC_genOp2Imm(HCOP_MOV, 1, 0x13355779);        /* 4 chunks MOV+3*ORR */
+    prog[1] = HC_genOp2Imm(HCOP_MOV, 2, 0x78);              /* 0x1E ROR 30        */
+    prog[2] = HC_genOp2Imm(HCOP_MOV, 3, (int)0xFFFF00FFu);  /* MVN r3, #0xFF00    */
+    prog[3] = HC_genOp0(HCOP_EOP);
+    mark = HCArena_markBottom(&arena);
+    codeLen = be->codegen(&arena, &codePtr, prog, &beInfo, 0);
+    words = (unsigned int *)codePtr;
+    CHECK(codeLen == 32); /* (1 + 4 + 1 + 1 + 1) * 4 */
+    CHECK(words[1] == 0xE3A01079u);
+    CHECK(words[2] == 0xE3811C57u);
+    CHECK(words[3] == 0xE3811835u);
+    CHECK(words[4] == 0xE3811413u);
+    CHECK(words[5] == 0xE3A02F1Eu);
+    CHECK(words[6] == 0xE3E03CFFu);
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 6. codegen: loads/stores (imm, negative imm, scaled reg LD4, signed half) */
+    prog[0] = HC_genOp3Imm(HCOP_LD, 1, 0, 16);   /* LDR r1, [r0, #16]        */
+    prog[1] = HC_genOp3Imm(HCOP_SD, 1, 0, -8);   /* STR r1, [r0, #-8]        */
+    prog[2] = HC_genOp3(HCOP_LD4, 1, 0, 2);      /* LDR r1, [r0, r2, LSL #2] */
+    prog[3] = HC_genOp3Imm(HCOP_LWS, 1, 0, 6);   /* LDRSH r1, [r0, #6]       */
+    prog[4] = HC_genOp0(HCOP_EOP);
+    mark = HCArena_markBottom(&arena);
+    codeLen = be->codegen(&arena, &codePtr, prog, &beInfo, 0);
+    words = (unsigned int *)codePtr;
+    CHECK(codeLen == 24);
+    CHECK(words[1] == 0xE5901010u);
+    CHECK(words[2] == 0xE5001008u);
+    CHECK(words[3] == 0xE7901102u);
+    CHECK(words[4] == 0xE1D010F6u);
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 7. codegen: MUL Rd!=Rm swap, free-reg scratch, and spill-to-[r0,#60] */
+    prog[0] = HC_genOp3(HCOP_MULS, 1, 2, 3);     /* MUL r1, r2, r3           */
+    prog[1] = HC_genOp3(HCOP_MULS, 1, 1, 3);     /* swapped: MUL r1, r3, r1  */
+    prog[2] = HC_genOp3(HCOP_MULS, 1, 1, 1);     /* free r2: MOV r2,r1 + MUL */
+    prog[3] = HC_genOp3(HCOP_MULS, 1, 1, 1);     /* spill r2 to [r0,#60]     */
+    prog[4] = HC_genOp3Imm(HCOP_MAXS, 1, 2, 0);  /* BIC r1, r2, r2, ASR #31  */
+    prog[5] = HC_genOp0(HCOP_EOP);
+    freeMasks[2] = (1 << 2);
+    freeMasks[3] = 0;
+    mark = HCArena_markBottom(&arena);
+    codeLen = be->codegen(&arena, &codePtr, prog, &beInfo, 0);
+    words = (unsigned int *)codePtr;
+    CHECK(codeLen == 44); /* 1 + (1 + 1 + 2 + 4 + 1) + 1 = 11 words */
+    CHECK(words[1] == 0xE0010392u);
+    CHECK(words[2] == 0xE0010193u);
+    CHECK(words[3] == 0xE1A02001u);
+    CHECK(words[4] == 0xE0010192u);
+    CHECK(words[5] == 0xE580203Cu); /* STR r2, [r0, #60] */
+    CHECK(words[6] == 0xE1A02001u); /* MOV r2, r1        */
+    CHECK(words[7] == 0xE0010192u); /* MUL r1, r2, r1    */
+    CHECK(words[8] == 0xE590203Cu); /* LDR r2, [r0, #60] */
+    CHECK(words[9] == 0xE1C21FC2u); /* BIC r1, r2, r2, ASR #31 */
+    HCArena_releaseBottom(&arena, mark);
+
+    /* 8. codegen: barrel-shifter consumer fusion + CPSR S-bit branch fusion */
+    {
+        unsigned short duBuf[8] = { 1, 1, 2, 0, 0, 0, 0, 0 }; /* pc=0 -> use at pc=1 */
+        unsigned short udShift[2] = { 1, 0 };                 /* def at pc=0         */
+        unsigned short udSub[2] = { 1, 3 };                   /* def at pc=3         */
+        void *usesAt1[2];
+        void *usesAt4[1];
+        void *udArr[6];
+        HCBackendInfo_s fuseInfo;
+
+        prog[0] = HC_genOp3Imm(HCOP_LSL, 3, 2, 2);      /* fused into [1]!            */
+        prog[1] = HC_genOp3(HCOP_SUB, 1, 3, 4);         /* RSB r1, r4, r2, LSL #2     */
+        prog[2] = HC_genOp1Imm(HCOP_LABEL, 0);          /* loop target at word[2]     */
+        prog[3] = HC_genOp3Imm(HCOP_SUB, 1, 1, 1);      /* SUBS r1, r1, #1 (S-bit!)   */
+        prog[4] = HC_genOp3ImmRaw(HCOP_CBNEQ, 0, 1, 0); /* BNE word[2] (elides CMP!)  */
+        prog[5] = HC_genOp0(HCOP_EOP);
+
+        /* At pc=1 (SUB r1, r3, r4), HC_getUses returns uses={3, 4}: index 0 is r3 */
+        usesAt1[0] = udShift;
+        usesAt1[1] = NULL;
+        /* At pc=4 (CBNEQ label0, r1, #0), HC_getUses returns uses={1}: index 0 is r1 */
+        usesAt4[0] = udSub;
+
+        memset(udArr, 0, sizeof(udArr));
+        udArr[1] = usesAt1;
+        udArr[4] = usesAt4;
+
+        fuseInfo.lst = prog;
+        fuseInfo.freeHardRegMasks = freeMasks;
+        fuseInfo.liveRegs = NULL;
+        fuseInfo.chains.duChains = &duBuf[2];
+        fuseInfo.chains.udChains = udArr;
+
+        mark = HCArena_markBottom(&arena);
+        codeLen = be->codegen(&arena, &codePtr, prog, &fuseInfo, 0);
+        words = (unsigned int *)codePtr;
+        /* prologue + RSB + SUBS + BNE + epilogue = 5 words = 20 bytes */
+        CHECK(codeLen == 20);
+        CHECK(words[0] == 0xE92D5FFFu);
+        CHECK(words[1] == 0xE0641102u); /* RSB r1, r4, r2, LSL #2 */
+        CHECK(words[2] == 0xE2511001u); /* SUBS r1, r1, #1        */
+        CHECK(words[3] == 0x1AFFFFFDu); /* BNE -12 -> words[2]    */
+        CHECK(words[4] == 0xE8BD9FFFu);
+        HCArena_releaseBottom(&arena, mark);
+    }
+}
+
