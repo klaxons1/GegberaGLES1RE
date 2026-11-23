@@ -516,17 +516,28 @@ void              oglReleaseSurfaceTexture(oglContext_s *context, unsigned int t
 int               oglIsSurfaceTextureReleased(oglContext_s *context, unsigned int textureName);
 void              oglCheckValidity(oglContext_s *context);
 
-/* Hosted current-context & EGL-error hooks (in grrStubs.c until egl lands) */
+/* EGL thread-local state (TI=0x1398 in CodeView NB11; implemented in eglSymbian.c) */
+struct eglContext_s;
+struct eglSurface_s;
+struct eglDisplay_s;
+
 typedef struct eglState_s
 {
-    oglContext_s *currentESContext;
-    int           errorCode;
+    oglContext_s        *currentESContext;
+    struct eglContext_s *currentContext;
+    struct eglSurface_s *currentReadSurface;
+    struct eglSurface_s *currentDrawSurface;
+    struct eglDisplay_s *currentDisplay;
+    struct eglDisplay_s *windowDisplay;
+    int                  errorCode;
+    int                  displayMode;
+    void                *heap;
+    int                  ownEnvironment;
 } eglState_s;
 
 eglState_s *egliGetState(void);
 void        eglSetError(int error);
 void        egliSetCurrentContext(oglContext_s *context);
-int         eglGetLastErrorHosted(void);
 
 /* --- oglGetter.inl --------------------------------------------------------- */
 void                  oglIntToOutput(void *output, const void *input, int n, OGL_OUTPUTTYPE dataType);

@@ -1455,3 +1455,13 @@ void grSetSurfaces(Gerbera_s *state, _grDrawSurface *drawInfo, _grDrawSurface *r
     grUpdateScissor(state);
     state->pixelPipelineDirty = 1;
 }
+
+int grGetStatistic(int stat)
+{
+    (void)stat;
+    return 0;
+}
+
+void grResetStatistics(void)
+{
+}

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "GLES/egl.h"
 #include "GLES/gl.h"
 #include "gerbera/grRGBA.h"
 #include "gerbera/api_opengl/oglContext.h"
@@ -470,7 +471,7 @@ static void test_ogl_context(void)
     /* Unbound current context returns NULL and records EGL_NOT_INITIALIZED (0x3001) */
     egliSetCurrentContext(NULL);
     CHECK(oglGetContext() == NULL);
-    CHECK(eglGetLastErrorHosted() == 0x3001);
+    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
 
     /* Standalone context creation & default GLES 1.1 state */
     ctx1 = oglCreateContext(NULL, NULL);

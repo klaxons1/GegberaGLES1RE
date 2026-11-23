@@ -1503,6 +1503,9 @@ void grrClearStencilBuffer(_grDrawSurface *surface, _grClearInfo *info);
 void grrClearBuffers(_grDrawSurface *surface, _grClearInfo *info);
 void grFlushBufferClears(Gerbera_s *state);
 
+int  grGetStatistic(int stat);
+void grResetStatistics(void);
+
 HG_EXTERN_C_END
 
 #endif /* GR_STATE_H */

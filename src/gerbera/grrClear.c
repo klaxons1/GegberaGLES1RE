@@ -49,20 +49,6 @@ static const grFill4Fn fillFunctions4x[4] =
     FILL4(grFill4x8), FILL4(grFill4x16), NULL, FILL4(grFill4x32)
 };
 
-/* --- surface lock stubs (eglSymbian.inl; full port with the egl module) ---- */
-
-int grLockSurface(int op)
-{
-    GR_GRR_CHECK(op == GR_SURFACE_DRAW || op == GR_SURFACE_READ, "eglSymbian.inl", 482);
-    return 0;
-}
-
-int grReleaseSurface(int op)
-{
-    GR_GRR_CHECK(op == GR_SURFACE_DRAW || op == GR_SURFACE_READ, "eglSymbian.inl", 518);
-    return 0;
-}
-
 /* --- grFlushBufferClears (grApiFast.inl 26; DLL 00430AE0) ------------------ */
 
 void grFlushBufferClears(Gerbera_s *state)

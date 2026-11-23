@@ -1,6 +1,6 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 5c)
+Last updated: 2026-11-22 (session 6 - reconstruction complete)
 
 ## Legend
 
@@ -14,12 +14,12 @@ Last updated: 2026-11-22 (session 5c)
 |---|---|---|---|
 | hg | renderer/libs/hg | 105 | **DONE** (session 1) |
 | imath | renderer/libs/imath | 198 | **DONE** (sessions 2-3; all scalar + vector/matrix layers used by core & `api_opengl`) |
-| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z, 4g, 5a-5c) - full core lifecycle, vertex/rasterizer/pixel pipelines, LP64 host scanline pixel-pipeline execution (`grExecutePixelPipeline64`), & `HC_compile` JIT |
-| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z, 5a-5c) - clears, `grrTexture` (levels, box-filtered mipmaps, paletted textures, self-test), `grrBlit` (blits & downsampling), `OES_draw_texture` rect |
+| gerbera/core | .../gerbera/core/implementation | 318 | **DONE** (sessions 3-3z, 4g, 5a-5c, 6) - full core lifecycle, vertex/rasterizer/pixel pipelines, LP64 host scanline pixel-pipeline execution (`grExecutePixelPipeline64`), `HC_compile` JIT, & `grGetStatistic` / `grResetStatistics` |
+| gerbera/core/rasterizer (grr) | .../core/implementation/rasterizer | 26 | **DONE** (sessions 3-3z, 5a-5c, 6) - clears, `grrRasterizer`, `grrTexture` (levels, box-filtered mipmaps, paletted textures, self-test), `grrBlit` (blits & downsampling), `OES_draw_texture` rect |
 | gerbera/api_opengl | .../gerbera/api_opengl/implementation | 313 | **DONE** (sessions 5a-5c) - ALL 10 TUs (`oglError`, `oglDescriptor`, `oglMatrixStack`, `oglTexManager`, `oglBufObjManager`, `oglGetter`, `oglUtil`, `oglContext`, `oglFast`, `oglApi`) & ALL 158 `gl*` entry points in `GLES/gl.h` (405 checks) |
 | gerbera/hc | .../gerbera/hc | 296 | **DONE** (sessions 4a-4g) - ALL 17 TUs ported (`hcCompiler.c` + `hcPanicRegalloc.inl`, x86 & ARM32 JIT backends, optimizer, regalloc, interpreter, bytecode; 2,327 core checks) |
-| egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | SCAFFOLDED |
-| egl_symbian | inc/symbian/eglSymbian.inl | 39 | SCAFFOLDED |
+| egl | src/ (eglApi.inl, eglBase.inl, eglUtil.inl) | 63 | **DONE** (session 6) - ALL 27 Khronos EGL 1.1 entry points in `GLES/egl.h` (`EGL/egl.h`), 72 configs, pbuffer render-to-texture (`eglBindTexImage` / `eglReleaseTexImage`), window & pixmap surfaces, `eglGetProcAddress` (18 OES procs) |
+| egl_symbian | inc/symbian/eglSymbian.inl | 39 | **DONE** (session 6) - portable hosted platform backend (`src/gerbera/egl/eglSymbian.c`, retiring `grrStubs.c`): TLS state & pre-init error sentinels, native window/pixmap surfaces, dynamic resize, surface locks, `s_validColors`, config caveats & sorting (1,075 egl checks) |
 | crt/platform | Symbian + MSL runtime | 44 | n/a (reference) |
 
 Total unique functions in the binary: 1402 (1776 definitions, of which 374 are
@@ -1817,8 +1817,19 @@ Docs updated (docs/analysis.md ARM section; this entry). Findings:
     (verified clean under `-fsanitize=address`).
 - **Tests (`make test`)**: **3,338 checks, 0 failures, 0 warnings, 0 ASan errors**
   (`hg`: 295, `imath`: 311, `core`: 2,327, `opengl`: 405 across 62 `.c` files).
-- **Next up (Session 6)**: `egl` (`eglApi.c`, `eglBase.c`, `eglUtil.c`, and
-  `eglSymbian.c` / portable surface backend, replacing `src/gerbera/grrStubs.c`).
+
+## DONE session 6 (`egl` + `eglSymbian` hosted backend - 100% completion of `libGLES_CM.dll`)
+
+- **Headers (`src/include/GLES/egl.h`, `src/include/EGL/egl.h`, `src/include/gerbera/egl/eglInternal.h`)**:
+  - Complete Khronos EGL 1.1 public header (27 `EGLAPI` prototypes, all EGL 1.0/1.1 tokens `0x3000..0x3084`, plus portable hosted `eglNativeWindow_s`, `eglNativePixmap_s`, and `eglSymbianDisplayMode_e` descriptors).
+  - Reconstructed all internal EGL data structures verbatim from CodeView `NB11` debug types (`TI=0x105B..0x1398`): `ColorFormat`, `ConfigIndices`, `eglConfig` (24 ints = 96 bytes), `eglRefCount`, `eglContext_s`, `eglDisplay_s`, `eglSurface_s`, `eglPbufferSurface`, `eglPixmapSurface`, `eglWindowSurface`, `eglState_s`, and `TEGLCachedConfig`.
+- **Ported `src/gerbera/egl/eglUtil.c`, `eglBase.c`, `eglApi.c`, and `eglSymbian.c` (plus `src/gerbera/grrRasterizer.c` & `grGetStatistic` / `grResetStatistics`, retiring `src/gerbera/grrStubs.c`)**:
+  - Verified all PE `.rdata` tables directly against `docs/libGLES_CM.dll` (`0x47010C..0x4702E3`): `g_colorFormats[4]`, `g_depthFormats[3]`, `g_stencilFormats[2]`, `g_surfaceTypes[3]`, `s_defaultConfig`, `s_defaultFilter`, `"Hybrid Graphics, Ltd."` / `"1.1"` / `""`, `s_procedures[18]` (`eglGetProcAddress`), and `s_validColors[6]` (`EColor64K` / `EColor4K` / `EColor16MU` / `EColor16MA`).
+  - Full LP64-safe TLS state & pre-initialization sentinel error encoding (`(uintptr_t)state <= 3u`), refcounted deferred context/surface destruction, context sharing, 72-config enumeration/filtering/sorting, pbuffer `EGL_LARGEST_PBUFFER` & EGL 1.1 render-to-texture (`eglBindTexImage` / `eglReleaseTexImage`), hosted window surfaces (owned & caller-supplied, dynamic resize via `grLockSurface`, `eglSwapBuffers` front-buffer presentation), and hosted pixmap surfaces (`eglCreatePixmapSurface` & `eglCopyBuffers`).
+- **PE Ordinal Export Verification & Tests (`make test`)**:
+  - **177 / 177 non-`_E32Dll` PE ordinal exports** in `docs/libGLES_CM.dll` verified present in `build/libgerbera.a` across 66 `.c` files (`0` missing).
+  - **4,413 / 4,413 checks passing, 0 failures, 0 warnings, 0 ASan/LSan errors** (`hg`: 295, `imath`: 311, `core`: 2,327, `opengl`: 405, `egl`: 1,075).
+
 
 
 

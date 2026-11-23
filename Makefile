@@ -51,7 +51,7 @@ src/gerbera/grrTexture.c \
  src/gerbera/grrClear.c \
  src/gerbera/grClipper.c \
  src/gerbera/grApiFast.c \
- src/gerbera/grrStubs.c \
+ src/gerbera/grrRasterizer.c \
     src/gerbera/api_opengl/oglError.c \
     src/gerbera/api_opengl/oglDescriptor.c \
     src/gerbera/api_opengl/oglMatrixStack.c \
@@ -62,6 +62,10 @@ src/gerbera/grrTexture.c \
     src/gerbera/api_opengl/oglGetter.c \
     src/gerbera/api_opengl/oglFast.c \
     src/gerbera/api_opengl/oglApi.c \
+    src/gerbera/egl/eglUtil.c \
+    src/gerbera/egl/eglBase.c \
+    src/gerbera/egl/eglApi.c \
+    src/gerbera/egl/eglSymbian.c \
     src/imath/imAssert.c \
     src/imath/IScalar.c \
     src/imath/IUnitScalar.c \
@@ -75,7 +79,7 @@ src/gerbera/grrTexture.c \
 
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 
-TEST_SRC := tests/test_hg.c tests/test_imath.c tests/test_core.c
+TEST_SRC := tests/test_hg.c tests/test_imath.c tests/test_core.c tests/test_opengl.c tests/test_egl.c
 
 .PHONY: all test clean
 all: $(BUILD)/libgerbera.a
@@ -103,11 +107,16 @@ $(BUILD)/test_opengl: $(BUILD)/libgerbera.a tests/test_opengl.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) tests/test_opengl.c $(BUILD)/libgerbera.a -lm -o $@
 
-test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_core $(BUILD)/test_opengl
+$(BUILD)/test_egl: $(BUILD)/libgerbera.a tests/test_egl.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) tests/test_egl.c $(BUILD)/libgerbera.a -lm -o $@
+
+test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_core $(BUILD)/test_opengl $(BUILD)/test_egl
 	$(BUILD)/test_hg
 	$(BUILD)/test_imath
 	$(BUILD)/test_core
 	$(BUILD)/test_opengl
+	$(BUILD)/test_egl
 
 clean:
 	rm -rf $(BUILD)
