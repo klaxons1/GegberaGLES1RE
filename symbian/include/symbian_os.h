@@ -1,5 +1,5 @@
-/* symbian_os.h - Clean-room Symbian OS v9.x (EKA2 / S60 3rd Ed+) C bindings
- * matching the exact ordinal imports and C++ vtable/struct layouts used by
+/* Symbian OS v9.x (EKA2 / S60 3rd Ed+) C bindings for the
+ * ordinal imports and 32-bit C++ vtable/struct layouts used by
  * Nokia's reference libgles_cm.dll (UID3 0x101fcabd, version 10.0).
  */
 #ifndef SYMBIAN_OS_H

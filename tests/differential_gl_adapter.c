@@ -299,7 +299,7 @@ void diff_gl_state_snapshot(DiffMatrixSession *session, unsigned char output[0x3
     for (i = 0; i < GR_MAX_TEXTURE_UNITS; ++i)
     {
         _grTextureUnitState *t = &s->textureUnit[2 * i];
-        memcpy(output + 468 + 32 * i + 4, &t->envColor, 24);
+        memcpy(output + 468 + 32 * i + 4, &t->texEnvColor, 24);
         memcpy(output + 468 + 32 * i + 28, &t->texCoordReplace, 4);
     }
     for (i = 0; i < GR_MAX_LIGHTS; ++i)
@@ -309,13 +309,13 @@ void diff_gl_state_snapshot(DiffMatrixSession *session, unsigned char output[0x3
         memcpy(d, l->positionXYZ, 16);
         memcpy(d + 16, &l->spotCutoff, 4); memcpy(d + 20, &l->lightMask, 4);
         memcpy(d + 24, &l->orgPosition, 20); memcpy(d + 44, &l->orgSpotDirection, 16);
-        memcpy(d + 60, l->spotDirectionNegated, 12); memcpy(d + 72, l->colors, 36);
-        memcpy(d + 108, &l->exponent, 4); memcpy(d + 112, &l->attenuation, 16);
+        memcpy(d + 60, l->spotDirection, 12); memcpy(d + 72, l->colorsx, 36);
+        memcpy(d + 108, &l->spotExponent, 4); memcpy(d + 112, &l->attenuation, 16);
         memcpy(d + 128, &l->cosSpotCutoff, 4);
         memcpy(d + 168, l->halfway, 12); memcpy(d + 180, l->nVP, 12);
         memcpy(d + 192, &l->positional, 4);
-        memcpy(d + 196, &l->xAtten, 4); memcpy(d + 200, &l->ndotL, 4);
-        memcpy(d + 204, &l->specDot, 4);
+        memcpy(d + 196, &l->la, 4); memcpy(d + 200, &l->ld, 4);
+        memcpy(d + 204, &l->ls, 4);
     }
 #undef BYTE
 #undef FIELD

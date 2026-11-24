@@ -3068,8 +3068,7 @@ GL_API void GL_APIENTRY glCopyTexImage2D(GLenum target, GLint level,
                 {
                     _grTexture *texture = oglGetActiveTexture(context, GR_TEXTURETARGET_2D);
                     grrSetupTextureLevel(texture, level, width, height, texFormat);
-                    if (width > 0 && height > 0)
-                        glCopyTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, x, y, width, height);
+                    glCopyTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, x, y, width, height);
                     OGL_ASSERT_AT("oglApi.inl", 3881,
                                   "__grMemoryCheck[0]==GR_STACK_CHECK_MAGIC0 && __grMemoryCheck[1]==GR_STACK_CHECK_MAGIC1",
                                   magic0 == 0xDEADBEEFu && magic1 == 0xC001BABEu);

@@ -1,10 +1,4 @@
-/* hgDefs.h - base types and macros for the Hybrid Graphics (hg) support library.
- *
- * Ported from the Gerbera GLES1 driver (libGLES_CM.dll) - the original header
- * lived at renderer/libs/hg/hgDefs.h in the source tree "E:\3d_opengl_es_1_1".
- * Types and macro semantics were reconstructed from the decompilation and the
- * assert strings embedded in the binary.
- */
+/* Base types and macros for the Hybrid Graphics support library. */
 #ifndef HG_DEFS_H
 #define HG_DEFS_H
 

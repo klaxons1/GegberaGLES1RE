@@ -1,7 +1,4 @@
-/* IMatrix3.c - normal transforms.
- *
- * Clean port of the decompiled IMatrix3.c (XNormalTransform_mulNormal).
- */
+/* Normal transforms with optional renormalization. */
 #include "imath/imApi.h"
 #include "hg/hgInt32.h"
 #include "gerbera/grUtil.h"

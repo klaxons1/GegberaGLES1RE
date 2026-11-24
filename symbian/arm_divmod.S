@@ -1,8 +1,7 @@
-/* arm_divmod.S - Fast ARMv5T CLZ-accelerated integer division (ARM RTABI).
+/* ARMv5T integer division (ARM RTABI).
  *
  * Implements __aeabi_uidiv, __aeabi_uidivmod, __aeabi_idiv, __aeabi_idivmod
- * using hardware CLZ + branchless barrel-shifted 3-instruction/bit slide.
- * Zero external DLL (drtaeabi.dll) PLT overhead.
+ * CLZ selects the first quotient bit; each unrolled step consumes one bit.
  */
     .syntax unified
     .arch armv5t

@@ -1,23 +1,16 @@
 /* imApi.h - fixed point / bit-pattern scalar math library ("imath").
  *
- * Ported from the Gerbera GLES1 driver, original tree
- * renderer/libs/imath/ (imApi.h, imApi.inl, imInline.inl, IScalar.c,
- * IUnitScalar.c, IMath.c, IVector3.c, IVector4.c, INormal3.c,
- * IMatrix3.c, IMatrix4.c).
- *
- * The scalar types are IEEE single precision floats carried around in their
- * HGint32 bit pattern:
- *   - IScalar     arbitrary float (exponent 0..254, mantissa [-2^30, 2^30))
- *   - IUnitScalar float restricted to [-1, 1)
- *   - XScalar     10.21 fixed point (output domain of the *exp/log2 pair)
+ * Scalar representations:
+ *   - IScalar     IEEE single-precision bits; valid exponents are 0..254
+ *   - IUnitScalar signed fixed point with 29 fractional bits, in [-1, 1]
+ *   - XScalar     signed fixed point with 21 fractional bits
  *   - XColor3     3 x XScalar (r, g, b)
  *
- * Vector types pack one exponent byte per component:
- *   - _IVector3/_IVector4  { HGuint32 e; HGint32 m[3|4]; }  e = byte i =
- *       exponent of component i, m[i] = 6.26 mantissa ("shared exponent")
- *   - _IFVector3/_IFVector4 same layout, but per-component exponents
- *       ("independent exponents")
- *   - _IMatrix4x4  { _IVector4 v[4]; } - column major, v[c] = column c
+ * Vector types store signed mantissas scaled by 2^29:
+ *   - _IVector3/_IVector4  { HGuint32 e; HGint32 m[3|4]; } share exponent e
+ *   - _IFVector3/_IFVector4 have the same layout, with one exponent byte
+ *       per component packed into e
+ *   - _IMatrix4x4  { _IFVector4 v[4]; } - column major, v[c] = column c
  *   - _XNormalTransform { HGint32 m[3][3]; HGint32 scale; }
  *   - _IVertexTransform  pre-scaled transform for the vertex pipeline
  */
@@ -29,7 +22,7 @@
 
 HG_EXTERN_C_BEGIN
 
-/* unit scalar domain: 2.30 fixed point */
+/* Unit scalar scale: 1.0 = 2^29. */
 #define IUNITSCALAR_ONE 0x20000000
 #define IUNITSCALAR_TWO 0x40000000
 #define IM_MANTISSA_MAX 0x3FFFFFFF
@@ -43,19 +36,18 @@ typedef struct _IVector3  { HGuint32 e; HGint32 m[3]; } _IVector3;
 typedef struct _IVector4  { HGuint32 e; HGint32 m[4]; } _IVector4;
 typedef struct _IFVector3 { HGuint32 e; HGint32 m[3]; } _IFVector3;
 typedef struct _IFVector4 { HGuint32 e; HGint32 m[4]; } _IFVector4;
-typedef struct _IMatrix4x4 { _IVector4 v[4]; } _IMatrix4x4;
+typedef struct _IMatrix4x4 { _IFVector4 v[4]; } _IMatrix4x4;
 typedef struct _XNormalTransform { HGint32 m[3][3]; HGint32 scale; } _XNormalTransform;
 
-/* _IVertexTransform: rows become _IVector-like { e, m[4] }, plus a
- * pre-normalized 64-bit row for the w product, per-row shift bytes and
- * shared exponent.  Layout per IVertexTransform_copy field order. */
+/* Nokia CodeView TI=0x1648 and UIQ TI=0x166A both name v as _IFVector4[4]
+ * and exp as signed int. Nokia also includes w and unnormalized. */
 typedef struct _IVertexTransform
 {
-    struct { HGuint32 e; HGint32 m[4]; } v[4];
+    _IFVector4 v[4];
     HGint64 w[4];
     HGint32 unnormalized[4][4];
     HGuint32 sh[4];
-    HGuint32 exp;
+    HGint32 exp;
     HGuint32 cl;
 } _IVertexTransform;
 
@@ -76,15 +68,15 @@ HGfloat  IScalar_stof(HGint32 a);
 HGint32  IScalar_immediate(HGfloat a);
 HGint32  IScalar_one(void);
 HGint32  IScalar_zero(void);
-HGint32  IScalar_set(HGuint32 e, HGint32 m);    /* exponent + 6.26 mantissa */
+HGint32  IScalar_set(HGuint32 e, HGint32 m);    /* biased exponent + signed mantissa scaled by 2^29 */
 HGint32  IScalar_setAndNormalize(HGuint32 e, HGint32 m);
 HGuint32 IScalar_getExponent(HGint32 x);
-HGint32  IScalar_getMantissa(HGint32 x);        /* 6.26 signed mantissa    */
+HGint32  IScalar_getMantissa(HGint32 x);        /* signed mantissa scaled by 2^29 */
 HGint32  IScalar_getOESMantissa(HGint32 s);
 HGint32  IScalar_getOESExponent(HGint32 s);
 HGuint32 IScalar_getUnsignedMantissa(HGint32 x);
 HGint32  IScalar_toUnitScalar(HGint32 x);
-HGint32  IScalar_fixedToScalar(HGint32 m, HGint32 n);  /* n.fraction fixed */
+HGint32  IScalar_fixedToScalar(HGint32 m, HGint32 n);  /* n fractional bits */
 HGint32  IScalar_scalarToFixed(HGint32 r, HGint32 n);
 HGint32  IScalar_byteToScalar(HGuint8 b);       /* b / 255                 */
 HGint32  IScalar_toFixedHO(HGint32 value, HGint32 bits);
@@ -120,8 +112,8 @@ HGint32  IScalar_testge(HGint32 a);
 
 /* --- misc ------------------------------------------------------------ */
 
-HGuint32 IScalar_log2_iterate(HGuint32 y);      /* log2 in 2.10-ish output */
-HGint32  XScalar_log2(HGint32 y);               /* 11.21 log2 or INT_MIN   */
+HGuint32 IScalar_log2_iterate(HGuint32 y);      /* normalized input; 31 fractional output bits */
+HGint32  XScalar_log2(HGint32 y);               /* 21 fractional bits, or INT_MIN for y <= 0 */
 HGint32  IScalar_cos(HGint32 x);
 
 /* --- unit scalar domain (IUnitScalar.c) ------------------------------ */
@@ -151,7 +143,7 @@ int           XScalar_zcmpne(XScalar a);
 XScalar       XScalar_add(XScalar a, XScalar b);
 XScalar       XScalar_sub(XScalar a, XScalar b);
 XScalar       XScalar_abs(XScalar v);
-XScalar       XScalar_mul(XScalar a, XScalar b);          /* (a*b)>>(10-21)  */
+XScalar       XScalar_mul(XScalar a, XScalar b);          /* low 32 bits of (a*b)>>21 */
 XScalar       XScalar_min(XScalar a, XScalar b);
 XScalar       XScalar_mul_sat(XScalar a, XScalar b);      /* saturating, rsh21 */
 XScalar       XScalar_mulu_sat(XScalar a, XScalar b);     /* unsigned variant */
@@ -207,8 +199,8 @@ void XColor3Acc_toRGB(unsigned short *pD, HGint64 *rgb);
 /* --- XNormal3 (INormal3.c / imInline.inl) ---------------------------- */
 /* normals are 3 x int in 10.21 fixed point (an int[3], no struct wrapper) */
 
-void XNormal3_init001n(int *pD);                /* (0, 0, -0.5)            */
-void XNormal3_init001p(int *pD);                /* (0, 0, 0.5)             */
+void XNormal3_init001n(int *pD);                /* (0, 0, -1)              */
+void XNormal3_init001p(int *pD);                /* (0, 0, 1)               */
 void XNormal3_setf(int *normal, HGfloat x, HGfloat y, HGfloat z);
 void XNormal3_setb(int *pD, HGint8 vx, HGint8 vy, HGint8 vz);
 void XNormal3_sets(int *pD, HGint16 vx, HGint16 vy, HGint16 vz);
@@ -242,7 +234,7 @@ void IFVector4_accfv(_IFVector4 *pD, _IFVector4 *pS, int *pScale, int n);
 
 /* --- IVector3 ---------------------------------------------------------- */
 
-void IVector3_init001p(_IVector3 *pD);          /* (0, 0, 0.5)             */
+void IVector3_init001p(_IVector3 *pD);          /* (0, 0, 1)               */
 void IVector3_zero(_IVector3 *pD);
 void IVector3_set(_IVector3 *pD, HGuint32 e, int x, int y, int z);
 int  IVector3_normsub(int *pD, _IVector3 *pA, _IVector3 *pB);
@@ -305,9 +297,6 @@ void XNormalTransform_mulNormal(int *pD, _XNormalTransform *pM, int *pV, int ren
 HGint32 IScalar_attenuateRcp(HGint32 d, _IFVector3 *ka);
 HGint32 IScalar_attenuateRsq(HGint32 d, _IFVector3 *ka);
 HGint32 IScalar_expe(HGint32 x);
-
-/* NOTE (deferred - needs the core layer): _ITCTransform functions
- * (ITCTransform_mulxv4 needs grTexCoordDivByQ from gerbera core). */
 
 HG_EXTERN_C_END
 

@@ -1,6 +1,4 @@
-/* grUtilSmall.c - descriptor<->color utilities (port of the decompiled
- * grUtilSmall.inl; the texture validity/update functions need the texture
- * struct and land with the texture subsystem). */
+/* grUtilSmall.c - descriptor/color conversion and dithering (grUtilSmall.inl). */
 #include "gerbera/grDefs.h"
 #include "gerbera/grRGBA.h"
 #include "hg/hgInt32.h"

@@ -1,6 +1,5 @@
-/* IUnitScalar.c - unit scalar (2.30 fixed point, [-1, 1)) operations.
+/* IUnitScalar.c - unit scalar operations (29 fractional bits, [-1, 1]).
  *
- * Clean port of the decompiled IUnitScalar.c from the Gerbera GLES1 driver.
  * IUnitScalar_sin/cos are defined in hg/hgFloat.c - the reference binary
  * asserts into hgFloat.c from those functions, pinning them there.
  */
@@ -32,7 +31,7 @@ HGint32 IUnitScalar_lerp(HGint32 s0, HGint32 s1, HGint32 factor)
 
 HGint32 IUnitScalar_tos(HGint32 x)
 {
-    /* unit scalar -> IScalar: renormalize the 2.30 value into a float */
+    /* Normalize the fixed-point value into an IScalar mantissa/exponent. */
     HGint32 a = hgAbs32(x);
     HGint32 sh = hgClz32((HGuint32)a) - 2;
     HGuint32 e;

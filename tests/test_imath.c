@@ -1,8 +1,4 @@
-/* test_imath.c - unit tests for the imath scalar layer.
- *
- * Expected bit patterns computed independently (IEEE semantics / the
- * documented fixed point domains), not by running the decompiled code.
- */
+/* Scalar, vector and matrix arithmetic, including exact encoded results. */
 #include "imath/imApi.h"
 #include "hg/hgInt32.h"
 
@@ -11,29 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int g_fail = 0;
-static int g_total = 0;
+#include "test_support.h"
 
-#define CHECK(cond)                                                          \
-    do {                                                                     \
-        ++g_total;                                                           \
-        if (!(cond)) {                                                       \
-            ++g_fail;                                                        \
-            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);  \
-        }                                                                    \
-    } while (0)
-
-#define CHECK_EQ(expr, expected)                                             \
-    do {                                                                     \
-        unsigned int _v = (unsigned int)(expr);                              \
-        unsigned int _e = (unsigned int)(expected);                          \
-        ++g_total;                                                           \
-        if (_v != _e) {                                                      \
-            ++g_fail;                                                        \
-            fprintf(stderr, "FAIL %s:%d: %s == 0x%08x, got 0x%08x\n",        \
-                    __FILE__, __LINE__, #expr, _e, _v);                      \
-        }                                                                    \
-    } while (0)
+#define CHECK_EQ CHECK_U32_EQ
 
 #define FIN(x) hgFloatBitPattern(x)
 
@@ -50,7 +26,7 @@ static void test_construct(void)
     /* denormal flush */
     CHECK_EQ(IScalar_iftos(0x007FFFFF), 0);
     CHECK_EQ(IScalar_iftos(0x00000001), 0);
-    /* NaN/Inf: original keeps the sign byte, forces mantissa 0x7FFFFF */
+    /* NaN/Inf saturate to the largest finite value with the input sign. */
     CHECK_EQ(IScalar_iftos(0x7FC00000), (HGint32)0x7F7FFFFFu);
     CHECK_EQ(IScalar_iftos(0xFF800000), (HGint32)0xFF7FFFFFu);
     CHECK_EQ(IScalar_iftos(FIN(1.5f)), FIN(1.5f));
@@ -67,7 +43,7 @@ static void test_accessors(void)
     CHECK_EQ(IScalar_getExponent(FIN(5.0f)), 129);
     CHECK_EQ(IScalar_getExponent(FIN(1.0f)), 127);
     CHECK_EQ(IScalar_getExponent(FIN(0.5f)), 126);
-    /* 6.26 mantissa: 1.x is 2^29 .. 2^30 */
+    /* Normalized 1.x mantissas lie in [2^29, 2^30). */
     CHECK_EQ(IScalar_getMantissa(FIN(1.0f)), 0x20000000);
     CHECK_EQ(IScalar_getMantissa(FIN(1.5f)), 0x30000000);
     CHECK_EQ(IScalar_getMantissa(FIN(-1.5f)), -0x30000000);
@@ -99,7 +75,7 @@ static void test_fixed(void)
     CHECK_EQ(IScalar_fixedToScalar(1, 0), FIN(1.0f));
     CHECK_EQ(IScalar_fixedToScalar(0x80000000, 30), FIN(-2.0f)); /* INT_MIN path */
 
-    /* scalarToFixed(r, n) = trunc(r * 2^n) (arithmetic shift: -1.5 -> -2) */
+    /* Arithmetic right shifts round negative fixed-point results down. */
     CHECK_EQ(IScalar_scalarToFixed(FIN(1.0f), 0), 1);
     CHECK_EQ(IScalar_scalarToFixed(FIN(1.5f), 0), 1);
     CHECK_EQ(IScalar_scalarToFixed(FIN(3.75f), 4), 60);
@@ -130,15 +106,14 @@ static void test_arith(void)
     CHECK_EQ(IScalar_rcp(FIN(4.0f)), FIN(0.25f));
     CHECK_EQ(IScalar_rcp(FIN(1.0f)), FIN(1.0f));
     {
-        /* rcp is an estimate: exact for powers of two, else within 1 ulp */
+        /* Reciprocal estimates for non-power-of-two inputs. */
         float r = IScalar_stof(IScalar_rcp(FIN(3.0f)));
         CHECK(fabs(r - 1.0f / 3.0f) < 1e-6f);
         r = IScalar_stof(IScalar_rcp(FIN(10.0f)));
         CHECK(fabs(r - 0.1f) < 1e-6f);
     }
     {
-        /* rsq: polynomial estimate, <= 1 ulp error (0.5 itself misses the
-         * binade boundary: F_RSQ(4.0) = 0.49999995 - faithful) */
+        /* Reciprocal-square-root estimates use a polynomial approximation. */
         float r = IScalar_stof(IScalar_rsq(FIN(4.0f)));
         CHECK(fabs(r - 0.5f) < 1e-6f);
         r = IScalar_stof(IScalar_rsq(FIN(2.0f)));
@@ -255,8 +230,8 @@ int main(void)
     test_imatrix();
     test_attenuate();
 
-    printf("imath tests: %d checks, %d failures\n", g_total, g_fail);
-    return g_fail ? 1 : 0;
+    printf("imath tests: %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
 }
 
 /* ================= vector / matrix layer ================= */
@@ -360,9 +335,8 @@ static void test_ivector3(void)
 static void test_ivector4(void)
 {
     _IVector4 a, b, d, c;
-    HGuint32 e = 127u | (127u << 8) | (128u << 16) | (128u << 24);
     /* (1, 2, 3, 4): shared exponent 129, mantissa = x * 2^27 */
-    e = 129u;
+    HGuint32 e = 129u;
     IVector4_set(&a, e, 0x08000000, 0x10000000, 0x18000000, 0x20000000);
     CHECK_EQ(IVector4_isValid(&a), 1);
     CHECK(fabs(IScalar_stof(IVector4_getf(&a, 0)) - 1.0f) < 1e-6f);
@@ -384,7 +358,7 @@ static void test_ivector4(void)
     IVector4_zero(&d);
     CHECK_EQ(IVector4_testeq(&d), 1);
 
-    /* set clamps to inf on overflow exponent; set_noINF leaves it alone */
+    /* set saturates an overflowing exponent to the largest finite value. */
     IVector4_set(&d, 255u, 0x20000000, 0, 0, 0);
     CHECK_EQ(d.e, 254u);
     CHECK_EQ(d.m[0], 0x3FFFFFFF);
@@ -394,7 +368,7 @@ static void test_ivector4(void)
 
     /* clip: x > w sets bits 7 (main) + 3 (guard at guardBits=0).
      * NOTE: set() takes an UNPACKED single-byte exponent here; a packed
-     * exponent word > 0xFE trips the driver's inf clamp (faithful quirk). */
+     * exponent word > 0xFE triggers finite saturation. */
     IVector4_set(&c, 128u, 0x20000000, 0x10000000, 0x10000000, 0x10000000);
     CHECK_EQ(IVector4_clip(&c, 0), 0x88u);      /* x=2 > w=1: main+guard */
     /* (1, w=4): x < w -> no bit */
@@ -581,7 +555,7 @@ static void test_imatrix(void)
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 1, 1)) - 3.0f) < 1e-5f);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 2, 2)) - 4.0f) < 1e-5f);
     }
-    /* ortho(0,2,0,2,0,2): maps 1 -> 2*x-1 */
+    /* ortho(0,2,0,2,0,2): x/y map to x/y - 1; z maps to -z - 1. */
     {
         int parms[6];
         parms[0] = FIN(0.0f); parms[1] = FIN(2.0f);
@@ -701,7 +675,7 @@ static void test_imatrix(void)
         for (i = 0; i < 16; ++i)
             CHECK(fabsf(fv[i] - product[i]) < 1e-5f);
     }
-    /* inversetranspose of a rotation about z by 90 -> R^T, scale ~ 2^18 */
+    /* A rotation preserves its inverse transpose; inspect the encoded columns. */
     {
         _IFVector3 axis;
         _XNormalTransform nt;
@@ -711,7 +685,7 @@ static void test_imatrix(void)
         IMatrix4x4_identity(&a);
         IMatrix4x4_rotate(&a, &a, FIN(90.0f), &axis);
         CHECK_EQ(IMatrix4x4_inversetranspose(&nt, &a, 1), 1);
-        /* entries are 2.30-ish mantissas; value = m * 2^(scale-29) */
+        /* Normal-transform entries represent m * 2^(scale - 32). */
         CHECK(abs(nt.m[0][1] - 0x7FFFFF80) <= 0x20000);
         CHECK(abs(nt.m[1][0] + 0x7FFFFF80) <= 0x20000);
         CHECK(abs(nt.m[2][2] - 0x7FFFFF00) <= 0x20000);
@@ -752,38 +726,29 @@ static void test_attenuate(void)
     _IFVector3 ka;
     HGint32 r;
 
-    /* ka = (1, 0, 0): atten = 1 -> fixed21(1.0) = 2^21 */
-    IFVector3_setf(&ka, 0, FIN(1.0f));
-    IFVector3_setf(&ka, 1, FIN(0.0f));
-    IFVector3_setf(&ka, 2, FIN(0.0f));
-    r = IScalar_attenuateRcp(FIN(4.0f), &ka);
-    CHECK(abs((int)r - 2097152) <= 8);
-    r = IScalar_attenuateRcp(FIN(1.0f), &ka);
-    CHECK(abs((int)r - 2097152) <= 8);
-    /* ka = (0, 1, 0): atten = d -> 2^21 / d */
-    IFVector3_setf(&ka, 0, FIN(0.0f));
-    IFVector3_setf(&ka, 1, FIN(1.0f));
-    IFVector3_setf(&ka, 2, FIN(0.0f));
-    r = IScalar_attenuateRcp(FIN(4.0f), &ka);
-    CHECK(abs((int)r - 2097152 / 4) <= 64);
-    /* ka = (0, 0, 1): atten = d^2 */
-    IFVector3_setf(&ka, 0, FIN(0.0f));
-    IFVector3_setf(&ka, 1, FIN(0.0f));
-    IFVector3_setf(&ka, 2, FIN(1.0f));
-    r = IScalar_attenuateRcp(FIN(2.0f), &ka);
-    CHECK(abs((int)r - 2097152 / 4) <= 64);
-    /* tiny attenuation (e < 116) -> rcp would overflow: all-ones clamp */
-    IFVector3_setf(&ka, 0, FIN(0.0f));
-    IFVector3_setf(&ka, 1, FIN(1.0f));
-    IFVector3_setf(&ka, 2, FIN(0.0f));
-    r = IScalar_attenuateRcp(FIN(1e-9f), &ka);
-    CHECK_EQ(r, 0x7FFFFFFF);
-    /* ka=(1,0,0): atten = 1 regardless of d */
-    IFVector3_setf(&ka, 0, FIN(1.0f));
-    IFVector3_setf(&ka, 1, FIN(0.0f));
-    IFVector3_setf(&ka, 2, FIN(0.0f));
-    r = IScalar_attenuateRcp(FIN(1e30f), &ka);
-    CHECK(abs((int)r - 2097152) <= 8);
+    static const struct {
+        int coefficient;
+        float distance;
+        int expected, tolerance;
+    } cases[] = {
+        {0, 4.0f, 2097152, 8},
+        {0, 1.0f, 2097152, 8},
+        {1, 4.0f, 2097152 / 4, 64},
+        {2, 2.0f, 2097152 / 4, 64},
+        /* Tiny attenuation overflows the reciprocal and saturates. */
+        {1, 1e-9f, 0x7FFFFFFF, 0},
+        {0, 1e30f, 2097152, 8}
+    };
+    unsigned int i;
+    int component;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+    {
+        for (component = 0; component < 3; ++component)
+            IFVector3_setf(&ka, component,
+                          component == cases[i].coefficient ? FIN(1.0f) : 0);
+        r = IScalar_attenuateRcp(FIN(cases[i].distance), &ka);
+        CHECK(llabs((long long)r - cases[i].expected) <= cases[i].tolerance);
+    }
     /* attenuateRsq with ka=(1,0,0): 1/sqrt(1) = 1.0 */
     r = IScalar_attenuateRsq(FIN(4.0f), &ka);
     CHECK(fabs(IScalar_stof(r) - 1.0f) < 1e-4f);

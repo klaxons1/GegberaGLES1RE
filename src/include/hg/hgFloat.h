@@ -1,8 +1,7 @@
 /* hgFloat.h - IEEE 754 bit-pattern float helpers (hgFloat.h / hgFloat.inl).
  *
- * The Gerbera driver compares and combines floats purely on bit patterns to
- * make the operations NaN-safe and branch-light.  All F_* functions take and
- * return the raw HGuint32 bit patterns of IEEE single precision floats.
+ * Arithmetic uses IEEE single-precision bit patterns; predicates return
+ * integer truth values. F_ITOF converts a signed integer to float bits.
  */
 #ifndef HG_FLOAT_H
 #define HG_FLOAT_H
@@ -15,11 +14,11 @@ HG_EXTERN_C_BEGIN
 #define FIN(x)   hgFloatBitPattern(x)
 #define FOUT(x)  hgBitPatternToFloat(x)
 
-/* validity: neither NaN nor Inf */
+/* F_ISVALID rejects NaNs; F_FINITE rejects both NaNs and infinities. */
 HGint32  F_ISVALID(HGuint32 a);
 HGint32  F_FINITE(HGuint32 a);
 
-/* NaN-safe total-order compares on bit patterns */
+/* Driver bit ordering; signed zeros compare equal. */
 HGint32  F_MAKE_COMPARABLE(HGuint32 a);
 HGint32  F_CMPLE(HGuint32 a, HGuint32 b);
 HGint32  F_CMPGE(HGuint32 a, HGuint32 b);

@@ -2,8 +2,7 @@
  *
  * The original header's functions were inlined (2-3 identical TU copies in
  * the binary); a single definition is ported here. Assert sites keep the
- * original grDefs.h file/line strings. grIsAligned lives in grSmall.c
- * (ported in grSmall.c, declared here for convenience of the stack code).
+ * original grDefs.h file/line strings.
  */
 #include "gerbera/grDefs.h"
 #include "hg/hgInt32.h"

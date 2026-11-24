@@ -1,8 +1,4 @@
-/* IVector4.c - shared-exponent 4-vectors + independent-exponent vectors.
- *
- * Clean port of the decompiled IVector4.c (plus the IVector4/IFVector4
- * pieces of imInline.inl / imApi.inl) from the Gerbera GLES1 driver.
- */
+/* Four-component vectors with shared or independent exponents. */
 #include "imath/imApi.h"
 #include "hg/hgInt32.h"
 #include "gerbera/grUtil.h"

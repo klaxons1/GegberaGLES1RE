@@ -46,8 +46,8 @@ void ITCTransform_copy(_ITCTransform *pD, _IMatrix4x4 *pM)
 }
 
 /* --- grTexCoordDivByQ (decompile 54746-54783) -------------------------------
- * Divides 16.16 (x,y) by the 2^21-scale q (coords[3]) and writes the two
- * outputs. q == 0x200000 (1.0 in 10.21) or 0 passes through. */
+ * Divides (x,y) by the 2^21-scale q (coords[3]) without changing their scale.
+ * q == 0x200000 (1.0 in 10.21) or 0 passes through. */
 
 void grTexCoordDivByQ(int *output, int *coords)
 {
@@ -81,9 +81,9 @@ void grTexCoordDivByQ(int *output, int *coords)
 }
 
 /* --- ITCTransform_mulxv2 (decompile 54784-54847) ----------------------------
- * 16.16 (s,t) with implicit q=1 through the record; the fast path
- * (any non-translation element classified outside the q row/col) does the
- * full 2x2+q product, the slow path assumes axis alignment. */
+ * 16.16 (s,t) with implicit q=1 through the record. Cross-axis or projective
+ * terms require the full 2x2+q product; otherwise each axis is transformed
+ * independently. */
 
 void ITCTransform_mulxv2(int *pO, _ITCTransform *pT, int *st)
 {

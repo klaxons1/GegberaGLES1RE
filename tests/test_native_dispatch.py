@@ -31,7 +31,7 @@ int test_dispatch(void)
 #else
     const int scratch = 44;
 #endif
-    /* Independently pinned by both original dispatch functions. */
+    /* Pixel scratch offset in both original dispatch ABIs. */
     char *base = (char *)stack + 14644;
     state.renderStack = stack;
     state.pixelPipeline = base + scratch;

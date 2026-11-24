@@ -539,7 +539,7 @@ def run_texture_unit_cases(suite):
                   rng.randint(-2097152, 2097152), rng.randint(-4, 10),
                   *adders, rng.choice((0, 4096)), rng.choice((0, 4096)), mask]
         if i < 2:
-            # ClassiCube terrain reached an exactly INT_MIN gradient reference.
+            # INT_MIN exercises gradient-magnitude overflow.
             log_s = log_t = 1
             min_filter = mag_filter = 0
             levels = 2
@@ -617,7 +617,7 @@ def compare_compiled_pipeline(suite, program, native_program, description, instr
     backend = oracle.call(ARM_TARGETS["HCARMBackend_create"][0], [])
     length = oracle.call(ARM_TARGETS["compileInternal"][0],
                          [manager, output, 0, program, backend, hc_opt_all, mask, mutable, parameters],
-                         instruction_budget=100000000 if description == ("span", 15) else instruction_budget,
+                         instruction_budget=2 * (100000000 if description == ("span", 15) else instruction_budget),
                          trace_blocks=False, predicate_range=ARM_TARGETS["compileInternal"])
     code, = unpack(oracle.read(output, 4))
     if length > output_capacity or not arena <= code <= arena + arena_bytes - length:
@@ -821,7 +821,7 @@ def run_pixel_math_cases(suite, descriptors):
             configurations.append((f"fog-{fog:08x}-general-{general}", textures, fog, True))
     for function in (0, 3, 4, 7):
         configurations.append((f"two-units-{function}", [(2, 0, 0, 0, 0), (2, 5, function, 1, 2)], 0, False))
-    # Keep the confirmed arithmetic regressions in short --samples 16 runs.
+    # Include arithmetic boundary cases even in short --samples 16 runs.
     priority = ("env-0-format-2", "fog-ffffffff-general-False", "combine-6-scale-1",
                 "env-1-format-2", "env-2-format-2", "combine-4-scale-1",
                 "combine-3-scale-1", "env-4-format-2", "two-units-0",

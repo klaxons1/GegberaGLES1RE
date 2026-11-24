@@ -1,9 +1,4 @@
-/* IMath.c - validity checkers shared by the imath types.
- *
- * Clean port of the decompiled IMath.c scalar/vector validity functions.
- * The vector functions require the IVector3/IVector4 types (ported with the
- * vector layer); only the scalar pair is compiled here.
- */
+/* IMath.c - scalar and shared-exponent vector validity checks. */
 #include "imath/imApi.h"
 #include "hg/hgInt32.h"
 #include "gerbera/grUtil.h"
@@ -101,5 +96,3 @@ HGint32 IVector4_isValid(_IVector4 *v)
         return 1;
     }
 }
-
-/* IMath.c also defines nothing else; the matrix layer lives in IMatrix4.c. */

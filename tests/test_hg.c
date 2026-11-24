@@ -1,9 +1,4 @@
-/* test_hg.c - unit tests for the hg support library.
- *
- * Expected values were computed independently (or are self-evident identities
- * of the documented semantics); float bit tests compare against the C float
- * unit where the original semantics are plain IEEE behavior.
- */
+/* Integer, float-bit-pattern and memory operations in the hg support library. */
 #include "hg/hgInt32.h"
 #include "hg/hgFloat.h"
 #include "hg/hgFill.h"
@@ -14,29 +9,9 @@
 #include <string.h>
 #include <stdlib.h>
 
-static int g_fail = 0;
-static int g_total = 0;
+#include "test_support.h"
 
-#define CHECK(cond)                                                          \
-    do {                                                                     \
-        ++g_total;                                                           \
-        if (!(cond)) {                                                       \
-            ++g_fail;                                                        \
-            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);  \
-        }                                                                    \
-    } while (0)
-
-#define CHECK_EQ(expr, expected)                                             \
-    do {                                                                     \
-        long long _v = (long long)(expr);                                    \
-        long long _e = (long long)(expected);                                \
-        ++g_total;                                                           \
-        if (_v != _e) {                                                      \
-            ++g_fail;                                                        \
-            fprintf(stderr, "FAIL %s:%d: %s == %lld, got %lld\n",            \
-                    __FILE__, __LINE__, #expr, _e, _v);                      \
-        }                                                                    \
-    } while (0)
+#define CHECK_EQ CHECK_I64_EQ
 
 static void test_clz(void)
 {
@@ -103,7 +78,7 @@ static void test_clamp_misc(void)
     CHECK_EQ(hgIsPowerOfTwo32(3u), 0);
     CHECK_EQ(hgIsPowerOfTwo32(6u), 0);
 
-    /* rotate right 0xDEADBEEF by 4 -> 0xFDEADBE7? verify by identity */
+    /* Rotating right by four is equivalent to rotating left by 28. */
     {
         HGuint32 v = 0xDEADBEEFu;
         HGuint32 r = (HGuint32)hgRor32((int)v, 4);
@@ -112,7 +87,7 @@ static void test_clamp_misc(void)
     CHECK_EQ(hgRor32(0x00000001, 1), (int)0x80000000u);
     CHECK_EQ(hgCopySign32(5, -1), -5);
     CHECK_EQ(hgCopySign32(5, 1), 5);
-    CHECK_EQ(hgBitMask32(0x10, 4), -1);   /* bit 4 set -> all bits below+incl set */
+    CHECK_EQ(hgBitMask32(0x10, 4), -1);   /* Selected bit is set, so every output bit is set. */
     CHECK_EQ(hgBitMask32(0x10, 3), 0);
 
     CHECK_EQ(hgAdds32(2, 3), 5);
@@ -227,7 +202,7 @@ static void test_float_bits(void)
     CHECK_EQ(F_CMPGT(FIN(2.0f), FIN(1.0f)), 1);
     CHECK_EQ(F_CMPLE(FIN(1.0f), FIN(1.0f)), 1);
     CHECK_EQ(F_CMPGE(FIN(1.0f), FIN(1.0f)), 1);
-    /* NaN handling: NaN > everything in the make-comparable mapping */
+    /* The positive quiet NaN sorts above 1.0 in the comparable mapping. */
     CHECK_EQ(F_CMPLT(FIN(1.0f), 0x7FC00000u), 1);
 
     CHECK_EQ(F_ZCMPEQ(FIN(0.0f)), 1);
@@ -287,8 +262,8 @@ static void test_float_multiply(void)
 static void test_trig(void)
 {
     CHECK_EQ(FIN(hgFsin(0.0f)), FIN(0.0f));
-    /* radians -> unit scalar: pi -> 0x20000000 */
-    CHECK_EQ(radiansToUnitScalar(FIN(3.14159265f)), 0x1FFFFFFF);  /* pi, one ulp below 0.5 due to the scaled constant */
+    /* The scaled pi constant rounds one integer unit below 0x20000000. */
+    CHECK_EQ(radiansToUnitScalar(FIN(3.14159265f)), 0x1FFFFFFF);
     CHECK_EQ(radiansToUnitScalar(FIN(3.14159265f / 2.0f)), 0x0FFFFFFF);
     /* sin near zero: bit pattern passthrough */
     CHECK_EQ(F_SIN(FIN(0.0001f)), FIN(0.0001f));  /* below the ~2^-11 passthrough threshold */
@@ -335,7 +310,7 @@ static void test_fill(void)
 
 static void test_endian(void)
 {
-    CHECK_EQ(hgGetEndianess(), HG_FALSE);   /* x86-64 is little endian */
+    CHECK_EQ(hgGetEndianess(), HG_FALSE);   /* Supported host and target layouts are little endian. */
 }
 
 int main(void)
@@ -351,6 +326,6 @@ int main(void)
     test_fill();
     test_endian();
 
-    printf("hg tests: %d checks, %d failures\n", g_total, g_fail);
-    return g_fail ? 1 : 0;
+    printf("hg tests: %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
 }

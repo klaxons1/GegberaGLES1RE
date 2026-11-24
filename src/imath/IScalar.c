@@ -1,6 +1,5 @@
 /* IScalar.c - float-as-bits scalar math.
  *
- * Clean port of the decompiled IScalar.c from the Gerbera GLES1 driver.
  * An IScalar is an IEEE single precision float stored in an HGint32; all
  * arithmetic goes through the hg F_* bit-pattern operations.
  */
@@ -104,7 +103,7 @@ HGint32 IScalar_getMantissa(HGint32 x)
     HGint32 r = (HGint32)((HGuint32)x & 0x7FFFFFu);
     if ((x & (HGint32)0x7F800000u) != 0)
         r |= 0x800000;
-    r <<= 6;                       /* 6.26 fixed point */
+    r <<= 6;                       /* place the implicit leading bit at bit 29 */
     return (x < 0) ? -r : r;
 }
 
@@ -241,8 +240,8 @@ HGint32 IScalar_testge(HGint32 a)           { return (HGint32)F_ZCMPGE((HGuint32
 
 HGuint32 IScalar_log2_iterate(HGuint32 y)
 {
-    /* bit-by-bit log2 refinement: result = 0x7FFFFFFF - sum(k * 2^31-ish)
-     * over accepted shifts; output is log2 * 2^31 / ... (11.21 fixed). */
+    /* For normalized y, approximate log2(y / 2^31) with 31 fractional bits.
+     * Each accepted multiply by (1 + 2^-i) subtracts its log2 contribution. */
     HGuint32 acc = 0x7FFFFFFFu;
     HGuint32 ny;
 

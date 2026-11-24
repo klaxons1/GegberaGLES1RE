@@ -2,9 +2,8 @@
 # build_symbian.sh - Build Gerbera OpenGL ES 1.1 + EGL 1.1 as a native Symbian
 # OS v9.x (EKA2 / S60 3rd Ed+) ARM EABI DLL (libgles_cm.dll + libgles_cm.dso).
 #
-# Uses klaxons1/gcc-symbian (arm-none-symbianelf-gcc 14.2.0) with Whole-Program
-# Unity Compilation (-fwhole-program) + SymbianRevive/elf2e32, automatically
-# bootstrapping both into /tmp/symbian_tools if absent.
+# Uses klaxons1/gcc-symbian and SymbianRevive/elf2e32 on Linux.
+# Missing tools are downloaded or built under SYMBIAN_TOOLS_DIR.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,7 +13,7 @@ ELF2E32="${TOOLS_DIR}/elf2e32_bin"
 BUILD_DIR="/tmp/gerbera_symbian_build"
 OUT_DIR="${REPO_ROOT}/symbian/out"
 
-# 1. Bootstrap toolchain + elf2e32 if /tmp/symbian_tools is not yet populated
+# Bootstrap missing compiler and image-conversion tools.
 if [[ ! -x "${GCC_DIR}/bin/arm-none-symbianelf-gcc" ]]; then
     echo "[symbian] Downloading arm-none-symbianelf-gcc 14.2.0..."
     mkdir -p "${TOOLS_DIR}"
@@ -141,11 +140,11 @@ SIZE="${GCC_DIR}/bin/arm-none-symbianelf-size"
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}/obj" "${BUILD_DIR}/implibs" "${OUT_DIR}"
 
-# 2. Generate clean-room Symbian OS v9.x .dso import libraries
+# Generate Symbian OS import libraries from the ordinal table.
 echo "[symbian] Generating Symbian EKA2 OS import libraries (.dso)..."
 python3 "${REPO_ROOT}/symbian/gen_implibs.py" "${ELF2E32}" "${BUILD_DIR}/implibs"
 
-# 3. Assemble startup / TLS / setjmp / ARMv5 CLZ divmod + freestanding runtime
+# Compile the freestanding runtime and startup assembly.
 COMMON_FLAGS=(
     -std=c99
     -march=armv5t
@@ -181,7 +180,7 @@ echo "[symbian] Assembling EKA2 startup, TLS, setjmp & ARMv5 CLZ divmod..."
 "${CC}" "${COMMON_FLAGS[@]}" -O2 \
     -c "${REPO_ROOT}/symbian/symbian_rt.c" -o "${BUILD_DIR}/obj/symbian_rt.o"
 
-# 4. Generate Whole-Program Unity TU for cross-module IPA & inlining across all 64 C files
+# Combine the renderer sources for whole-program optimization.
 UNITY_C="${BUILD_DIR}/gerbera_symbian_unity.c"
 {
     echo '#include "GLES/gl.h"'
@@ -199,7 +198,7 @@ echo "[symbian] Compiling Gerbera Whole-Program Unity TU (-march=armv5t -mtune=a
 "${CC}" "${COMMON_FLAGS[@]}" -O2 -finline-functions -fgcse-after-reload -fpredictive-commoning -funswitch-loops -fwhole-program \
     -c "${UNITY_C}" -o "${BUILD_DIR}/obj/gerbera_unity.o"
 
-# 5. Link Symbian ELF shared object with Zero-WSD & --no-undefined enforcement
+# Reject writable static data and unresolved symbols at link time.
 echo "[symbian] Linking Symbian EABI ELF..."
 DSOS=(
     "${BUILD_DIR}/implibs/euser{000a0000}.dso"
@@ -231,7 +230,7 @@ DSOS=(
 
 "${SIZE}" "${BUILD_DIR}/libgles_cm.sym"
 
-# 6. Convert Symbian ELF -> E32Image (libgles_cm.dll + libgles_cm.dso)
+# Convert the ELF shared object to an E32Image and import library.
 echo "[symbian] Running elf2e32 -> libgles_cm.dll & libgles_cm.dso..."
 "${ELF2E32}" \
     --targettype=DLL \

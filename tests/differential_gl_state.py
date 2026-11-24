@@ -2,9 +2,7 @@
 import ctypes as C
 import struct
 
-from differential_gl_matrix import (CONTEXT_BYTES, GETTER_BYTES, GETTER_OFFSET,
-                                   SNAPSHOT_BYTES, STACK_BYTES, STACK_COUNT,
-                                   STACK_DEPTH, words)
+from differential_gl_matrix import MatrixFixture, SNAPSHOT_BYTES, words
 
 # Operation order is shared with diff_gl_state_step. Ranges are the exported
 # original functions, including each scalar wrapper's parameter validation.
@@ -227,42 +225,18 @@ def run(suite):
     lib.diff_gl_state_snapshot.restype = None
     lib.diff_gl_state_surface.argtypes = [C.c_void_p, C.c_int, C.c_int]
     lib.diff_gl_state_surface.restype = None
-    # Matrix run configures the common session functions; keep this module also
-    # usable independently by configuring them here.
-    lib.diff_gl_matrix_create.argtypes = [C.c_uint, C.c_void_p]
-    lib.diff_gl_matrix_create.restype = C.c_void_p
-    lib.diff_gl_matrix_destroy.argtypes = [C.c_void_p]
-    lib.diff_gl_matrix_snapshot.argtypes = [C.c_void_p, C.c_void_p]
-    oracle.reset()
-    source = oracle.alloc(64, words([0x3F800000 if i % 5 == 0 else 0 for i in range(16)]))
-    destination = oracle.alloc(80)
-    oracle.call(0x2D87C if arm else 0x4616D0, [destination, source])
-    identity = oracle.read(destination, 80)
-    defaults = oracle.read(0x350F4 if arm else 0x471A74, GETTER_BYTES)
+    fixture = MatrixFixture(suite)
     for case, sequence in enumerate(seeds(arm, suite.arm_reference)):
         oracle.reset()
         core = oracle.alloc(0x3000)
         oracle.write(core + (0x1CE0 if arm else 0x1CE8), words([96, 64]))
-        context = bytearray(CONTEXT_BYTES)
-        struct.pack_into("<I", context, 0, core)
-        struct.pack_into("<ii", context, 108, 96, 64)
-        context[GETTER_OFFSET:GETTER_OFFSET + GETTER_BYTES] = defaults
-        stacks = []
-        for i in range(STACK_COUNT):
-            stack = oracle.alloc(STACK_BYTES, bytes((0, STACK_DEPTH, 0, 0xA5)) + identity + bytes([0xA5]) * (80 * (STACK_DEPTH - 1)))
-            stacks.append(stack)
-            struct.pack_into("<I", context, 24 + 4 * i, stack)
-            oracle.watch(stack, STACK_BYTES, f"state.stack[{i}]")
-        ctx, arguments, output = oracle.alloc(CONTEXT_BYTES, bytes(context)), oracle.alloc(32), oracle.alloc(64)
-        oracle.watch(ctx, CONTEXT_BYTES, "state.context")
-        oracle.watch(core, 0x3000, "state.core")
+        ctx, stacks = fixture.create_context(core, 0xA5, width=96, height=64)
+        arguments, output = oracle.alloc(32), oracle.alloc(64)
         oracle.watch(output, 64, "state.output-with-canaries")
-        hook = oracle.add_hook(0xB59C if arm else 0x4085B0, lambda m: m.return_from_call(ctx))
+        hook = oracle.add_hook(fixture.get_context, lambda m: m.return_from_call(ctx))
         surface_hooks = [oracle.add_hook(address, lambda m: m.return_from_call(0))
                          for address in ((0xB074, 0xAEF8) if arm else (0x406890, 0x4069B0))]
-        session = lib.diff_gl_matrix_create(0xA5, C.create_string_buffer(identity, 80))
-        if not session:
-            raise ValueError("state fixture allocation failed")
+        session = fixture.create_session(0xA5)
         lib.diff_gl_state_surface(session, 96, 64)
         native_snapshot, native_core = C.create_string_buffer(SNAPSHOT_BYTES), C.create_string_buffer(0x3000)
         try:
@@ -294,14 +268,7 @@ def run(suite):
                 if operation == 48:
                     result &= 0xFF  # GLboolean return: x86 defines AL, not upper EAX.
                 native_result = lib.diff_gl_state_step(session, operation, C.create_string_buffer(data, 32), C.byref(native_output, 16))
-                raw = oracle.read(ctx, CONTEXT_BYTES)
-                pointer_changes = int(struct.unpack_from("<I", raw, 0)[0] != core)
-                for i, stack in enumerate(stacks):
-                    pointer_changes |= int(struct.unpack_from("<I", raw, 24 + 4 * i)[0] != stack) << (i + 1)
-                pointer_changes |= int(any(struct.unpack_from("<I", raw, o)[0] for o in (8, 12, 16, 20, 76, 80, 84, 116, 120))) << 14
-                original = words([pointer_changes]) + oracle.readback(ctx + 4, 4)
-                original += oracle.readback(ctx + 88, 28) + oracle.readback(ctx + 124, 944)
-                original += b"".join(oracle.readback(p, STACK_BYTES) for p in stacks)
+                original = fixture.snapshot(ctx, core, stacks)
                 lib.diff_gl_matrix_snapshot(session, native_snapshot)
                 lib.diff_gl_state_snapshot(session, native_core)
                 core_parts = []

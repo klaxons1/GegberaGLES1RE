@@ -20,7 +20,7 @@ int HC_max(int a, int b)
 unsigned int HC_getFreeHardRegs(void *beInfo, int ndx)
 {
     HCBackendInfo_s *info = (HCBackendInfo_s *)beInfo;
-    return (unsigned int)info->freeHardRegMasks[ndx];
+    return info->freeRegMasks[ndx];
 }
 
 void *DUChains_getDUChain(hcChains_s *chains, int which)
@@ -63,15 +63,13 @@ void *HC_getUDChain(void *beInfo, int instrNdx, int use)
 {
     HCBackendInfo_s *info = (HCBackendInfo_s *)beInfo;
     HCInstr_s *chainByInstr;
-    void **perUse;
-    void *chain;
+    UDChainStub_s *chain;
     int nUses;
     int uses[4];
     int i;
 
-    chainByInstr = info->lst;
-    perUse = info->chains.udChains;
-    chain = perUse[instrNdx];
+    chainByInstr = info->instructions;
+    chain = info->chains.udChains[instrNdx];
     if (chainByInstr == NULL)
         HC_assertFail("lst", "hcCompiler.c", 4777, NULL);
     if (chain != NULL)
@@ -79,7 +77,7 @@ void *HC_getUDChain(void *beInfo, int instrNdx, int use)
         nUses = HC_getUses(&chainByInstr[instrNdx], uses);
         for (i = 0; i < nUses; ++i)
         {
-            void *link = ((void **)chain)[i];
+            DUChain_s *link = chain->chains[i];
             if (link != NULL && use == uses[i])
                 return link;
         }

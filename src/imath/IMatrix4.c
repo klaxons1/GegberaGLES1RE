@@ -1,9 +1,6 @@
 /* IMatrix4.c - 4x4 shared-exponent matrices and transform helpers.
  *
- * Clean port of the decompiled IMatrix4.c from the Gerbera GLES1 driver
- * (plus IFVector4 pieces the original kept in this file).  _ITCTransform
- * functions are deferred to the core layer port (they call
- * grTexCoordDivByQ).
+ * Texture-coordinate transforms are implemented in grTransform.c.
  */
 #include "imath/imApi.h"
 #include "hg/hgInt32.h"
@@ -339,7 +336,7 @@ int IMatrix4x4_getScalar(_IMatrix4x4 *pS, int c, int r)
         imAssert("c>=0 && c<=3", "imApi.inl", 0xA23u);
     if (!(r >= 0 && r <= 3))
         imAssert("r>=0 && r<=3", "imApi.inl", 0xA24u);
-    return IFVector4_getf((_IFVector4 *)&pS->v[c], r);
+    return IFVector4_getf(&pS->v[c], r);
 }
 
 /* --- products ---------------------------------------------------------- */
@@ -355,7 +352,7 @@ void IMatrix4x4_mul(_IMatrix4x4 *pD, _IMatrix4x4 *pA, _IMatrix4x4 *pB)
     if (pD == pA)
         dst = &tmp;
     for (i = 3; i >= 0; --i)
-        rows_by_column((_IFVector4 *)&dst->v[i], pA, (_IFVector4 *)&pB->v[i]);
+        rows_by_column(&dst->v[i], pA, &pB->v[i]);
     IMatrix4x4_copy(pD, dst);
 }
 
@@ -364,10 +361,10 @@ void IMatrix4x4_mulfv4(_IFVector4 *pD, _IMatrix4x4 *pM, _IFVector4 *pA)
     int x, y, z, w;
     if (!(pD != NULL && pM != NULL && pA != NULL))
         imAssert("pD && pM && pA", "IMatrix4.c", 0x822u);
-    x = IFVector4_dp4l((_IFVector4 *)&pM->v[0], pA);
-    y = IFVector4_dp4l((_IFVector4 *)&pM->v[1], pA);
-    z = IFVector4_dp4l((_IFVector4 *)&pM->v[2], pA);
-    w = IFVector4_dp4l((_IFVector4 *)&pM->v[3], pA);
+    x = IFVector4_dp4l(&pM->v[0], pA);
+    y = IFVector4_dp4l(&pM->v[1], pA);
+    z = IFVector4_dp4l(&pM->v[2], pA);
+    w = IFVector4_dp4l(&pM->v[3], pA);
     pD->e = IScalar_getExponent(x) | (IScalar_getExponent(y) << 8) |
             (IScalar_getExponent(z) << 16) | (IScalar_getExponent(w) << 24);
     pD->m[0] = IScalar_getMantissa(x);
@@ -409,10 +406,10 @@ void IMatrix4x4_frustum(_IMatrix4x4 *pD, _IMatrix4x4 *pM, int *parms)
     }
     if (pD == pM)
         dst = &tmp;
-    rows_by_scalar((_IFVector4 *)&dst->v[0], (_IFVector4 *)&pM->v[0], IScalar_mul(twoFar, rcp[0]));
-    rows_by_scalar((_IFVector4 *)&dst->v[1], (_IFVector4 *)&pM->v[1], IScalar_mul(twoFar, rcp[1]));
-    rows_by_column((_IFVector4 *)&dst->v[2], pM, &last);
-    rows_by_scalar((_IFVector4 *)&dst->v[3], (_IFVector4 *)&pM->v[2], IScalar_mul(v, rcp[2]));
+    rows_by_scalar(&dst->v[0], &pM->v[0], IScalar_mul(twoFar, rcp[0]));
+    rows_by_scalar(&dst->v[1], &pM->v[1], IScalar_mul(twoFar, rcp[1]));
+    rows_by_column(&dst->v[2], pM, &last);
+    rows_by_scalar(&dst->v[3], &pM->v[2], IScalar_mul(v, rcp[2]));
     IMatrix4x4_copy(pD, dst);
 }
 
@@ -445,8 +442,8 @@ void IMatrix4x4_ortho(_IMatrix4x4 *pD, _IMatrix4x4 *pM, int *parms)
     if (pD == pM)
         dst = &tmp;
     for (i = 2; i >= 0; --i)
-        rows_by_scalar((_IFVector4 *)&dst->v[i], (_IFVector4 *)&pM->v[i], IScalar_add(rcp[i], rcp[i]));
-    rows_by_column((_IFVector4 *)&dst->v[3], pM, &last);
+        rows_by_scalar(&dst->v[i], &pM->v[i], IScalar_add(rcp[i], rcp[i]));
+    rows_by_column(&dst->v[3], pM, &last);
     IMatrix4x4_copy(pD, dst);
 }
 
@@ -468,8 +465,8 @@ void IMatrix4x4_scale(_IMatrix4x4 *pD, _IMatrix4x4 *pM, int *parms)
     if (pD == pM)
         dst = &tmp;
     for (i = 2; i >= 0; --i)
-        rows_by_scalar((_IFVector4 *)&dst->v[i], (_IFVector4 *)&pM->v[i], parms[i]);
-    copy_column((_IFVector4 *)&dst->v[3], (_IFVector4 *)&pM->v[3]);
+        rows_by_scalar(&dst->v[i], &pM->v[i], parms[i]);
+    copy_column(&dst->v[3], &pM->v[3]);
     IMatrix4x4_copy(pD, dst);
 }
 
@@ -486,8 +483,8 @@ void IMatrix4x4_translate(_IMatrix4x4 *pD, _IMatrix4x4 *pM, int *parms)
         dst = &tmp;
     IFVector4_setfv(&last, parms, 3);
     for (i = 2; i >= 0; --i)
-        copy_column((_IFVector4 *)&dst->v[i], (_IFVector4 *)&pM->v[i]);
-    rows_by_column((_IFVector4 *)&dst->v[3], pM, &last);
+        copy_column(&dst->v[i], &pM->v[i]);
+    rows_by_column(&dst->v[3], pM, &last);
     IMatrix4x4_copy(pD, dst);
 }
 
@@ -519,7 +516,7 @@ void IMatrix4x4_rotate(_IMatrix4x4 *pD, _IMatrix4x4 *pM, int angle, _IFVector3 *
     oneMinusCosUS = 0x20000000 - cosUS;
     IFVector3_tov3(&axisv, axisf);
     XNormal3_normalize(axis, axisv.m);
-    cxs = hgAsr64_0_31(hgSet64x(cosUS), 11);        /* cos << 21: scale 2^51 */
+    cxs = hgAsr64_0_31(hgSet64x(cosUS), 11);        /* 50 fractional bits */
 
     /* The homogeneous component stays zero; the other components follow. */
     for (i = 0; i < 3; ++i)
@@ -538,8 +535,8 @@ void IMatrix4x4_rotate(_IMatrix4x4 *pD, _IMatrix4x4 *pM, int angle, _IFVector3 *
         k = kk[i];
         j = jj[i];
         m = i;
-        tmpk = hgLsl64h_0_31(hgMul64(axis[k], oneMinusCosUS), 11);  /* a_k * t (2.30) */
-        p = hgMul64((int)tmpk, axis[j]);                            /* scale 2^51 */
+        tmpk = hgLsl64h_0_31(hgMul64(axis[k], oneMinusCosUS), 11);  /* 29 fractional bits */
+        p = hgMul64((int)tmpk, axis[j]);                            /* 50 fractional bits */
         q = hgMul64(axis[m], sinUS);
         setScalar(&cols[k], j, I64_tof(hgAdd64(p, q)));
         setScalar(&cols[j], k, I64_tof(hgSub64(p, q)));
@@ -551,8 +548,8 @@ void IMatrix4x4_rotate(_IMatrix4x4 *pD, _IMatrix4x4 *pM, int angle, _IFVector3 *
     if (pD == pM)
         dst = &tmp;
     for (i = 2; i >= 0; --i)
-        rows_by_column((_IFVector4 *)&dst->v[i], pM, &cols[i]);
-    copy_column((_IFVector4 *)&dst->v[3], (_IFVector4 *)&pM->v[3]);
+        rows_by_column(&dst->v[i], pM, &cols[i]);
+    copy_column(&dst->v[3], &pM->v[3]);
     IMatrix4x4_copy(pD, dst);
 }
 
@@ -623,14 +620,14 @@ void IMatrix4x4_inverse(_IMatrix4x4 *pD, _IMatrix4x4 *pS, int bScale)
         imAssert("pD && pS", "IMatrix4.c", 0x97Au);
     if (pD == pS)
         imAssert("pD != pS", "IMatrix4.c", 0x97Bu);
-    d[25] = getScalar((_IFVector4 *)&pS->v[0], 0);
-    d[24] = getScalar((_IFVector4 *)&pS->v[1], 0);
-    d[23] = getScalar((_IFVector4 *)&pS->v[2], 0);
-    d[22] = getScalar((_IFVector4 *)&pS->v[3], 0);
-    d[21] = getScalar((_IFVector4 *)&pS->v[0], 1);
-    d[20] = getScalar((_IFVector4 *)&pS->v[1], 1);
-    d[19] = getScalar((_IFVector4 *)&pS->v[2], 1);
-    d[18] = getScalar((_IFVector4 *)&pS->v[3], 1);
+    d[25] = getScalar(&pS->v[0], 0);
+    d[24] = getScalar(&pS->v[1], 0);
+    d[23] = getScalar(&pS->v[2], 0);
+    d[22] = getScalar(&pS->v[3], 0);
+    d[21] = getScalar(&pS->v[0], 1);
+    d[20] = getScalar(&pS->v[1], 1);
+    d[19] = getScalar(&pS->v[2], 1);
+    d[18] = getScalar(&pS->v[3], 1);
     d[17] = IMatrix4x4_det2h(pS, 0, 2, 1, 3);
     d[16] = IMatrix4x4_det2h(pS, 0, 2, 2, 3);
     d[15] = IMatrix4x4_det2h(pS, 0, 2, 3, 3);
@@ -650,22 +647,22 @@ void IMatrix4x4_inverse(_IMatrix4x4 *pD, _IMatrix4x4 *pS, int bScale)
     d[1]  = IMatrix4x4_det2h(pS, 1, 1, 3, 2);
     d[0]  = IMatrix4x4_det2h(pS, 2, 1, 3, 2);
 
-    setScalar((_IFVector4 *)&pD->v[0], 0, dp3h(d[20], IScalar_negate(d[19]), d[18], d[12], d[13], d[14]));
-    setScalar((_IFVector4 *)&pD->v[0], 1, IScalar_negate(dp3h(d[21], IScalar_negate(d[19]), d[18], d[12], d[15], d[16])));
-    setScalar((_IFVector4 *)&pD->v[0], 2, dp3h(d[21], IScalar_negate(d[20]), d[18], d[13], d[15], d[17]));
-    setScalar((_IFVector4 *)&pD->v[0], 3, IScalar_negate(dp3h(d[21], IScalar_negate(d[20]), d[19], d[14], d[16], d[17])));
-    setScalar((_IFVector4 *)&pD->v[1], 0, IScalar_negate(dp3h(d[24], IScalar_negate(d[23]), d[22], d[12], d[13], d[14])));
-    setScalar((_IFVector4 *)&pD->v[1], 1, dp3h(d[25], IScalar_negate(d[23]), d[22], d[12], d[15], d[16]));
-    setScalar((_IFVector4 *)&pD->v[1], 2, IScalar_negate(dp3h(d[25], IScalar_negate(d[24]), d[22], d[13], d[15], d[17])));
-    setScalar((_IFVector4 *)&pD->v[1], 3, dp3h(d[25], IScalar_negate(d[24]), d[23], d[14], d[16], d[17]));
-    setScalar((_IFVector4 *)&pD->v[2], 0, dp3h(d[24], IScalar_negate(d[23]), d[22], d[6], d[7], d[8]));
-    setScalar((_IFVector4 *)&pD->v[2], 1, IScalar_negate(dp3h(d[25], IScalar_negate(d[23]), d[22], d[6], d[11], d[9])));
-    setScalar((_IFVector4 *)&pD->v[2], 2, dp3h(d[25], IScalar_negate(d[24]), d[22], d[7], d[11], d[10]));
-    setScalar((_IFVector4 *)&pD->v[2], 3, IScalar_negate(dp3h(d[25], IScalar_negate(d[24]), d[23], d[8], d[9], d[10])));
-    setScalar((_IFVector4 *)&pD->v[3], 0, IScalar_negate(dp3h(d[24], IScalar_negate(d[23]), d[22], d[0], d[1], d[2])));
-    setScalar((_IFVector4 *)&pD->v[3], 1, dp3h(d[25], IScalar_negate(d[23]), d[22], d[0], d[3], d[4]));
-    setScalar((_IFVector4 *)&pD->v[3], 2, IScalar_negate(dp3h(d[25], IScalar_negate(d[24]), d[22], d[1], d[3], d[5])));
-    setScalar((_IFVector4 *)&pD->v[3], 3, dp3h(d[25], IScalar_negate(d[24]), d[23], d[2], d[4], d[5]));
+    setScalar(&pD->v[0], 0, dp3h(d[20], IScalar_negate(d[19]), d[18], d[12], d[13], d[14]));
+    setScalar(&pD->v[0], 1, IScalar_negate(dp3h(d[21], IScalar_negate(d[19]), d[18], d[12], d[15], d[16])));
+    setScalar(&pD->v[0], 2, dp3h(d[21], IScalar_negate(d[20]), d[18], d[13], d[15], d[17]));
+    setScalar(&pD->v[0], 3, IScalar_negate(dp3h(d[21], IScalar_negate(d[20]), d[19], d[14], d[16], d[17])));
+    setScalar(&pD->v[1], 0, IScalar_negate(dp3h(d[24], IScalar_negate(d[23]), d[22], d[12], d[13], d[14])));
+    setScalar(&pD->v[1], 1, dp3h(d[25], IScalar_negate(d[23]), d[22], d[12], d[15], d[16]));
+    setScalar(&pD->v[1], 2, IScalar_negate(dp3h(d[25], IScalar_negate(d[24]), d[22], d[13], d[15], d[17])));
+    setScalar(&pD->v[1], 3, dp3h(d[25], IScalar_negate(d[24]), d[23], d[14], d[16], d[17]));
+    setScalar(&pD->v[2], 0, dp3h(d[24], IScalar_negate(d[23]), d[22], d[6], d[7], d[8]));
+    setScalar(&pD->v[2], 1, IScalar_negate(dp3h(d[25], IScalar_negate(d[23]), d[22], d[6], d[11], d[9])));
+    setScalar(&pD->v[2], 2, dp3h(d[25], IScalar_negate(d[24]), d[22], d[7], d[11], d[10]));
+    setScalar(&pD->v[2], 3, IScalar_negate(dp3h(d[25], IScalar_negate(d[24]), d[23], d[8], d[9], d[10])));
+    setScalar(&pD->v[3], 0, IScalar_negate(dp3h(d[24], IScalar_negate(d[23]), d[22], d[0], d[1], d[2])));
+    setScalar(&pD->v[3], 1, dp3h(d[25], IScalar_negate(d[23]), d[22], d[0], d[3], d[4]));
+    setScalar(&pD->v[3], 2, IScalar_negate(dp3h(d[25], IScalar_negate(d[24]), d[22], d[1], d[3], d[5])));
+    setScalar(&pD->v[3], 3, dp3h(d[25], IScalar_negate(d[24]), d[23], d[2], d[4], d[5]));
 
     /* first row becomes a vector for the determinant check */
     e = (pD->v[0].e & 0xFFu) | ((pD->v[1].e & 0xFFu) << 8) |
@@ -681,14 +678,14 @@ void IMatrix4x4_inverse(_IMatrix4x4 *pD, _IMatrix4x4 *pS, int bScale)
         detv.m[1] = w[1];
         detv.m[2] = w[2];
         detv.m[3] = w[3];
-        det = IFVector4_dp4l((_IFVector4 *)&pS->v[0], &detv);
+        det = IFVector4_dp4l(&pS->v[0], &detv);
     }
     if (bScale != 0)
     {
         if (IScalar_testne(det) != 0)
             det = IScalar_rcp(det);
         for (i = 0; i < 4; ++i)
-            rows_by_scalar((_IFVector4 *)&pD->v[i], (_IFVector4 *)&pD->v[i], det);
+            rows_by_scalar(&pD->v[i], &pD->v[i], det);
     }
     else if (IScalar_testlt(det) != 0)
     {
@@ -724,7 +721,7 @@ int IMatrix4x4_inversetranspose(_XNormalTransform *pD, _IMatrix4x4 *matrix, int 
         j = k--;
     } while (k >= 0);
 
-    det = IFVector4_dp4l((_IFVector4 *)&matrix->v[0], &cof[0]);
+    det = IFVector4_dp4l(&matrix->v[0], &cof[0]);
     if (IScalar_testeq(det) != 0)
         return 0;
     if (bRescale != 0)
@@ -1269,7 +1266,7 @@ int IVertexTransform_zmulfv4(_IVertexTransform *pT, _IFVector4 *pS)
     }
     else
     {
-        t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[2], pS);
+        t = IFVector4_dp4l_fast(&pT->v[2], pS);
         z = IScalar_setAndNormalize(hgGet64l(t) - 125, hgGet64h(t));
     }
     if (IScalar_isValid(z) == 0)
@@ -1442,13 +1439,13 @@ void IVertexTransform_mulfv4(_IVector4 *pD, _IVertexTransform *pT, _IFVector4 *p
         unsigned int probe = 0;
         int c;
 
-        t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[0], pS);
+        t = IFVector4_dp4l_fast(&pT->v[0], pS);
         e[0] = hgGet64l(t);
         m[0] = hgGet64h(t);
-        t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[1], pS);
+        t = IFVector4_dp4l_fast(&pT->v[1], pS);
         e[1] = hgGet64l(t);
         m[1] = hgGet64h(t);
-        t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[2], pS);
+        t = IFVector4_dp4l_fast(&pT->v[2], pS);
         e[2] = hgGet64l(t);
         m[2] = hgGet64h(t);
         if ((pT->cl & 0xFF000000u) == 0x80000000u)
@@ -1460,7 +1457,7 @@ void IVertexTransform_mulfv4(_IVector4 *pD, _IVertexTransform *pT, _IFVector4 *p
         }
         else
         {
-            t = IFVector4_dp4l_fast((_IFVector4 *)&pT->v[3], pS);
+            t = IFVector4_dp4l_fast(&pT->v[3], pS);
             e[3] = hgGet64l(t);
             m[3] = hgGet64h(t);
         }

@@ -1,13 +1,12 @@
 /* hcDUChain.h - def-use and use-def chain records (hcDUChain.h/.c).
  *
- * Layouts verified from CodeView LF_STRUCTURE TI=0x19D7 / TI=0x19DB:
+ * 32-bit layouts from CodeView LF_STRUCTURE TI=0x19D7 / TI=0x19DB:
  *   DUChain_s:     { unsigned short length; unsigned short values[1]; }
  *   UDChainStub_s: { DUChain_s *chains[1]; }
  */
 #ifndef GERBERA_HC_DUCHAIN_H
 #define GERBERA_HC_DUCHAIN_H
 
-#include "gerbera/hc/hcBackendInfo.h"
 #include "gerbera/hc/hcMemory.h"
 
 #ifdef __cplusplus

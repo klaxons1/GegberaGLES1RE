@@ -3,9 +3,6 @@
  * Double-ended arena: allocations grow up from `bottom` (low pool) and down
  * from `top` (high pool). HCMemory_s is a tagged view selecting which pool a
  * client allocates from (bottomInterface / topInterface).
- *
- * Ported from generated/fragments/hc/hcMemory.h.fragments.c
- * (decompiled: docs/libGLES_CM.dll.c HCArena_* / HCMemory_* / HCRandom_*).
  */
 #ifndef GERBERA_HC_MEMORY_H
 #define GERBERA_HC_MEMORY_H

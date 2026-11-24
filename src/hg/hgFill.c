@@ -1,8 +1,8 @@
 /* hgFill.c - fast fill routines.
  *
- * Clean port of the decompiled hgFill.c from the Gerbera GLES1 driver.
- * hgFill32_inner is a Duff-style 8x unrolled word fill; hgFill8/16/16/32
- * align the pointer first and replicate the value into a 32 bit pattern.
+ * hgFill32_inner handles the remainder before an eight-word unrolled loop.
+ * hgFill8 and hgFill16 align the pointer and replicate the value into a
+ * 32-bit pattern; hgFill32 requires word alignment.
  */
 #include "hg/hgFill.h"
 #include "hg/hgDefs.h"
@@ -90,7 +90,7 @@ void hgFill16(HGuint16 *d, HGuint16 v, int N)
     HG_ASSERT_AT("hgFill.c", 189, !((HGuintptr)d & 1) && d != 0 && N >= 0);
     if (N > 0)
     {
-        d[N - 1] = v;   /* pre-fill the tail word so the unrolled loop is exact */
+        d[N - 1] = v;   /* cover an unpaired halfword before the word fill */
         if (((HGuintptr)d & 3) != 0)
         {
             *d++ = v;

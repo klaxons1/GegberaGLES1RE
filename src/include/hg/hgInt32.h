@@ -1,9 +1,6 @@
 /* hgInt32.h - 32/64 bit integer helpers (hgInt32.inl, hgInt64Native.inl).
  *
- * Ported from the Gerbera GLES1 driver decompilation.  Function names,
- * semantics and assert sites match the original; the 64-bit helpers use the
- * native 64-bit code path (original file hgInt64Native.inl) since every
- * supported build target has native 64-bit arithmetic today.
+ * The 64-bit helpers use C integer operations for the hgInt64Native.inl API.
  */
 #ifndef HG_INT32_H
 #define HG_INT32_H
@@ -14,7 +11,7 @@ HG_EXTERN_C_BEGIN
 
 /* --- 32 bit helpers ------------------------------------------------ */
 
-int          hgClz32(HGuint32 value);          /* count leading zeros, 32 -> 32 for 0 */
+int          hgClz32(HGuint32 value);          /* count leading zeros; returns 32 for zero */
 int          hgInRange32(int a, int lo, int hi);
 int          hgMin32(int a, int b);
 int          hgMax32(int a, int b);
@@ -31,7 +28,7 @@ int          hgIsPowerOfTwo32(HGuint32 x);
 int          hgDiff32(int a, int b);           /* abs(a - b)                   */
 int          hgRor32(int a, int sh);           /* rotate right, sh in [0,32]   */
 int          hgCopySign32(int d, int s);       /* s < 0 ? -d : d, requires d>=0 */
-int          hgBitMask32(int x, int i);        /* bits [0..i] of x as 0/1 mask */
+int          hgBitMask32(int x, int i);        /* bit i expanded to 0 or -1 */
 int          hgAdds32(int a, int b);           /* saturating signed add        */
 
 /* --- float bit conversions (hgInt32.inl) --------------------------- */
@@ -41,7 +38,7 @@ HGfloat      hgBitPatternToFloat(HGuint32 x);
 
 /* --- endianess ------------------------------------------------------ */
 
-HGbool       hgGetEndianess(void);             /* HG_TRUE for little endian    */
+HGbool       hgGetEndianess(void);             /* 1 for big endian, 0 for little endian */
 
 /* --- 64 bit helpers (hgInt64Native.inl) ----------------------------- */
 
@@ -94,9 +91,6 @@ int          hgClz64(HGint64 a);
 HGuint32     hgDiv32Internal(HGuint32 *cio, HGuint64 *aio, HGuint32 b, int n);
 HGuint64     hgDivu64_32(HGuint64 a, HGuint32 b);
 HGint64      hgDiv64_32(HGint64 a, int b);
-
-/* --- memory (hgInt32.inl tail; thin wrappers in hgMemory.c) --------- */
-/* declared in hgMemory.h */
 
 HG_EXTERN_C_END
 

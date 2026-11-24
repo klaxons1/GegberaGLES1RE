@@ -1,6 +1,6 @@
 /* hcBitSet.h - arena-allocated dense bitset (hcBitSet.h of the original).
  *
- * Layout verified from CodeView LF_STRUCTURE TI=0x1989 in docs/libGLES_CM.dll:
+ * 32-bit layout from CodeView LF_STRUCTURE TI=0x1989 in docs/libGLES_CM.dll:
  *   +0 int length
  *   +4 unsigned int data[1]   (ceil(length / 32) 32-bit words)
  */

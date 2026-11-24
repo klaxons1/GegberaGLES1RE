@@ -1,6 +1,32 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-24 (merged SOMETHINKWORKS 15a94c0, rebuilt Symbian + Win32)
+Last updated: 2026-11-24 (merged SOMETHINKWORKS 4b31ebc, rebuilt Symbian + Win32)
+
+## Merged SOMETHINKWORKS 4b31ebc ("saem persun patch") and rebuilt
+
+- Upstream change: a cleanup and refactor across 100 files, including
+  renamed texture-unit fields (`envColor` -> `texEnvColor`, ...), a Makefile
+  that builds `LIB_SRC` with wildcards and adds a `library-sources` target,
+  and new differential harness checks (block coverage, budgets,
+  primitives, cache).
+- The only conflict was the comment block in `symbian/build_symbian.sh`.
+  Kept our GLIBC_2.38 -> 2.2.5 verneed rewrite; upstream's version drops
+  it, and the Symbian GCC needs it on Debian 12.
+- Follow-ups: `demo/build_win32.sh` now gets its sources from
+  `make library-sources`, since the Makefile no longer lists them literally.
+  The JIT-only block in `tests/test_core.c` uses `texEnvColor`.
+- Host `make test`: hg 333, imath 407, geometry 61, core 51667,
+  opengl 538, egl 881, symbian surface 90, Symbian state 309,
+  EGL threads; all pass.
+- 32-bit x86 (native JIT, musl static, `-UNDEBUG`): all pass except the known
+  JIT stencil case, now test_opengl.c:1085.
+- `make differential`: 0 mismatches. ARM 56230 comparisons, x86 72953; the
+  default budget is enough again. Harness checks, `test_native_dispatch.py`
+  and `test_symbian_entry.py` pass.
+- Rebuilt `symbian/out/libgles_cm.dll` (232,512 bytes; text 229,636,
+  data/bss 0) and the SDK zip, plus Win32 `libGLES_CM.dll` (401,920
+  bytes, 190 exports, imports VirtualAlloc/VirtualFree), `ClassiCube.exe`
+  (1,466,880; ClassiCube upstream c34b157) and the zip (1,012,750).
 
 ## Merged SOMETHINKWORKS 15a94c0 ("patch by saem persun") and rebuilt
 

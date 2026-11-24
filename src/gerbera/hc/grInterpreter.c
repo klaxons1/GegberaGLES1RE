@@ -12,8 +12,8 @@
  *     HC instructions loop back without popping, control instructions pop
  *     then dispatch on the low 5 bits (case 9 ends the program)
  *   - else: HC instruction (low 6 bits = opcode, bit 6 = hasImm, then
- *     dst/src0/src1 bytes with register remapping); 16/32-bit immediates
- *     are big-endian
+ *     dst/src0/src1 bytes with register remapping); immediates are one byte
+ *     or four big-endian bytes. Jump targets are two big-endian bytes.
  */
 #include <string.h>
 #include "gerbera/hc/hcOpcode.h"
@@ -57,8 +57,8 @@ int grExecuteProgram(HCInstr_s *result, _grSignature *signature, int resultLengt
     {
         unsigned char opcode;
         int popCount;
-        int stackTop;      /* byteImm[23]: stackPtr[-1] before pop */
-        int stackSecond;   /* byteImm[22]: stackPtr[-2] before pop */
+        int stackTop;      /* stackPtr[-1] before pop */
+        int stackSecond;   /* stackPtr[-2] before pop */
 
         for (;;) /* inner loop: HC instructions loop back without popping */
         {
@@ -170,9 +170,8 @@ int grExecuteProgram(HCInstr_s *result, _grSignature *signature, int resultLengt
                 else
                     *dst++ = HC_genOp3Raw(op, dstReg, src0Reg, src1Reg);
             }
-            } /* end HC instruction */
-            /* inner loop: HC instructions fall back to LABEL_10 (no pop) */
-        } /* end inner loop */
+            }
+        }
 
         /* control instruction: pop operands, then dispatch */
         popCount = (opcode >> 5) & 3;

@@ -2,8 +2,7 @@
 """Execute DLL entry and native TRAP landing pads under bounded ARM emulation.
 
 Run with make symbian-entry-check; requires arm-none-eabi tools and Unicorn.
-The handler is selected from
-the linked EHABI descriptors, using the same return-address ranges as the OS.
+Select handlers from the linked EHABI descriptors using the OS return-address ranges.
 """
 import os
 from pathlib import Path

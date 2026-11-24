@@ -7,9 +7,13 @@ import argparse
 import ctypes
 import importlib
 import math
+import os
 from pathlib import Path
 import random
+import re
+import selectors
 import struct
+import subprocess
 import sys
 import time
 
@@ -18,6 +22,8 @@ import pefile
 import unicorn
 from unicorn import x86_const as x86
 from unicorn import arm_const as arm
+
+from differential_fault_guard import install as install_fault_guard
 
 
 class OracleError(RuntimeError):
@@ -71,10 +77,10 @@ class Original:
     STACK = 0x20000000
     STACK_SIZE = 65536
     RETURN = 0x30000000
-    MEMMOVE = RETURN + 16
-    MEMSET = RETURN + 32
     GENERATED_CODE = 0x31000000
     GENERATED_CODE_SIZE = 65536
+    # Variable-width x86 instructions keep Unicorn's exact instruction counter.
+    NATIVE_BUDGET_THRESHOLD = None
 
     def __init__(self, path, deadline, coverage=True, audit_memory=False):
         pe = pefile.PE(str(path))
@@ -83,6 +89,7 @@ class Original:
         self.base = pe.OPTIONAL_HEADER.ImageBase
         self.uc = unicorn.Uc(unicorn.UC_ARCH_X86, unicorn.UC_MODE_32)
         size = (pe.OPTIONAL_HEADER.SizeOfImage + 4095) & ~4095
+        self.code_end = self.base + size
         self.uc.mem_map(self.base, size, unicorn.UC_PROT_READ)
         self.uc.mem_write(self.base, pe.get_memory_mapped_image())
         self.initial = []
@@ -107,14 +114,6 @@ class Original:
         self.uc.mem_map(self.RETURN, 4096, unicorn.UC_PROT_READ | unicorn.UC_PROT_EXEC)
         self.uc.mem_map(self.GENERATED_CODE, self.GENERATED_CODE_SIZE,
                         unicorn.UC_PROT_READ | unicorn.UC_PROT_EXEC)
-        # Original IAT: euser ordinal 4 supplies Mem::Copy's memmove; memset is
-        # reached through Mem::Fill. These shims preserve cdecl return values.
-        self.uc.mem_write(self.MEMMOVE, b"\xc3")
-        self.uc.mem_write(self.MEMSET, b"\xc3")
-        self.uc.hook_add(unicorn.UC_HOOK_CODE, self._memmove,
-                         begin=self.MEMMOVE, end=self.MEMMOVE)
-        self.uc.hook_add(unicorn.UC_HOOK_CODE, self._memset,
-                         begin=self.MEMSET, end=self.MEMSET)
         self.add_hook(0x46E434, lambda machine: machine._compare_primitive())
         self.decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
         self.decoder.detail = True
@@ -129,11 +128,12 @@ class Original:
         self.memory_audit = {}
         self.audit_memory = audit_memory
         self.deadline = deadline
-        self.block_hook = self.uc.hook_add(unicorn.UC_HOOK_BLOCK, self._block) if coverage else None
+        self.block_hook = self.add_block_hook() if coverage else None
         self.uc.hook_add(unicorn.UC_HOOK_INTR, self._interrupt)
-        primitives = {0x4902F0: self.MEMMOVE, 0x490354: self.MEMSET}
         for address in self.imports:
-            self.uc.mem_write(address, struct.pack("<I", primitives.get(address, 0xDEAD0000)))
+            self.uc.mem_write(address, struct.pack("<I", 0xDEAD0000))
+        from differential_primitives_x86 import install_x86_primitives
+        install_x86_primitives(self)
         self.initial = [(address, self.read(address, len(data))) for address, data in self.initial]
         self.reset()
 
@@ -155,19 +155,21 @@ class Original:
         self.return_from_call(result)
 
     def _block(self, uc, address, size, _):
-        self.blocks.add(address)
         if self.previous_branch is not None:
             outcomes = self.indirect_edges if self.previous_indirect else self.edges
             outcomes.add((self.previous_branch, address))
         key = (address, size)
-        if key not in self.branch_cache:
+        branch = self.branch_cache.get(key)
+        if branch is None:
+            self.blocks.add(address)
             instructions = list(self.decoder.disasm(bytes(uc.mem_read(address, size)), address))
             last = instructions[-1] if instructions else None
             indirect = bool(last and last.mnemonic == "jmp"
                             and last.operands[0].type != capstone.x86.X86_OP_IMM)
-            self.branch_cache[key] = (last.address if last and
-                                      (self.conditional(last) or indirect) else None, indirect)
-        self.previous_branch, self.previous_indirect = self.branch_cache[key]
+            branch = (last.address if last and
+                      (self.conditional(last) or indirect) else None, indirect)
+            self.branch_cache[key] = branch
+        self.previous_branch, self.previous_indirect = branch
 
     def _memory(self, uc, access, address, size, value, _):
         for region in self.watched:
@@ -212,9 +214,10 @@ class Original:
     def readback(self, address, size):
         """Read bytes that the caller includes completely in a comparison."""
         for region in self.watched:
-            start = max(address, region["address"])
-            end = min(address + size, region["address"] + region["size"])
-            region["compared"].update(range(start - region["address"], end - region["address"]))
+            offset = address - region["address"]
+            if offset >= region["size"] or offset + size <= 0:
+                continue
+            region["compared"].update(range(max(0, offset), min(offset + size, region["size"])))
         return self.read(address, size)
 
     def finish_memory_audit(self, name):
@@ -256,31 +259,6 @@ class Original:
 
     def _interrupt(self, uc, number, _):
         raise OracleError(f"original attempted interrupt {number}")
-
-    def _check_writable(self, destination, length):
-        writable = [(self.HEAP, self.HEAP_SIZE), (self.STACK, self.STACK_SIZE)]
-        writable += [(start, len(data)) for start, data in self.initial]
-        if length > self.HEAP_SIZE or not any(
-                start <= destination and destination + length <= start + count
-                for start, count in writable):
-            raise OracleError("byte primitive destination is outside emulated writable memory")
-
-    def _memmove(self, uc, address, size, _):
-        destination, source, length = self.arguments(3)
-        self._check_writable(destination, length)
-        self.write(destination, self.read(source, length))
-        if self.audit_memory:
-            self._memory(uc, unicorn.UC_MEM_READ, source, length, 0, None)
-            self._memory(uc, unicorn.UC_MEM_WRITE, destination, length, 0, None)
-        uc.reg_write(x86.UC_X86_REG_EAX, destination)
-
-    def _memset(self, uc, address, size, _):
-        destination, value, length = self.arguments(3)
-        self._check_writable(destination, length)
-        self.write(destination, bytes([value & 255]) * length)
-        if self.audit_memory:
-            self._memory(uc, unicorn.UC_MEM_WRITE, destination, length, 0, None)
-        uc.reg_write(x86.UC_X86_REG_EAX, destination)
 
     def reset(self):
         self.finish_memory_audit("unchecked before reset")
@@ -324,6 +302,65 @@ class Original:
                                 lambda uc, pc, size, data: callback(self),
                                 begin=address, end=address)
 
+    def add_native_hook(self, kind, callback, state, begin=1, end=0, error_type=OracleError):
+        """Retain a C callback until remove_hook releases its Unicorn handle."""
+        library = unicorn.Uc.hook_add.__globals__["uclib"]
+        handle = ctypes.c_size_t()
+        status = library.uc_hook_add(
+            self.uc._uch, ctypes.byref(handle), kind,
+            ctypes.cast(callback, ctypes.c_void_p), ctypes.c_void_p(state),
+            ctypes.c_uint64(begin), ctypes.c_uint64(end))
+        if status:
+            raise error_type(f"could not install native emulator hook: {status}")
+        self.uc._callbacks[handle.value] = callback
+        return handle.value
+
+    def add_block_hook(self):
+        # Coverage describes the original image. Imported memory primitives and
+        # generated span programs run outside it; their outputs are still compared.
+        if getattr(self, "native_blocks", None) is not None:
+            return self.native_blocks.install_hook()
+        handle = self.uc.hook_add(unicorn.UC_HOOK_BLOCK, self._block,
+                                  begin=self.base, end=self.code_end - 1)
+        self.uc.ctl_remove_cache(self.base, self.code_end)
+        return handle
+
+    def enable_block_coverage(self, library):
+        from differential_block_coverage import NativeBlockCoverage
+        native = NativeBlockCoverage(self, library, error_type=OracleError)
+        self.remove_hook(self.block_hook)
+        self.block_hook = None
+        self.native_blocks = native
+        try:
+            self.block_hook = self.add_block_hook()
+        except BaseException:
+            native.close()
+            self.native_blocks = None
+            raise
+
+    def reset_block_trace(self):
+        self.previous_branch, self.previous_indirect = None, False
+        if getattr(self, "native_blocks", None) is not None:
+            self.native_blocks.reset_trace()
+
+    def check_block_trace(self):
+        if getattr(self, "native_blocks", None) is not None:
+            self.native_blocks.check()
+
+    def emulate(self, address, instruction_budget):
+        budget = getattr(self, "native_budget", None)
+        use_blocks = (self.NATIVE_BUDGET_THRESHOLD is not None and
+                      instruction_budget >= self.NATIVE_BUDGET_THRESHOLD)
+        if (budget is None and use_blocks
+                and getattr(self, "budget_library", None) is not None):
+            from differential_budget import NativeInstructionBudget
+            budget = self.native_budget = NativeInstructionBudget(
+                self, self.budget_library, error_type=OracleError)
+        if budget is not None and use_blocks:
+            budget.run(address, self.RETURN, instruction_budget)
+        else:
+            self.uc.emu_start(address, self.RETURN, count=instruction_budget)
+
     def remove_hook(self, handle):
         self.uc.hook_del(handle)
 
@@ -359,21 +396,21 @@ class Original:
                                 x86.UC_X86_REG_EDI, x86.UC_X86_REG_EBP):
                 raise ValueError("only callee-saved x86 registers may be seeded")
             self.uc.reg_write(register, value & 0xFFFFFFFF)
-        self.previous_branch = None
-        self.previous_indirect = False
+        self.reset_block_trace()
         self.direct_calls[address] = self.direct_calls.get(address, 0) + 1
         suspended = self.block_hook is not None and not trace_blocks
         if suspended:
             self.remove_hook(self.block_hook)
             self.block_hook = None
         try:
-            self.uc.emu_start(address, self.RETURN, count=instruction_budget)
+            self.emulate(address, instruction_budget)
+            self.check_block_trace()
         except unicorn.UcError as error:
             pc = self.uc.reg_read(x86.UC_X86_REG_EIP)
             raise OracleError(f"original at 0x{pc:x}, entry 0x{address:x}: {error}") from error
         finally:
             if suspended:
-                self.block_hook = self.uc.hook_add(unicorn.UC_HOOK_BLOCK, self._block)
+                self.block_hook = self.add_block_hook()
                 self.previous_branch = None
         if self.uc.reg_read(x86.UC_X86_REG_EIP) != self.RETURN:
             pc = self.uc.reg_read(x86.UC_X86_REG_EIP)
@@ -387,6 +424,7 @@ class Original:
 class OriginalARM(Original):
     """The supplied uncompressed E32 ARM/Thumb image, with AAPCS calls."""
     arch = "arm"
+    NATIVE_BUDGET_THRESHOLD = 1000000
 
     def add_hook(self, address, callback):
         return super().add_hook(address & ~1, callback)
@@ -413,17 +451,13 @@ class OriginalARM(Original):
                 base, size, ctypes.cast(self.unicorn_library.uc_reg_read, ctypes.c_void_p), arm.UC_ARM_REG_CPSR)
             if not state:
                 raise OracleError("could not allocate ARM predicate coverage")
-            handle = ctypes.c_size_t()
-            callback = library.differential_arm_coverage_callback
-            status = self.unicorn_library.uc_hook_add(
-                self.uc._uch, ctypes.byref(handle), unicorn.UC_HOOK_CODE,
-                ctypes.cast(callback, ctypes.c_void_p), ctypes.c_void_p(state),
-                ctypes.c_uint64(base), ctypes.c_uint64(base + size - 1))
-            if status:
+            try:
+                handle = self.add_native_hook(unicorn.UC_HOOK_CODE,
+                    library.differential_arm_coverage_callback, state, base, base + size - 1)
+            except BaseException:
                 library.differential_arm_coverage_destroy(state)
-                raise OracleError(f"could not install native ARM coverage: {status}")
-            self.uc._callbacks[handle.value] = callback
-            return state, handle.value
+                raise
+            return state, handle
 
         # Confirm this Unicorn version hooks skipped predicates too. The probe
         # has no target DLL dependencies: CMP r0,#0; MOVEQ/MOVNE r1; BX lr.
@@ -449,17 +483,12 @@ class OriginalARM(Original):
 
     def set_predicate_range(self, begin, end):
         """Keep measured entry predicates without instrumenting unrelated callees."""
-        handle = ctypes.c_size_t()
-        callback = self.predicate_library.differential_arm_coverage_callback
-        status = self.unicorn_library.uc_hook_add(
-            self.uc._uch, ctypes.byref(handle), unicorn.UC_HOOK_CODE,
-            ctypes.cast(callback, ctypes.c_void_p), ctypes.c_void_p(self.predicate_state),
-            ctypes.c_uint64(begin), ctypes.c_uint64(end - 1))
-        if status:
-            raise OracleError(f"could not scope native ARM coverage: {status}")
-        self.uc._callbacks[handle.value] = callback
+        handle = self.add_native_hook(unicorn.UC_HOOK_CODE,
+            self.predicate_library.differential_arm_coverage_callback,
+            self.predicate_state, begin, end - 1)
         self.remove_hook(self.predicate_hook)
-        self.predicate_hook = handle.value
+        self.predicate_hook = handle
+        self.uc.ctl_remove_cache(begin, end)
 
     def register_predicate(self, instruction):
         if len(instruction.bytes) == 4:
@@ -477,6 +506,7 @@ class OriginalARM(Original):
         word = lambda offset: struct.unpack_from("<I", data, offset)[0]
         size, self.base, offset = word(0x30), word(0x4C), word(0x64)
         self.code_size = size
+        self.code_end = self.base + size
         if word(0x1C) or word(0x34) or word(0x44) or self.base != 0x8000 or offset + size > len(data):
             raise OracleError("expected uncompressed ARM code at 0x8000 without data/BSS")
         self.uc = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_ARM)
@@ -492,20 +522,21 @@ class OriginalARM(Original):
         self.decoder = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM)
         self.thumb_decoder = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB)
         self.decoder.detail = self.thumb_decoder.detail = True
+        self.block_cpsr = ctypes.c_uint32()
+        self.block_cpsr_pointer = ctypes.byref(self.block_cpsr)
+        self.block_read_register = unicorn.Uc.hook_add.__globals__["uclib"].uc_reg_read
         self.blocks, self.edges, self.indirect_edges = set(), set(), set()
         self.direct_calls, self.branch_cache = {}, {}
         self.previous_branch, self.previous_indirect = None, False
         self.watched, self.memory_audit = [], {}
         self.audit_memory, self.deadline = audit_memory, deadline
-        self.block_hook = self.uc.hook_add(unicorn.UC_HOOK_BLOCK, self._block) if coverage else None
+        self.block_hook = self.add_block_hook() if coverage else None
         self.uc.hook_add(unicorn.UC_HOOK_INTR, self._interrupt)
-        # Hook the actual import stubs; E32 stores ordinals in their literals.
-        # EABI memset uses (destination, length, value), unlike C memset.
-        self.add_hook(0x34CBC, lambda machine: machine._copy_primitive())
+        # E32 memory imports execute bounded guest code, including EABI
+        # memset's (destination, length, value) argument order.
+        from differential_primitives import install_arm_primitives
+        install_arm_primitives(self)
         self.add_hook(0x34CB4, lambda machine: machine._compare_primitive())
-        self.add_hook(0x34E44, lambda machine: machine._copy_primitive())
-        self.add_hook(0x34E4C, lambda machine: machine._fill_primitive(False))
-        self.add_hook(0x34CAC, lambda machine: machine._fill_primitive(True))
         self.add_hook(0x34E3C, lambda machine: machine._signed_divmod())
         self.reset()
 
@@ -520,23 +551,6 @@ class OriginalARM(Original):
         self.uc.reg_write(arm.UC_ARM_REG_R1, remainder & 0xFFFFFFFF)
         self.return_from_call(quotient)
 
-    def _copy_primitive(self):
-        destination, source, length = self.arguments(3)
-        self._check_writable(destination, length)
-        self.write(destination, self.read(source, length))
-        if self.audit_memory:
-            self._memory(self.uc, unicorn.UC_MEM_READ, source, length, 0, None)
-            self._memory(self.uc, unicorn.UC_MEM_WRITE, destination, length, 0, None)
-        self.return_from_call(destination)
-
-    def _fill_primitive(self, clear):
-        destination, length, value = self.arguments(3)
-        self._check_writable(destination, length)
-        self.write(destination, bytes([0 if clear else value & 255]) * length)
-        if self.audit_memory:
-            self._memory(self.uc, unicorn.UC_MEM_WRITE, destination, length, 0, None)
-        self.return_from_call(destination)
-
     @staticmethod
     def conditional(instruction):
         return (instruction.id in (capstone.arm.ARM_INS_B, capstone.arm.ARM_INS_BX,
@@ -544,20 +558,28 @@ class OriginalARM(Original):
                 and instruction.cc not in (capstone.arm.ARM_CC_AL, capstone.arm.ARM_CC_INVALID))
 
     def _block(self, uc, address, size, _):
-        self.blocks.add(address)
         if self.previous_branch is not None:
             outcomes = self.indirect_edges if self.previous_indirect else self.edges
             outcomes.add((self.previous_branch, address))
-        thumb = bool(uc.reg_read(arm.UC_ARM_REG_CPSR) & 0x20)
+        # CPSR has a fixed 32-bit representation; reuse its native read buffer
+        # instead of selecting and allocating a register wrapper for each block.
+        status = self.block_read_register(uc._uch, arm.UC_ARM_REG_CPSR,
+                                          self.block_cpsr_pointer)
+        if status:
+            raise unicorn.UcError(status, arm.UC_ARM_REG_CPSR)
+        thumb = bool(self.block_cpsr.value & 0x20)
         key = (address, size, thumb)
-        if key not in self.branch_cache:
+        branch = self.branch_cache.get(key)
+        if branch is None:
+            self.blocks.add(address)
             decoder = self.thumb_decoder if thumb else self.decoder
             instructions = list(decoder.disasm(self.read(address, size), address))
             last = instructions[-1] if instructions else None
             conditional = bool(last and self.conditional(last))
             indirect = bool(last and last.id == capstone.arm.ARM_INS_BX and not conditional)
-            self.branch_cache[key] = (last.address if conditional or indirect else None, indirect)
-        self.previous_branch, self.previous_indirect = self.branch_cache[key]
+            branch = (last.address if conditional or indirect else None, indirect)
+            self.branch_cache[key] = branch
+        self.previous_branch, self.previous_indirect = branch
 
     def arguments(self, count):
         registers = (arm.UC_ARM_REG_R0, arm.UC_ARM_REG_R1, arm.UC_ARM_REG_R2, arm.UC_ARM_REG_R3)
@@ -593,7 +615,7 @@ class OriginalARM(Original):
             if not arm.UC_ARM_REG_R4 <= register <= arm.UC_ARM_REG_R11:
                 raise ValueError("only callee-saved ARM registers may be seeded")
             self.uc.reg_write(register, value & 0xFFFFFFFF)
-        self.previous_branch, self.previous_indirect = None, False
+        self.reset_block_trace()
         self.direct_calls[address & ~1] = self.direct_calls.get(address & ~1, 0) + 1
         scoped = predicate_range is not None and getattr(self, "predicate_state", None)
         if scoped:
@@ -603,7 +625,8 @@ class OriginalARM(Original):
             self.remove_hook(self.block_hook)
             self.block_hook = None
         try:
-            self.uc.emu_start(address, self.RETURN, count=instruction_budget)
+            self.emulate(address, instruction_budget)
+            self.check_block_trace()
         except unicorn.UcError as error:
             pc = self.uc.reg_read(arm.UC_ARM_REG_PC)
             raise OracleError(f"original ARM at 0x{pc:x}, entry 0x{address:x}: {error}") from error
@@ -611,10 +634,11 @@ class OriginalARM(Original):
             if scoped:
                 self.set_predicate_range(self.base, self.base + self.code_size)
             if suspended:
-                self.block_hook = self.uc.hook_add(unicorn.UC_HOOK_BLOCK, self._block)
+                self.block_hook = self.add_block_hook()
                 self.previous_branch = None
         if self.uc.reg_read(arm.UC_ARM_REG_PC) != self.RETURN:
-            raise OracleError(f"ARM instruction budget exhausted at entry 0x{address:x}")
+            pc = self.uc.reg_read(arm.UC_ARM_REG_PC)
+            raise OracleError(f"ARM instruction budget exhausted at 0x{pc:x}, entry 0x{address:x}")
         value = self.uc.reg_read(arm.UC_ARM_REG_R0)
         if return64:
             value |= self.uc.reg_read(arm.UC_ARM_REG_R1) << 32
@@ -624,14 +648,7 @@ class OriginalARM(Original):
 class Suite:
     def __init__(self, args):
         self.started = time.monotonic()
-        library = ctypes.CDLL(str(Path(args.library).resolve()))
-        library.differential_install_signal_handlers.argtypes = []
-        library.differential_install_signal_handlers.restype = ctypes.c_int
-        if library.differential_install_signal_handlers() != 0:
-            raise OracleError("could not install native fault handlers; refusing to run")
-        library.differential_set_timeout.argtypes = [ctypes.c_uint]
-        library.differential_set_timeout.restype = None
-        library.differential_set_timeout(math.ceil(args.seconds))
+        library = install_fault_guard(math.ceil(args.seconds), path=args.library, error_type=OracleError)
         self.lib = NativeLibrary(library)
         reference = self.lib.differential_arm_reference
         reference.argtypes = []
@@ -642,6 +659,9 @@ class Suite:
         oracle_type = OriginalARM if self.arch == "arm" else Original
         self.oracle = oracle_type(args.original_arm if self.arch == "arm" else args.original,
                                   self.started + args.seconds, not args.no_coverage, args.audit_memory)
+        self.oracle.budget_library = library
+        if not args.no_coverage:
+            self.oracle.enable_block_coverage(library)
         if self.arch == "arm" and not args.no_coverage:
             self.oracle.enable_predicate_coverage(library)
         if args.audit_memory:
@@ -681,7 +701,9 @@ class Suite:
         self.targets[name] = (start, end, edges)
 
     def coverage_progress(self):
-        result = len(self.oracle.edges) + len(self.oracle.indirect_edges)
+        native = getattr(self.oracle, "native_blocks", None)
+        result = (native.edge_count() if native is not None else
+                  len(self.oracle.edges) + len(self.oracle.indirect_edges))
         if self.arch == "arm" and self.coverage:
             result += self.oracle.predicate_library.differential_arm_coverage_count(self.oracle.predicate_state)
         return result
@@ -721,6 +743,8 @@ class Suite:
         self.unverified_code.discard((name, repr(inputs)))
 
     def report(self):
+        if getattr(self.oracle, "native_blocks", None) is not None:
+            self.oracle.native_blocks.materialize()
         if self.arch == "arm" and self.coverage:
             # Native predicates also measure Bcc outcomes when the expensive
             # Python block tracer is suspended during compiler execution.
@@ -792,15 +816,82 @@ class Suite:
         return ",".join(f"+0x{start:x}..+0x{end:x}" for start, end in runs)
 
 
+def run_parallel(architectures, arguments):
+    """Keep each native fault handler, alarm, and oracle in its own process."""
+    workers = []
+    result = 0
+    profile = os.environ.get("LLVM_PROFILE_FILE")
+    separate_profiles = profile and not re.search(r"%(?:p|[0-9]*m)", profile)
+    print(f"Running {', '.join(architectures)} differential workers in parallel.", flush=True)
+    try:
+        with selectors.DefaultSelector() as selector:
+            for architecture in architectures:
+                environment = None
+                if separate_profiles:
+                    path = Path(profile)
+                    path = path.with_name(f"{path.stem}-{architecture}{path.suffix}")
+                    environment = os.environ.copy()
+                    environment["LLVM_PROFILE_FILE"] = str(path)
+                    print(f"LLVM profile ({architecture}): {path}", flush=True)
+                command = [sys.executable, "-u", str(Path(__file__).resolve()), *arguments,
+                           "--arch", architecture, "--jobs", "1"]
+                process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, env=environment)
+                worker = (architecture, process, bytearray())
+                workers.append(worker)
+                selector.register(process.stdout, selectors.EVENT_READ, worker)
+            while selector.get_map():
+                for key, _ in selector.select(timeout=1):
+                    architecture, process, output = key.data
+                    chunk = os.read(key.fd, 65536)
+                    if chunk:
+                        output.extend(chunk)
+                        continue
+                    selector.unregister(key.fileobj)
+                    process.stdout.close()
+                    status = process.wait()
+                    if status < 0:
+                        status = 128 - status
+                    print(f"\n--- {architecture} differential ---", flush=True)
+                    sys.stdout.write(output.decode(errors="replace"))
+                    if output and not output.endswith(b"\n"):
+                        print()
+                    if status:
+                        print(f"{architecture} worker exited with status {status}.", flush=True)
+                    sys.stdout.flush()
+                    result = max(result, status)
+    except OSError as error:
+        print(f"Cannot run differential workers: {error}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("Differential workers interrupted.", file=sys.stderr)
+        return 130
+    finally:
+        for _, process, _ in workers:
+            if process.poll() is None:
+                process.terminate()
+        for _, process, _ in workers:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            if process.stdout is not None:
+                process.stdout.close()
+    return result
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--original", type=Path, default=root / "docs/libGLES_CM.dll")
     parser.add_argument("--original-arm", type=Path, default=root / "docs/libgles_cm.dll.epoc")
     parser.add_argument("--arch", choices=("arm", "x86", "both"), default="both",
-                        help="original target; both runs ARM first (default)")
+                        help="original target; both runs ARM and x86 (default)")
+    parser.add_argument("--jobs", type=int, default=2,
+                        help="maximum architecture workers; 1 runs sequentially (default: 2)")
     parser.add_argument("--library", type=Path, default=root / "build/differential/libgerbera_diff.so")
-    parser.add_argument("--module", action="append", choices=("numeric", "vertex", "raster", "texture", "clipper", "gl", "egl"))
+    parser.add_argument("--module", action="append", choices=("numeric", "vertex", "raster", "cache", "texture", "clipper", "gl", "egl"))
     parser.add_argument("--samples", type=int, default=128,
                         help="cases per input family; 256+ also expands texture/filter/blend combinations")
     parser.add_argument("--seed", type=int, default=0x474C4553)
@@ -815,7 +906,11 @@ def main():
     args = parser.parse_args()
     if args.samples < 0 or not math.isfinite(args.seconds) or args.seconds <= 0 or args.max_failures <= 0:
         parser.error("samples must be nonnegative; seconds and max-failures must be positive")
+    if args.jobs < 1:
+        parser.error("jobs must be positive")
     architectures = ("arm", "x86") if args.arch == "both" else (args.arch,)
+    if len(architectures) > 1 and args.jobs > 1:
+        return run_parallel(architectures, sys.argv[1:])
     failed = 0
     for architecture in architectures:
         args.arch = architecture
@@ -823,16 +918,22 @@ def main():
         print(f"Original/source differential: arch={architecture}, seed={args.seed}, "
               f"samples={args.samples}, budget={args.seconds:g}s", flush=True)
         try:
-            for module in args.module or ("numeric", "vertex", "raster", "texture", "clipper", "gl", "egl"):
+            for module in args.module or ("numeric", "vertex", "raster", "cache", "texture", "clipper", "gl", "egl"):
                 importlib.import_module(f"differential_{module}").run(suite)
         except (OracleError, ValueError) as error:
             print(f"INCOMPLETE ({architecture}): {error}", file=sys.stderr)
             return 2
         finally:
-            suite.report()
-            if architecture == "arm":
-                suite.oracle.close_predicate_coverage()
-            suite.lib.library.differential_set_timeout(0)
+            try:
+                suite.report()
+            finally:
+                if getattr(suite.oracle, "native_blocks", None) is not None:
+                    suite.oracle.native_blocks.close()
+                if getattr(suite.oracle, "native_budget", None) is not None:
+                    suite.oracle.native_budget.close()
+                if architecture == "arm":
+                    suite.oracle.close_predicate_coverage()
+                suite.lib.library.differential_set_timeout(0)
         failed |= int(suite.failures != 0 or suite.oracle.memory_gaps() != 0 or bool(suite.unverified_code))
     return failed
 

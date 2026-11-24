@@ -1,15 +1,12 @@
 /* grState.h - the Gerbera driver context (decompile type Gerbera_s).
  *
- * The original defs.h was lost; the struct is reconstructed field-by-field
- * from the decompiled core code. Fields land here as the functions that use
- * them are ported. Field ORDER in memory is not pinned by the decompile
- * (everything is accessed by name); only the field SET is faithful.
- *
- * Capability enum values: only 41..48 (the eight lights, from grSetCapability
- * `cap - 41`) are pinned so far; the rest keep decompile member names with
- * unknown numbers (they pin when the ogl mapping tables are extracted).
- * The affectingCapabilities bit tables below are verbatim from the binary
- * (lines 5700/5706), indexed by cap >> 5 / cap & 0x1F.
+ * Original field names and layouts are preserved in the Nokia WINSCW
+ * CodeView types. Gerbera_s and _grLight below use a portable host layout;
+ * offset comments describe the original ARM build unless marked WINSCW.
+ * The WINSCW context includes eight-byte state guards and has offsets eight
+ * bytes higher than ARM for the shared fields after stateGuardBegin.
+ * Capability values come from the Nokia debug enum, also checked against
+ * the ARM API mapping and state accesses.
  */
 #ifndef GR_STATE_H
 #define GR_STATE_H
@@ -108,7 +105,7 @@ enum GR_POSITION_e
 
 /* grVertex stateMask bits (grTransformVertex / grRasterizer asserts). The
  * top 2 bits (14..15) hold the position state (grGetVertexPositionState:
- * stateMask >> 14): 0 = object space float, 1 = object space fixed(?),
+ * stateMask >> 14): 0 = object space float, 1 = object space fixed,
  * 2 = eye space float, 3 = eye space cartesian. */
 #define GR_VERTEXMASK_SURVIVED_2D_REJECTION 0x1u
 #define GR_VERTEXMASK_SURVIVED_3D_REJECTION 0x2u
@@ -212,10 +209,9 @@ enum GR_GRADIENT_e
     GR_GRADIENT_MAX = 10
 };
 
-/* per-texture-unit record inside the pixel pipe (grSetupTextureUnit reaches
- * them raw: unit = pixelPipe + 64*texIndex; fields +4 pixels/+8 palette/
- * +12 linear/+16 sMask/+20 tMask/+24 rShift[2]/+32 log2DimS; +36..63 unpinned
- * until the texture session) */
+/* Per-texture-unit record inside the pixel pipe. Original 32-bit offsets:
+ * unit = pixelPipe + 64*texIndex; fields +4 pixels/+8 palette/+12 linear/
+ * +16 sMask/+20 tMask/+24 rShift[2]/+32 log2DimS. */
 typedef struct _grPixelPipeTextureUnit
 {
     unsigned char pad0[4];          /* +0  */
@@ -228,14 +224,14 @@ typedef struct _grPixelPipeTextureUnit
     int rShift[2];                  /* +24 s/t fixed-point output shifts */
     int log2DimS;                   /* +32 current mipmap log2 width */
     unsigned char pad1[28];         /* +36..63 */
-} _grPixelPipeTextureUnit;          /* 64 bytes */
+} _grPixelPipeTextureUnit;          /* 64 bytes on 32-bit */
 
-/* the pixel-pipe record (cv_anon_1722) living in the render stack:
- * grExecutePixelPipeline passes &renderStack[1830].whichPool =
- * renderStack+14644 to the compiled program, and the render stack ends at
- * +23860, so the record spans +14644..+23860 (9216 bytes).
+/* Pixel-pipe parameters (cv_anon_1722) live after the backend scratch area
+ * at renderStack+14644. The scanline buffer starts at renderStack+15668.
+ * Offsets below describe the original 32-bit layout; pointers widen on
+ * 64-bit hosts.
  *
- * Pinned so far: the two 64-byte texture units at +0/+64 (grSetupTextureUnit)
+ * The two 64-byte texture units are at +0/+64 (grSetupTextureUnit)
  * and the gradient arrays at +192/+232/+272 (grSetupTriangleGradients'
  * flat-shade path reaches them raw as pixelPipe+192/232/272). The
  * grSetupRendering head block (grApiFast.inl 288-432) pins +128..+167:
@@ -270,8 +266,8 @@ typedef struct _grPixelPipe
     int xAdder[GR_GRADIENT_MAX];              /* +232 (word 58) */
     int yAdder[GR_GRADIENT_MAX];              /* +272 (word 68) */
     int mutableParams[78];                    /* debug poison scratch */
-    unsigned char tail[8040];                 /* +624..9215 */
-} _grPixelPipe;                               /* 9216 bytes */
+    unsigned char tail[8040];                 /* reserved trailing storage */
+} _grPixelPipe;
 
 /* GR_NATIVE_JIT: execute the HC-compiled pixel pipeline natively, exactly
  * like the original DLLs (EPOC ARM: HCARMBackend; Win32 x86: HCX86Backend).
@@ -310,7 +306,8 @@ typedef struct _grTRGradSetupInfo
 
 /* gradient-setup context grSetupGradient/grComputeDeltas operate on
  * (cv_anon_17A0; grSetupTriangleGradients builds one on the stack). Field
- * order = its stack layout: pPP, v0 screen coords (16.4, already -4096),
+ * order = its stack layout: pPP, v0 screen coords (12 fractional bits,
+ * already offset by -4096),
  * the four 16*delta*recipArea edge derivatives, the normalization shift. */
 typedef struct _grGradientInfo
 {
@@ -337,7 +334,7 @@ typedef struct _grCacheEntry
 {
     _grCacheSignature signature;    /* 40 bytes */
     unsigned int gradientMask;
-    int timeStamp;
+    unsigned int timeStamp;
     int dataOffset;
     int dataSize;
     struct _grCacheEntry *prev;
@@ -355,7 +352,7 @@ typedef struct _grPipelineCache
     void *arena;
     int arenaSize;
     int entryCount;
-    int timeStamp;
+    unsigned int timeStamp;
 } _grPipelineCache;                 /* 32 bytes in the 32-bit DLL
                                        * (hgMemSet(cache, 0, 0x20)) */
 
@@ -364,8 +361,8 @@ typedef struct _grPipelineCache
  * grEvaluatePixelPipeline's named writes + grCompressSignature's byte walk;
  * byte positions are constrained by s_mainBitCounts/s_textureBitCounts
  * (a field's value must fit its byte's bit count - the compress asserts
- * verify). texture[] records are accessed by RAW BYTE OFFSET (the
- * decompile never recovered their fields; the pipeline session pins them). */
+ * verify). texture[] records retain byte indexing shared by the signature
+ * evaluator and bytecode generator. */
 typedef struct _grSignature
 {
     _grSurfaceDescriptor descriptor;    /* +0: 16 bytes (TI=0x18AA) */
@@ -406,13 +403,11 @@ typedef struct _grSignature
     unsigned char texture[2][44];       /* +56: per-unit records (TI=0x18A7) */
 } _grSignature;                         /* 144 bytes */
 
-/* triangle tessellation status (grClassifyTriangle) */
+/* grClassifyTriangle result: Nokia CodeView TI=0x17B6 and UIQ TI=0x178A. */
 enum GR_TRIANGLESTATUS_e
 {
     GR_TRIANGLESTATUS_AFFINE = 0,       /* draw as-is */
-    GR_TRIANGLESTATUS_PERSPECTIVE = 1,  /* subdivide (flagged guess: the
-                                         * decompile names only AFFINE and
-                                         * DISCARD; 1 is the split verdict) */
+    GR_TRIANGLESTATUS_NONAFFINE = 1,    /* subdivide */
     GR_TRIANGLESTATUS_DISCARD = 2
 };
 
@@ -542,114 +537,86 @@ enum GR_FOGMODE_e
     GR_FOGMODE_MAX = 3
 };
 
-/* capabilities. PINNED from the oglMapCapability lookup tables (WINSCW
- * values[24] fully visible; keys recovered from the EPOC build's
- * dword_35E6C/word_35E9A tables - 22 of 23 keys decode to ascending GL
- * tokens, each mapping to the value at the same index):
- *   0x0BC0 GL_ALPHA_TEST->1, 0x0B71 GL_DEPTH_TEST->2,
- *   0x0B90 GL_STENCIL_TEST->3, 0x0BE2 GL_BLEND->4,
- *   0x0BF2 GL_COLOR_LOGIC_OP->5, 0x0BD0 (driver DITHER token; GL_DITHER is
- *   0x0BD1)->6, 0x0B60 (unresolved)->7, 0x0DE1 GL_TEXTURE_2D->10,
- *   0x8037 GL_POLYGON_OFFSET_FILL->14, 0x0C11 GL_SCISSOR_TEST->15,
- *   0x0B44 GL_CULL_FACE->16, 0x0B20 GL_LINE_SMOOTH->18,
- *   0x0B10 GL_POINT_SMOOTH->19, 0x0B50 GL_LIGHTING->36,
- *   0x0BA1 GL_NORMALIZE->37, 0x803A GL_RESCALE_NORMAL->38,
- *   0x0B57 GL_COLOR_MATERIAL->40, GL_LIGHT0..7 (0x4000..0x4007)->41..48,
- *   0x809D GL_MULTISAMPLE->49, 0x809E GL_SAMPLE_ALPHA_TO_COVERAGE->50,
- *   0x809F GL_SAMPLE_ALPHA_TO_ONE->51, 0x80A0 GL_SAMPLE_COVERAGE->52,
- *   0x8840 GL_MATRIX_PALETTE_OES->53; key 23 missing (-> cap 20).
- *   The previously "unresolved" key 0x0B60 -> 7 is GL_FOG (0x0B60): the EPOC
- *   grUpdateVertexPipeline gates the fog fetch selection on capabilities[7]
- *   (state byte 60).
- * Client-array caps (EPOC grUpdateVertexPipeline byte guards; capabilities[]
- * at EPOC state+53):
- *   21 = VERTEX_ARRAY (byte 74 guards vertexArray[0].data@316),
- *   23 = COLOR_ARRAY (byte 76 guards color data@356),
- *   25/26 = TEXTURE_COORD_ARRAY_0/1 (bytes 80/81),
- *   29 = POINT_SIZE_ARRAY (byte 82),
- *   7 = FOG (byte 60, also GL_FOG 0x0B60).
- *   22 = NORMAL_ARRAY (oglEnable maps GL_NORMAL_ARRAY to capability 22).
- * Clip planes 0x3000..0x3005 map to caps 30..35 (ogl layer; the grSmall
- * clip-plane enum used by grSetUserClipPlane is 10..15, a different space).
- * LIGHT_MODEL_TWO_SIDE maps to capability 39 in oglLightModelfv. */
+/* Nokia CodeView LF_ENUMERATE field list TI=0x1596, enum TI=0x1597.
+ * GR_CAPABILITY_MAX is 54 (defined above); VECTOR_SIZE is two 32-bit words.
+ * These values differ from Gerbera 1.4.8's UIQ enum: that version has
+ * VERTEX_ARRAY=20, LIGHT_MODEL_TWO_SIDE=29 and MAX=39.
+ * Clip-plane capabilities 30..35 are distinct from GR_CLIP_USER0=10. */
 enum GR_CAPABILITY_e
 {
+    GR_CAPABILITY_UNUSED = 0,
     GR_CAPABILITY_ALPHA_TEST = 1,
     GR_CAPABILITY_DEPTH_TEST = 2,
     GR_CAPABILITY_STENCIL_TEST = 3,
     GR_CAPABILITY_BLEND = 4,
     GR_CAPABILITY_COLOR_LOGIC_OP = 5,
-    GR_CAPABILITY_LOGIC_OP = 5,
     GR_CAPABILITY_DITHER = 6,
     GR_CAPABILITY_FOG = 7,
-    GR_CAPABILITY_TEXTURE_2D = 10,
-    GR_CAPABILITY_TEXTURE_0 = 10,
-    GR_CAPABILITY_TEXTURE_1 = 11,
+    GR_CAPABILITY_SEPARATE_SPECULAR_COLOR = 8,
+    GR_CAPABILITY_SMOOTH_SHADING = 9,
+    GR_CAPABILITY_TEXTURE0 = 10,
+    GR_CAPABILITY_TEXTURE_LAST = 11,
+    GR_CAPABILITY_DEPTH_OFFSET_POINT = 12,
+    GR_CAPABILITY_DEPTH_OFFSET_LINE = 13,
+    GR_CAPABILITY_DEPTH_OFFSET_FILL = 14,
+    GR_CAPABILITY_SCISSOR_TEST = 15,
+    GR_CAPABILITY_CULL_FACE = 16,
+    GR_CAPABILITY_PERSPECTIVE_CORRECTION = 17,
+    GR_CAPABILITY_LINE_SMOOTH = 18,
+    GR_CAPABILITY_POINT_SMOOTH = 19,
+    GR_CAPABILITY_POINT_SPRITE = 20,
     GR_CAPABILITY_VERTEX_ARRAY = 21,
     GR_CAPABILITY_NORMAL_ARRAY = 22,
     GR_CAPABILITY_COLOR_ARRAY = 23,
     GR_CAPABILITY_INDEX_ARRAY = 24,
-    GR_CAPABILITY_TEXTURE_COORD_ARRAY_0 = 25,
-    GR_CAPABILITY_TEXTURE_COORD_ARRAY_1 = 26,
-    GR_CAPABILITY_MATRIX_INDEX_ARRAY = 27, /* EPOC oglSetClientState 0x1100C */
+    GR_CAPABILITY_TEXCOORD_ARRAY = 25,
+    GR_CAPABILITY_TEXCOORD_ARRAY_LAST = 26,
+    GR_CAPABILITY_MATRIX_INDEX_ARRAY = 27,
     GR_CAPABILITY_WEIGHT_ARRAY = 28,
     GR_CAPABILITY_POINT_SIZE_ARRAY = 29,
-    GR_CAPABILITY_CLIP_PLANE0 = 30,       /* GL_CLIP_PLANE0..5 -> caps 30..35 */
-    GR_CAPABILITY_CLIP_PLANE1 = 31,
-    GR_CAPABILITY_CLIP_PLANE2 = 32,
-    GR_CAPABILITY_CLIP_PLANE3 = 33,
-    GR_CAPABILITY_CLIP_PLANE4 = 34,
-    GR_CAPABILITY_CLIP_PLANE5 = 35,
-    GR_CAPABILITY_SMOOTH_SHADING = 9,     /* internal cap (EPOC glShadeModel
-                                           * sub_22018(caps, 9, ...); GL_FLAT
-                                           * clears it, GL_SMOOTH sets it) */
-    GR_CAPABILITY_PERSPECTIVE_CORRECTION = 17, /* glHint 0x414825 and the
-                                               * triangle wrapper 0x427D73 */
-    GR_CAPABILITY_UNUSED = 0,            /* line quad cleanup at 0x425FF1 */
-    GR_CAPABILITY_DEPTH_OFFSET_POINT = 12,   /* grIsDepthOffsetEnabled:
-                                               * primitiveType (POINT=1) + 11 */
-    GR_CAPABILITY_DEPTH_OFFSET_LINE = 13,    /* primitiveType (LINE=2) + 11 */
-    GR_CAPABILITY_POLYGON_OFFSET_FILL = 14,  /* primitiveType (TRIANGLE=3) + 11
-                                               * = GR_CAPABILITY_DEPTH_OFFSET_FILL */
-    GR_CAPABILITY_SCISSOR_TEST = 15,
-    GR_CAPABILITY_CULL_FACE = 16,
-    GR_CAPABILITY_LINE_SMOOTH = 18,
-    GR_CAPABILITY_POINT_SMOOTH = 19,
-    GR_CAPABILITY_POINT_SPRITE = 20,      /* flagged guess: unpinned slot (was
-                                           * KEY23); the ogl point-parameter
-                                           * path pins it in the api session */
+    GR_CAPABILITY_CLIP_USER0 = 30,
+    GR_CAPABILITY_CLIP_USER_LAST = 35,
     GR_CAPABILITY_LIGHTING = 36,
-    GR_CAPABILITY_NORMALIZE = 37,
+    GR_CAPABILITY_NORMALIZE_NORMAL = 37,
     GR_CAPABILITY_RESCALE_NORMAL = 38,
-    GR_CAPABILITY_LIGHT_MODEL_TWO_SIDE = 39, /* UNPINNED guess - internal cap */
+    GR_CAPABILITY_LIGHT_MODEL_TWO_SIDE = 39,
     GR_CAPABILITY_COLOR_MATERIAL = 40,
     GR_CAPABILITY_LIGHT0 = 41,
-    GR_CAPABILITY_LIGHT7 = 48,
+    GR_CAPABILITY_LAST_LIGHT = 48,
     GR_CAPABILITY_MULTISAMPLE = 49,
     GR_CAPABILITY_SAMPLE_ALPHA_TO_COVERAGE = 50,
     GR_CAPABILITY_SAMPLE_ALPHA_TO_ONE = 51,
     GR_CAPABILITY_SAMPLE_COVERAGE = 52,
-    GR_CAPABILITY_MATRIX_PALETTE = 53
+    GR_CAPABILITY_MATRIX_PALETTE = 53,
+    GR_CAPABILITY_VECTOR_SIZE = 2,
+
+    /* Names used by the portable implementation. */
+    GR_CAPABILITY_LOGIC_OP = GR_CAPABILITY_COLOR_LOGIC_OP,
+    GR_CAPABILITY_TEXTURE_2D = GR_CAPABILITY_TEXTURE0,
+    GR_CAPABILITY_TEXTURE_0 = GR_CAPABILITY_TEXTURE0,
+    GR_CAPABILITY_TEXTURE_1 = GR_CAPABILITY_TEXTURE_LAST,
+    GR_CAPABILITY_POLYGON_OFFSET_FILL = GR_CAPABILITY_DEPTH_OFFSET_FILL,
+    GR_CAPABILITY_TEXTURE_COORD_ARRAY_0 = GR_CAPABILITY_TEXCOORD_ARRAY,
+    GR_CAPABILITY_TEXTURE_COORD_ARRAY_1 = GR_CAPABILITY_TEXCOORD_ARRAY_LAST,
+    GR_CAPABILITY_CLIP_PLANE0 = GR_CAPABILITY_CLIP_USER0,
+    GR_CAPABILITY_CLIP_PLANE1 = GR_CAPABILITY_CLIP_USER0 + 1,
+    GR_CAPABILITY_CLIP_PLANE2 = GR_CAPABILITY_CLIP_USER0 + 2,
+    GR_CAPABILITY_CLIP_PLANE3 = GR_CAPABILITY_CLIP_USER0 + 3,
+    GR_CAPABILITY_CLIP_PLANE4 = GR_CAPABILITY_CLIP_USER0 + 4,
+    GR_CAPABILITY_CLIP_PLANE5 = GR_CAPABILITY_CLIP_USER_LAST,
+    GR_CAPABILITY_NORMALIZE = GR_CAPABILITY_NORMALIZE_NORMAL,
+    GR_CAPABILITY_LIGHT7 = GR_CAPABILITY_LAST_LIGHT
 };
 
-/* light record (decompile cv_anon_1748). The decompile reaches the fields
- * through a mix of named accesses and byte-offset aliases (txMin/txMax/fx1
- * are Hex-Rays union guesses); each alias maps 1:1 onto the clean fields
- * below: colors[i]=txMax[3i], spotDirectionNegated=&txMin[1] of elem +1,
- * orgSpotDirection=fx1, orgPosition=&txMax[1] of elem 0, exponent=txMin[0]
- * of elem +2, attenuation=&txMin[1] of elem +2, cosSpotCutoff=txMax[1] of
- * texCoordTransform[8][0].padding[80*plane - 1] (Hex-Rays artifact; the
- * EPOC build writes state+4168+80*plane = userClipMatrix base
- * +4968, i.e. userClipMatrix[plane-GR_CLIP_USER0]) and the plane
- * equation to &normalsToEyePal[17][0].originalVertex + plane (EPOC:
- * state+4648+20*plane = origUserClipPlanes[plane-GR_CLIP_USER0]).
- *
- * EPOC record map (base 5712, stride 208): positionXYZ +0 {_IVector3
- * laid out {e,m[3]} there}, spotCutoff +16, lightMask +20, orgPosition
- * +24, orgSpotDirection +44, spotDirectionNegated +56, colors[3] +72,
- * exponent +108, attenuation +112, halfway +168, nVP +180, positional
- * +192 (+196..207 unpinned 12 bytes; cosSpotCutoff/premul slot order
- * inside +128..167 not yet pinned - grLightVertex will settle it).
+/* Light record: Nokia CodeView TI=0x1748, field list TI=0x1747; original
+ * size 208 bytes, ARM state base 5712. Original offsets and names:
+ * positionXYZ +0, spotCutoff +16, lightMask +20, orgPosition +24,
+ * orgSpotDirection +44, spotDirection +60, colorsx +72, spotExponent +108,
+ * attenuation +112, cosSpotCutoff +128, premul_colors +132, halfway +168,
+ * nVP +180, positional +192, la +196, ld +200, ls +204.
+ * UIQ field list TI=0x172B confirms the shared light-field names.
+ * spotDirection holds the negated direction (ARM grSetLightSpotDirection,
+ * 0x224E8).
  * lightMask bits (grUpdateLight): 16=spotlight (spotCutoff != 180deg),
  * 32=positional with attenuation != (1,1,1), 64=directional. */
 typedef struct _grLight
@@ -660,27 +627,27 @@ typedef struct _grLight
     int halfway[3];               /* headlight direction (directional lights only) */
     _IFVector4 orgPosition;       /* original float position */
     int lightMask;
-    _XColor3 colors[3];           /* ambient, diffuse, specular */
+    _XColor3 colorsx[3];          /* ambient, diffuse, specular */
     _XColor3 premul_colors[3];    /* colors * material (vertex pipeline) */
-    int spotDirectionNegated[3];  /* negated spot direction (10.21) */
+    int spotDirection[3];        /* negated spot direction (10.21) */
     _IFVector3 orgSpotDirection;  /* original float spot direction */
-    int exponent;                 /* XScalar */
+    int spotExponent;            /* XScalar */
     _IFVector3 attenuation;       /* constant, linear, quadratic (floats) */
     int cosSpotCutoff;            /* XScalar: max(cos(radians(cutoff)), 0) */
     int spotCutoff;               /* original cutoff (IScalar, degrees) */
     /* per-vertex scratch written by light() (EPOC +196/+200/+204): the
      * attenuation factor, the N*L dot and the specular dot^shininess
      * factor; read back by grLightVertex's color accumulation */
-    int xAtten;
-    int ndotL;
-    int specDot;
+    int la;
+    int ld;
+    int ls;
 } _grLight;
 
 /* client vertex array record (grGetVertexArrayPointer/Binding/Reset +
  * the fetchers). EPOC vertexArray base = +308, stride 20; WINSCW reaches
  * the same records through a byte array. Both builds put `type` at record+5
  * and size at record+4 (EPOC grSetVertexArray, 0x22D14).
- *   stride@0 (int), size@4 (u8: 2 or 4 components), type@5 (u8 GR_DATATYPE),
+ *   stride@0 (int), size@4 (u8 component count), type@5 (u8 GR_DATATYPE),
  *   data@8, binding@12 (ogl buffer object), origPointer@16. */
 typedef struct Gerbera_s Gerbera_s;
 
@@ -808,8 +775,7 @@ typedef struct _grViewportParams
 /* texture-coordinate transform record (_helpers_core.c fragment
  * ITCTransform_copy). Size 132 bytes is pinned by the EPOC texCoordTransform
  * stride (state+4064+132*unit; the WINSCW [11*unit] indexing = 11 records of
- * 12 bytes per _ITCTransform): lsh/rsh are bytes and im is int (an earlier
- * int64-im guess is WRONG).
+ * 12 bytes per decompiler element): lsh/rsh are bytes and im is int.
  *   e[ci]   = matrix column exponent words (packed 4 bytes, as stored)
  *   lsh/rsh = clamp(eByte-119, 0..31) / clamp(119-eByte, 0..31)
  *   im[ria] = imMulLsl64h(m[3][ria], 0x10000, lsh[3][ria]) >> rsh[3][ria]
@@ -825,28 +791,27 @@ typedef struct _ITCTransform
     int cl;
 } _ITCTransform;
 
-/* the driver context. Only fields used by ported functions are listed;
- * the set grows with the port (census: 119 distinct state-> fields). */
-/* --- texture unit record (decompile state->textureUnit element) ------------
- * textureUnit[2*unit] is the bound-texture record; the odd records are the
- * client-state halves (grSetActiveTextureClient). Field names from the
- * decompile's xStart/xAdder aliasing; every byte is raw-offset accessed.
- * The 32-byte element stride is UNPINNED (the texture session pins it). */
+/* Texture unit record: Nokia CodeView TI=0x1732, field list TI=0x1731;
+ * UIQ TI=0x171B confirms texture, texEnvColor and texEnvMode.
+ * The original has two 32-byte records (array TI=0x1733 is 64 bytes),
+ * at ARM state+468 and +500. The portable context retains the decompile's
+ * textureUnit[2*unit] indexing; its odd records are unused. Field offsets
+ * below describe the original 32-bit record. */
 typedef struct _grTextureUnitState
 {
-    void *texture;                /* +0  xStart[0]: bound texture object */
-    unsigned int envColor;        /* +4  xStart[1] */
-    unsigned char envMode;        /* +8  xAdder[0] (internal 0..5) */
-    unsigned char envFuncRGB;     /* +9  xAdder[1] */
-    unsigned char envFuncAlpha;   /* +10 xAdder[2] */
-    unsigned char envSrcRGB[3];   /* +11..13 xAdder[3..5] */
-    unsigned char envSrcAlpha[3]; /* +14..16 xAdder[6..8] */
-    unsigned char envOpRGB[3];    /* +17..19 combine ops (eval case 5) */
-    unsigned char envOpAlpha[3];  /* +20..22 */
-    unsigned char envScaleRGB;    /* +23 (31-clz -> shift) */
-    unsigned char envScaleAlpha;  /* +24 */
-    unsigned char pad25[3];       /* +25..27 */
-    int texCoordReplace;          /* +28 (CodeView TI=0x1732) */
+    _grTexture *texture;                    /* +0: bound texture object */
+    unsigned int texEnvColor;               /* +4 */
+    unsigned char texEnvMode;               /* +8 (internal 0..5) */
+    unsigned char texEnvRGBCombFunc;         /* +9 */
+    unsigned char texEnvAlphaCombFunc;       /* +10 */
+    unsigned char texEnvRGBCombSrc[3];       /* +11..13 */
+    unsigned char texEnvAlphaCombSrc[3];     /* +14..16 */
+    unsigned char texEnvRGBCombOperand[3];   /* +17..19 */
+    unsigned char texEnvAlphaCombOperand[3]; /* +20..22 */
+    unsigned char texEnvRGBCombScale;        /* +23 multiplier (1, 2 or 4) */
+    unsigned char texEnvAlphaCombScale;      /* +24 multiplier (1, 2 or 4) */
+    unsigned char padding[3];               /* +25..27 */
+    int texCoordReplace;                    /* +28 */
 } _grTextureUnitState;
 
 /* --- blit image / memory image structs (CodeView TI=0x15D1..0x1659) -------- */
@@ -916,7 +881,7 @@ struct Gerbera_s
     /* --- transform stack (EPOC offsets; the arena is contiguous there:
      * matrix[13] +624, the _IVertexTransform records +1664..+4063, the
      * _ITCTransform/_XNormalTransform records +4064..+4727, the user clip
-     * planes +4728..+4967 and their matrices +4968..+5367) --------------- */
+     * planes +4728..+4967 and their matrices +4968..+5447) --------------- */
     int matrixDirtyMask;                                       /* +112  */
     _IMatrix4x4 matrix[GR_MATRIXMODE_MAX];                     /* +624  */
     _IVertexTransform modelviewTransform;                      /* +1664 */
@@ -969,7 +934,8 @@ struct Gerbera_s
     int activeGradientIndex[GR_GRADIENT_MAX];
     grPixelPipelineCode_fn pixelPipelineCode;         /* compiled program
                                                        * (hc compiler) */
-    _grPipelineCache *pipelineCache;                  /* offset UNPINNED */
+    _grPipelineCache *pipelineCache;                  /* original embedded
+                                                       * cache at +188 */
     _grPipelineCache pipelineCacheStorage;
     void *pipelineCacheExecutable;
     _grStackAllocator allocator;
@@ -978,10 +944,10 @@ struct Gerbera_s
                                                        * Rendering allocates
                                                        * the 23860-byte render
                                                        * stack from it) */
-    void *scratchMemory;                              /* offset UNPINNED */
-    int scratchMemorySize;                            /* offset UNPINNED */
-    void *setjmpConfig;                               /* offset UNPINNED (HC
-                                                       * setjmp container) */
+    void *scratchMemory;                              /* +600 */
+    int scratchMemorySize;                            /* +604 */
+    void *setjmpConfig;                               /* original embedded HC
+                                                       * setjmp config at +608 */
     struct
     {
         int (*setjmpWrap)(void *jmpbuf, int (*func)(void *), void *args);
@@ -994,15 +960,12 @@ struct Gerbera_s
     _grVertexArray vertexArray[8];                    /* +308 */
     _IFVector3 pointDistAttn;                         /* +576 */
     unsigned char computePointDistAttn;               /* +592 */
-    int lineWidth;                                    /* offset UNPINNED (16.16;
-                                                       * grSetLineWidth lands
-                                                       * with the api session) */
-    int pointSize;                                    /* offset UNPINNED (16.16;
-                                                       * grSetPointSize) */
-    int pointSizeMin;                                 /* offset UNPINNED (16.16;
-                                                       * oglPointParameter) */
-    int pointSizeMax;                                 /* offset UNPINNED (16.16) */
-    int pointFadeThreshold;                           /* +580 (IScalar) */
+    int lineWidth;                                    /* +140 (16.16) */
+    int pointSize;                                    /* +136 (16.16) */
+    int pointSizeMin;                                 /* +564 (16.16) */
+    int pointSizeMax;                                 /* +568 (16.16) */
+    int pointFadeThreshold;                           /* +572 (IScalar;
+                                                       * WINSCW +580) */
     unsigned char transformVE;                        /* +47  */
     unsigned char primitiveType;                      /* +22  */
     int defaultNormal[3];                             /* XNormal3 ints */
@@ -1014,7 +977,7 @@ struct Gerbera_s
                                                        * TexCoord defaults);
                                                        * row 2 = transformed
                                                        * outputs {x0,y0,x1,y1}
-                                                       * stored as 16.16 ints
+                                                       * stored as 10.21 ints
                                                        * (the decompile reaches
                                                        * both views through one
                                                        * array) */
@@ -1243,6 +1206,7 @@ void grCacheRemove(_grPipelineCache *cache, _grCacheEntry *entry);
 void grCacheDefragment(_grPipelineCache *cache);
 void grCacheInit(_grPipelineCache *cache, void *arena,
                  _grCacheEntry *entries, int arenaSize, int entryCount);
+void grCacheSetArena(_grPipelineCache *cache, void *arena, int arenaSize);
 void *grCacheFind(_grPipelineCache *cache, _grCacheSignature *signature,
                   unsigned int *gradientMask);
 void *grCacheInsert(_grPipelineCache *cache, _grCacheSignature *signature,

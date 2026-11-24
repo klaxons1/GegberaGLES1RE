@@ -4,16 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int failures;
-static int checks;
-
-#define CHECK(condition) do { \
-    ++checks; \
-    if (!(condition)) { \
-        ++failures; \
-        fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition); \
-    } \
-} while (0)
+#include "test_support.h"
 
 static void setup_directional_light(Gerbera_s *state, int index)
 {

@@ -1,26 +1,10 @@
 #!/usr/bin/env python3
-"""split_decomp.py - split the Hex-Rays decompiled monolith (docs/libGLES_CM.dll.c)
-into fragments attributed to the original Gerbera GLES1 source files.
+"""Split docs/libGLES_CM.dll.c into fragments grouped by inferred source file.
 
-What it does
-------------
-1. Parses the monolith into three sections: declarations, data declarations,
-   function bodies.
-2. Attributes every function to an original source file using the assert
-   strings embedded in call sites (grAssert(expr, "file", line)) and falls
-   back to name-prefix heuristics.
-3. Dedupes the per-translation-unit inline clones (name__cv_HEX): clones whose
-   normalized bodies are identical are collapsed into one fragment; clones
-   that differ are kept as alternates and flagged for manual review.
-4. Emits:
-     generated/fragments/<module>/<file>.fragments.c   decompiled fragments
-     generated/fragments/data/data_<name>.fragments.c  top-level data blobs
-     generated/manifest.json                            full inventory
-     generated/MANIFEST.md                              readable summary
-
-The fragments are raw decompiled material (cleaned of Hex-Rays type junk and
-clone suffixes) - they are the working reference for hand-porting code into
-src/, not the final product.
+Attribution uses assertion filenames, symbol names, call sites and proximity.
+Normalized clone bodies are merged; differing bodies remain as alternates.
+Writes reference fragments and an inventory under generated/. These are
+analysis inputs, not compilable renderer sources.
 """
 
 import collections
@@ -35,7 +19,8 @@ SRC_DECOMP = os.path.join(ROOT, "docs", "libGLES_CM.dll.c")
 OUT_DIR = os.path.join(ROOT, "generated")
 
 # ---------------------------------------------------------------------------
-# Hex-Rays junk -> clean C type mapping (mechanical, meaning preserving)
+# Decompiler spellings normalized for fragment readability; ABI annotations
+# are discarded, so these fragments are not directly compilable source.
 TYPE_MAP = [
     ("unsigned __int8", "unsigned char"),
     ("unsigned __int16", "unsigned short"),
@@ -69,7 +54,7 @@ MODULES = {
     "core":    "src/gerbera/core (rasterizer - gr*.inl, grSmall.c)",
     "grr":     "src/gerbera/core/rasterizer (grr*.inl)",
     "api":     "src/gerbera/api_opengl (GL API - ogl*.inl, oglFast.c)",
-    "hc":      "src/gerbera/hc (vertex processor JIT compiler)",
+    "hc":      "src/gerbera/hc (pixel pipeline JIT compiler)",
     "sym":     "src/symbian (Symbian AVKON/WSERV/FBS glue)",
     "crt":     "src/platform (C runtime, exceptions, C++ support - reference only)",
     "unknown": "UNATTRIBUTED",
@@ -152,7 +137,7 @@ PREFIX_RULES = [
     (r"^egl",             ("egl", "eglBase.inl")),
 ]
 
-# runtime / platform functions kept for reference, never ported blindly
+# Runtime and platform function prefixes.
 CRT_PAT = re.compile(
     r"^(__msl|__utf8|__unicode|__mbtowc|__wctomb|__init_pool|__pool_free|__malloc|get_malloc"
     r"|__sys_free|__read_file|__write_file|__close_file|__delete_file|find_temp_info|__msl"
@@ -168,7 +153,7 @@ CRT_PAT = re.compile(
 
 
 def clean_line(line):
-    """Mechanical Hex-Rays junk cleanup for one line."""
+    """Normalize decompiler type spellings and clone suffixes."""
     out = line
     for a, b in TYPE_MAP:
         out = out.replace(a, b)
@@ -188,9 +173,9 @@ def normalize_body(text):
     for a, b in TYPE_MAP:
         t = t.replace(a, b)
     t = re.sub(r"__cv_[0-9A-Fa-f]+", "", t)
-    # anon enum type ids differ per TU - same enum
+    # Ignore translation-unit-specific anonymous enum IDs.
     t = re.sub(r"_enum_[0-9]+", "_enum_", t)
-    # symbolic enum member display names get swapped between TUs by Hex-Rays
+    # Treat enum spellings as interchangeable in this heuristic comparison.
     t = re.sub(r"\bGR_[A-Z0-9_]+\b", "GR_SYM", t)
     t = re.sub(r"\bOGL_[A-Z0-9_]+\b", "OGL_SYM", t)
     t = re.sub(r"\bHCOP_[A-Z0-9_]+\b", "HCOP_SYM", t)
@@ -421,8 +406,8 @@ def main():
                 rec["how"] = "content"
                 break
 
-    # nearest-neighbour in decompilation order (Hex-Rays keeps TU/link order,
-    # so unattributed helpers sit right next to their module's functions)
+    # Use proximity as a final attribution heuristic: functions from the same
+    # translation unit often occupy adjacent addresses.
     attributed = [r for r in manifest if r["module"] != "unknown"]
     attributed.sort(key=lambda r: r["decomp_lines"][0])
     for rec in manifest:

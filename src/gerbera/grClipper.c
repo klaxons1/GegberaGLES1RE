@@ -11,7 +11,7 @@
  * store the two factors at +92/+96 - an intentional alias of normal[0..1]
  * (lighting has already consumed the normal when the clipper runs).
  *
- * grClipPrimitive (31235-31488) lands with the rasterizer: it ends in
+ * grClipPrimitive (31235-31488) dispatches the clipped primitives through
  * grrDrawClippedTriangle/grrDrawClippedLine.
  *
  * Assert sites keep the original file/line strings.

@@ -1,9 +1,10 @@
 /* grPixelPipeline.c - the pixel-pipe dispatch (port of grPixelPipeline.h).
  *
  * The compiled program (state->pixelPipelineCode, produced by the hc
- * shader compiler) consumes the pixel-pipe record at
- * renderStack+14644: the row pointers (+168..+176), scanline state
- * (+180..+188) and the gradient arrays set up by grSetupTriangleGradients.
+ * shader compiler) consumes the pixel-pipe record after the backend scratch
+ * space at renderStack+14644. In the original 32-bit layout, the row pointers
+ * are at +168..+176 and scanline state at +180..+188, followed by the gradient
+ * arrays set up by grSetupTriangleGradients.
  */
 #include "gerbera/grState.h"
 #include "gerbera/grDefs.h"
@@ -163,7 +164,7 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
                             int curRGBA[4])
 {
     const _grTextureUnitState *us = &state->textureUnit[2 * unit];
-    const _grTexture *texObj = (const _grTexture *)us->texture;
+    const _grTexture *texObj = us->texture;
     int baseFormat = (texObj != NULL) ? texObj->mipmap[0].texFormat : GR_TEXTUREFORMAT_RGBA8;
     int envRGBA[4];
     int texC[4];
@@ -176,7 +177,7 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
         prevC[c] = curRGBA[c];
         priC[c]  = (int)((primaryRGBA >> (8 * c)) & 0xFFu);
         texC[c]  = (int)((texRGBA >> (8 * c)) & 0xFFu);
-        envRGBA[c] = (int)((us->envColor >> (8 * c)) & 0xFFu);
+        envRGBA[c] = (int)((us->texEnvColor >> (8 * c)) & 0xFFu);
     }
     if (baseFormat == GR_TEXTUREFORMAT_LUMINANCE8)
     {
@@ -207,7 +208,7 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
 
     /* Bytecode +0x41E scales MODULATE by (second + 1)/256; +0x445
      * truncates INTERPOLATE with complementary weights summing to 255. */
-    switch (us->envMode)
+    switch (us->texEnvMode)
     {
     case GR_TEXENVMODE_REPLACE:
         if (baseFormat == GR_TEXTUREFORMAT_ALPHA8)
@@ -309,41 +310,41 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
         for (k = 0; k < 3; ++k)
         {
             const int *srcV = prevC;
-            if (us->envSrcRGB[k] == GR_TEXENVCOMBSRC_TEXTURE)            srcV = texC;
-            else if (us->envSrcRGB[k] == GR_TEXENVCOMBSRC_CONSTANT)      srcV = envRGBA;
-            else if (us->envSrcRGB[k] == GR_TEXENVCOMBSRC_PRIMARY_COLOR) srcV = priC;
+            if (us->texEnvRGBCombSrc[k] == GR_TEXENVCOMBSRC_TEXTURE)            srcV = texC;
+            else if (us->texEnvRGBCombSrc[k] == GR_TEXENVCOMBSRC_CONSTANT)      srcV = envRGBA;
+            else if (us->texEnvRGBCombSrc[k] == GR_TEXENVCOMBSRC_PRIMARY_COLOR) srcV = priC;
 
             for (c = 0; c < 3; ++c)
             {
                 int v = srcV[c];
-                if (us->envOpRGB[k] == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_COLOR)
+                if (us->texEnvRGBCombOperand[k] == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_COLOR)
                     v = 255 - srcV[c];
-                else if (us->envOpRGB[k] == GR_TEXENVCOMBOPERAND_SRC_ALPHA)
+                else if (us->texEnvRGBCombOperand[k] == GR_TEXENVCOMBOPERAND_SRC_ALPHA)
                     v = srcV[3];
-                else if (us->envOpRGB[k] == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA)
+                else if (us->texEnvRGBCombOperand[k] == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA)
                     v = 255 - srcV[3];
                 argRGB[k][c] = v;
             }
 
             srcV = prevC;
-            if (us->envSrcAlpha[k] == GR_TEXENVCOMBSRC_TEXTURE)            srcV = texC;
-            else if (us->envSrcAlpha[k] == GR_TEXENVCOMBSRC_CONSTANT)      srcV = envRGBA;
-            else if (us->envSrcAlpha[k] == GR_TEXENVCOMBSRC_PRIMARY_COLOR) srcV = priC;
-            argA[k] = (us->envOpAlpha[k] == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA) ? (255 - srcV[3]) : srcV[3];
+            if (us->texEnvAlphaCombSrc[k] == GR_TEXENVCOMBSRC_TEXTURE)            srcV = texC;
+            else if (us->texEnvAlphaCombSrc[k] == GR_TEXENVCOMBSRC_CONSTANT)      srcV = envRGBA;
+            else if (us->texEnvAlphaCombSrc[k] == GR_TEXENVCOMBSRC_PRIMARY_COLOR) srcV = priC;
+            argA[k] = (us->texEnvAlphaCombOperand[k] == GR_TEXENVCOMBOPERAND_ONE_MINUS_SRC_ALPHA) ? (255 - srcV[3]) : srcV[3];
         }
 
-        if (us->envFuncRGB == GR_TEXENVCOMBFUNC_DOT3_RGB ||
-            us->envFuncRGB == GR_TEXENVCOMBFUNC_DOT3_RGBA)
+        if (us->texEnvRGBCombFunc == GR_TEXENVCOMBFUNC_DOT3_RGB ||
+            us->texEnvRGBCombFunc == GR_TEXENVCOMBFUNC_DOT3_RGBA)
         {
             /* Bytecode +0x47C centers both operands at 127 and shifts by six. */
             int dot = ((argRGB[0][0] - 127) * (argRGB[1][0] - 127) +
                        (argRGB[0][1] - 127) * (argRGB[1][1] - 127) +
                        (argRGB[0][2] - 127) * (argRGB[1][2] - 127)) >> 6;
             curRGBA[0] = curRGBA[1] = curRGBA[2] =
-                hgClamp32_0_x(dot * (int)us->envScaleRGB, 255);
-            if (us->envFuncRGB == GR_TEXENVCOMBFUNC_DOT3_RGBA)
+                hgClamp32_0_x(dot * (int)us->texEnvRGBCombScale, 255);
+            if (us->texEnvRGBCombFunc == GR_TEXENVCOMBFUNC_DOT3_RGBA)
             {
-                curRGBA[3] = hgClamp32_0_x(dot * (int)us->envScaleAlpha, 255);
+                curRGBA[3] = hgClamp32_0_x(dot * (int)us->texEnvAlphaCombScale, 255);
                 break;
             }
         }
@@ -352,33 +353,33 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
             for (c = 0; c < 3; ++c)
             {
                 int r = argRGB[0][c];
-                if (us->envFuncRGB == GR_TEXENVCOMBFUNC_MODULATE)
+                if (us->texEnvRGBCombFunc == GR_TEXENVCOMBFUNC_MODULATE)
                     r = (argRGB[0][c] * argRGB[1][c] + argRGB[0][c]) >> 8;
-                else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_ADD)
+                else if (us->texEnvRGBCombFunc == GR_TEXENVCOMBFUNC_ADD)
                     r = argRGB[0][c] + argRGB[1][c];
-                else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_ADD_SIGNED)
+                else if (us->texEnvRGBCombFunc == GR_TEXENVCOMBFUNC_ADD_SIGNED)
                     r = argRGB[0][c] + argRGB[1][c] - 127;
-                else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_SUBTRACT)
+                else if (us->texEnvRGBCombFunc == GR_TEXENVCOMBFUNC_SUBTRACT)
                     r = argRGB[0][c] - argRGB[1][c];
-                else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_INTERPOLATE)
+                else if (us->texEnvRGBCombFunc == GR_TEXENVCOMBFUNC_INTERPOLATE)
                     r = (argRGB[0][c] * argRGB[2][c] + argRGB[1][c] * (255 - argRGB[2][c])) >> 8;
-                curRGBA[c] = hgClamp32_0_x(r * (int)us->envScaleRGB, 255);
+                curRGBA[c] = hgClamp32_0_x(r * (int)us->texEnvRGBCombScale, 255);
             }
         }
 
         {
             int ra = argA[0];
-            if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_MODULATE)
+            if (us->texEnvAlphaCombFunc == GR_TEXENVCOMBFUNC_MODULATE)
                 ra = (argA[0] * argA[1] + argA[0]) >> 8;
-            else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_ADD)
+            else if (us->texEnvAlphaCombFunc == GR_TEXENVCOMBFUNC_ADD)
                 ra = argA[0] + argA[1];
-            else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_ADD_SIGNED)
+            else if (us->texEnvAlphaCombFunc == GR_TEXENVCOMBFUNC_ADD_SIGNED)
                 ra = argA[0] + argA[1] - 127;
-            else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_SUBTRACT)
+            else if (us->texEnvAlphaCombFunc == GR_TEXENVCOMBFUNC_SUBTRACT)
                 ra = argA[0] - argA[1];
-            else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_INTERPOLATE)
+            else if (us->texEnvAlphaCombFunc == GR_TEXENVCOMBFUNC_INTERPOLATE)
                 ra = (argA[0] * argA[2] + argA[1] * (255 - argA[2])) >> 8;
-            curRGBA[3] = hgClamp32_0_x(ra * (int)us->envScaleAlpha, 255);
+            curRGBA[3] = hgClamp32_0_x(ra * (int)us->texEnvAlphaCombScale, 255);
         }
         break;
     }
@@ -516,7 +517,7 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
     int ditherEnabled = grTestCapability(state, GR_CAPABILITY_DITHER);
     int earlyDepth = depthTest && !alphaTest && !stencilTest;
     unsigned int writeMask = 0xFFFFFFFFu;
-    const _grTexture *texObj0 = (const _grTexture *)state->textureUnit[0].texture;
+    const _grTexture *texObj0 = state->textureUnit[0].texture;
     int g, u, s;
 
     if (surf->colorMask != (unsigned char)(state->colorMask & surf->colorMask))
@@ -527,7 +528,7 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
 
     for (u = 0; u < 2; ++u)
     {
-        const _grTexture *texObj = (const _grTexture *)state->textureUnit[2 * u].texture;
+        const _grTexture *texObj = state->textureUnit[2 * u].texture;
         unitActive[u] = (state->useTexUnit[u] != 0 || state->textureUnitEnabled[u] != 0) &&
                         texObj != NULL && pp->textureUnit[u].pixels != NULL;
         if (unitActive[u])
@@ -550,7 +551,7 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
                            state->dstBlendFactor == GR_BLENDFACTOR_ONE_MINUS_SRC_ALPHA)) &&
         (!unitActive[0] || (texObj0->mipmap[0].texFormat == GR_TEXTUREFORMAT_RGBA8 &&
                             !pp->textureUnit[0].linear &&
-                            state->textureUnit[0].envMode == GR_TEXENVMODE_MODULATE &&
+                            state->textureUnit[0].texEnvMode == GR_TEXENVMODE_MODULATE &&
                             texObj0->wrapMode[0] != GR_WRAPMODE_MIRRORED_REPEAT &&
                             texObj0->wrapMode[1] != GR_WRAPMODE_MIRRORED_REPEAT &&
                             pp->textureUnit[0].sMask > 0 && pp->textureUnit[0].tMask > 0)))
@@ -766,7 +767,7 @@ fast_step:
             {
                 if (unitActive[u])
                 {
-                    const _grTexture *texObj = (const _grTexture *)state->textureUnit[2 * u].texture;
+                    const _grTexture *texObj = state->textureUnit[2 * u].texture;
                     unsigned int texel = grSampleTexel64(texObj, &pp->textureUnit[u],
                                                          cur[6 + 2 * u], cur[7 + 2 * u], &texDesc[u]);
                     grApplyTexEnv64(state, u, primaryRGBA, texel, rgba);
@@ -1338,7 +1339,7 @@ void grEvaluatePixelPipeline(Gerbera_s *state, _grSignature *signature)
     {
         int unit = *(int *)&combinedMask[4].colorMask;
         _grTextureUnitState *unitRec = &state->textureUnit[2 * unit];
-        _grTexture *texObj = (_grTexture *)unitRec->texture;
+        _grTexture *texObj = unitRec->texture;
 
         if (state->useTexUnit[unit] != 0)
         {
@@ -1375,7 +1376,7 @@ void grEvaluatePixelPipeline(Gerbera_s *state, _grSignature *signature)
             rec[24] = 0xFF;
             rec[25] = 0xFF;
             pf = *(int *)&combinedMask[0].colorMask;
-            switch (unitRec->envMode)
+            switch (unitRec->texEnvMode)
             {
                 case 0:
                     if (pf != 0)
@@ -1543,34 +1544,34 @@ void grEvaluatePixelPipeline(Gerbera_s *state, _grSignature *signature)
                     }
                     break;
                 case 5:
-                    rec[36] = unitRec->envFuncRGB;
-                    rec[37] = unitRec->envFuncAlpha;
+                    rec[36] = unitRec->texEnvRGBCombFunc;
+                    rec[37] = unitRec->texEnvAlphaCombFunc;
                     rec[38] = (unsigned char)(31 - hgClz32(
-                        (unsigned int)unitRec->envScaleRGB));
+                        (unsigned int)unitRec->texEnvRGBCombScale));
                     rec[39] = (unsigned char)(31 - hgClz32(
-                        (unsigned int)unitRec->envScaleAlpha));
-                    rec[24] = unitRec->envSrcRGB[0];
-                    rec[26] = unitRec->envOpRGB[0];
+                        (unsigned int)unitRec->texEnvAlphaCombScale));
+                    rec[24] = unitRec->texEnvRGBCombSrc[0];
+                    rec[26] = unitRec->texEnvRGBCombOperand[0];
                     if (rec[36] != 1)
                     {
-                        rec[28] = unitRec->envSrcRGB[1];
-                        rec[30] = unitRec->envOpRGB[1];
-                        if (unitRec->envFuncRGB == 4)
+                        rec[28] = unitRec->texEnvRGBCombSrc[1];
+                        rec[30] = unitRec->texEnvRGBCombOperand[1];
+                        if (unitRec->texEnvRGBCombFunc == 4)
                         {
-                            rec[32] = unitRec->envSrcRGB[2];
-                            rec[34] = unitRec->envOpRGB[2];
+                            rec[32] = unitRec->texEnvRGBCombSrc[2];
+                            rec[34] = unitRec->texEnvRGBCombOperand[2];
                         }
                     }
-                    rec[25] = unitRec->envSrcAlpha[0];
-                    rec[27] = unitRec->envOpAlpha[0];
+                    rec[25] = unitRec->texEnvAlphaCombSrc[0];
+                    rec[27] = unitRec->texEnvAlphaCombOperand[0];
                     if (rec[37] != 1)
                     {
-                        rec[29] = unitRec->envSrcAlpha[1];
-                        rec[31] = unitRec->envOpAlpha[1];
+                        rec[29] = unitRec->texEnvAlphaCombSrc[1];
+                        rec[31] = unitRec->texEnvAlphaCombOperand[1];
                         if (rec[37] == 4)
                         {
-                            rec[33] = unitRec->envSrcAlpha[2];
-                            rec[35] = unitRec->envOpAlpha[2];
+                            rec[33] = unitRec->texEnvAlphaCombSrc[2];
+                            rec[35] = unitRec->texEnvAlphaCombOperand[2];
                         }
                     }
                     break;
@@ -1682,11 +1683,10 @@ void grEvaluatePixelPipeline(Gerbera_s *state, _grSignature *signature)
 /* --- grEnsureValidPixelPipeline (grPixelPipeline.inl 1080; DLL 37112-37279) ----
  * Evaluates + compresses the signature, looks the program up in the
  * pipeline cache and, on a hit, publishes the entry's gradient mask. On a
- * miss the DLL grows the scratch memory, runs the HC program generator
+ * miss it grows the scratch memory, runs the HC program generator
  * (grExecuteProgram) and the bytecode compiler (HC_compile, backend from
- * grGetBackend) and inserts the result; that half lands with the hc-module
- * session. Until then a miss takes the decompile's compile-failure exit
- * (compilationFailed = 1, early return). */
+ * grGetBackend) and inserts the result. An allocation or compilation failure
+ * leaves compilationFailed set and returns without publishing a program. */
 
 void grEnsureValidPixelPipeline(Gerbera_s *state)
 {

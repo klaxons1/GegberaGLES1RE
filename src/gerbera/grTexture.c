@@ -1,8 +1,5 @@
 /* grTexture.c - texture object functions (from the decompiled grApiSmall.inl
  * texture block + grUtilSmall.inl grIsValidTexture/grUpdateTexture).
- *
- * grSetActiveTexture needs Gerbera_s (state->textureUnit) and lands with the
- * driver-context port.
  */
 #include "gerbera/grTexture.h"
 #include "hg/hgInt32.h"

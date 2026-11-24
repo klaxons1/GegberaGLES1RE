@@ -8,6 +8,8 @@ from differential_raster import buffer, words
 
 TARGETS = {
     "arm": {
+        "glCopyTexImage2D": (0x1395C, 0x13AA8),
+        "glCopyTexSubImage2D": (0x13768, 0x1395C),
         "grReadDataTypeColor": (0x216E0, 0x21868),
         "grWriteDataTypeColor": (0x21868, 0x219E0),
         "grFill8Masked": (0x174E4, 0x17528),
@@ -31,9 +33,12 @@ TARGETS = {
         "grrCalcTextureMipmaps": (0x213C8, 0x214AC),
         "grrBlitMipmap": (0x21368, 0x213C8),
         "grrDownsample": (0x20ECC, 0x21254),
+        "grrFreeTextureLevel": (0x214AC, 0x214FC),
         "grrFreeTextureData": (0x214FC, 0x21540),
     },
     "x86": {
+        "glCopyTexImage2D": (0x41A220, 0x41A407),
+        "glCopyTexSubImage2D": (0x419ED0, 0x41A218),
         "grReadDataTypeColor": (0x440360, 0x44071A),
         "grWriteDataTypeColor": (0x440720, 0x440B2B),
         "grFill8Masked": (0x427DF0, 0x427F0F),
@@ -53,6 +58,7 @@ TARGETS = {
         "grrCalcTextureMipmaps": (0x43FA00, 0x43FC99),
         "grrBlitMipmap": (0x4429C0, 0x442E3F),
         "grrDownsample": (0x442500, 0x4429B9),
+        "grrFreeTextureLevel": (0x43FCA0, 0x43FDDE),
         "grrFreeTextureData": (0x43FDE0, 0x43FE97),
     },
 }
@@ -90,6 +96,8 @@ def run(suite):
     run_clears(suite, targets)
     run_copies(suite, targets)
     run_conversions(suite, targets)
+    run_allocations(suite, targets)
+    run_empty_copies(suite, targets)
     run_uploads(suite, targets)
 
 
@@ -321,6 +329,124 @@ def run_conversions(suite, targets):
         suite.compare("grrConvertBlitImage", config,
                       (bytes(output), bytes(native_pixels)),
                       (normalized, oracle.readback(pixel_pointer, len(pixels))))
+
+
+def run_allocations(suite, targets):
+    oracle = suite.oracle
+    allocation_entry, free_entry = ((0x8A90, 0x823C) if suite.arch == "arm"
+                                    else (0x4060D0, 0x4061B0))
+    allocations = {}
+
+    def allocate(machine):
+        size, = machine.arguments(1)
+        if not 0 < size <= 128:
+            raise ValueError(f"unexpected texture allocation size {size}")
+        pointer = machine.alloc(size)
+        allocations[pointer] = size
+        machine.return_from_call(pointer)
+
+    def release(machine):
+        pointer, = machine.arguments(1)
+        if pointer:
+            if pointer not in allocations:
+                raise ValueError("texture freed borrowed or already-freed storage")
+            del allocations[pointer]
+        machine.return_from_call()
+
+    hooks = [oracle.add_hook(allocation_entry, allocate), oracle.add_hook(free_entry, release)]
+    try:
+        # Same-size replacements still allocate in the Nokia builds. Empty
+        # levels remain initialized, and replacement preserves pbuffer ownership.
+        for fmt in range(len(BITS_PER_PIXEL)):
+            for width, height in ((0, 0), (0, 4), (4, 0), (1, 1), (4, 4), (8, 4)):
+                for old_kind in range(3):
+                    oracle.reset()
+                    allocations.clear()
+                    level = (0, 4, 10)[old_kind]
+                    config = (fmt, width, height, level, old_kind)
+                    native = buffer(bytes(8 + 2 * TEXTURE_BYTES + 64))
+                    suite.lib.differential_texture_allocate(buffer(words(config)), native)
+                    texture = oracle.alloc(TEXTURE_BYTES)
+                    oracle.watch(texture, TEXTURE_BYTES, "texture-allocation-record")
+                    oracle.call(targets["grInitTexture"][0], [texture])
+                    oracle.write(texture + 182, b"\0\2")
+                    borrowed_data = bytes([0x5A]) * 64
+                    borrowed = oracle.alloc(64, borrowed_data)
+                    oracle.watch(borrowed, 64, "borrowed-texture-storage")
+                    old_pointer = 0
+                    if old_kind:
+                        old_pointer = borrowed if old_kind == 2 else oracle.alloc(64)
+                        if old_kind == 1:
+                            allocations[old_pointer] = 64
+                        oracle.call(targets["grrReplaceTextureLevel"][0],
+                                    [texture, level, old_pointer, 4, 4, fmt])
+                        oracle.write(texture + level * 16 + 12, words((old_kind == 2,)))
+                        oracle.write(texture + 183, b"\2")
+                    status = oracle.call(targets["grrSetupTextureLevel"][0],
+                                         [texture, level, width, height, fmt])
+                    record = oracle.readback(texture, TEXTURE_BYTES)
+                    pointer, = struct.unpack_from("<I", record, level * 16)
+                    prefix = words((status, bool(pointer and pointer == old_pointer)))
+                    suite.compare("grrSetupTextureLevel", config,
+                                  bytes(native)[:8 + TEXTURE_BYTES],
+                                  prefix + normalized_texture(record))
+                    oracle.call(targets["grrFreeTextureData"][0], [texture])
+                    freed = normalized_texture(oracle.readback(texture, TEXTURE_BYTES))
+                    preserved = oracle.readback(borrowed, 64)
+                    expected_allocations = {pointer: allocations[pointer]} if pointer and old_kind == 2 else {}
+                    suite.compare("grrFreeTextureData", config,
+                                  (bytes(native)[8 + TEXTURE_BYTES:], expected_allocations),
+                                  (freed + preserved, allocations))
+    finally:
+        for hook in hooks:
+            oracle.remove_hook(hook)
+
+
+def run_empty_copies(suite, targets):
+    oracle = suite.oracle
+    get_context, get_texture, get_descriptor, free = (
+        (0xB59C, 0xD7AC, 0x227FC, 0x823C) if suite.arch == "arm"
+        else (0x4085B0, 0x412720, 0x445D00, 0x4061B0))
+    descriptor_bytes = buffer(bytes(16))
+    suite.lib.grrGetTextureFormatDescriptor(descriptor_bytes, 2)
+
+    def descriptor(machine):
+        _, destination = machine.arguments(2)
+        machine.write(destination, bytes(descriptor_bytes))
+        machine.return_from_call()
+
+    def release(machine):
+        if machine.arguments(1) != (0,):
+            raise ValueError("empty texture copy unexpectedly freed storage")
+        machine.return_from_call()
+
+    for width, height in ((0, 0), (0, 1), (1, 0)):
+        for level in (0, 10):
+            for fmt in range(0x1906, 0x190B):
+                for initial_error in (0, 3):
+                    oracle.reset()
+                    config = (width, height, level, fmt, initial_error)
+                    native = buffer(bytes(4 + TEXTURE_BYTES))
+                    suite.lib.differential_texture_copy_empty(buffer(words(config)), native)
+                    context = oracle.alloc(8, words((0, initial_error)))
+                    texture = oracle.alloc(TEXTURE_BYTES)
+                    oracle.watch(context, 8, "empty-copy-context")
+                    oracle.watch(texture, TEXTURE_BYTES, "empty-copy-texture")
+                    oracle.call(targets["grInitTexture"][0], [texture])
+                    oracle.write(texture + 182, b"\0")
+                    hooks = [oracle.add_hook(get_context, lambda m: m.return_from_call(context)),
+                             oracle.add_hook(get_texture, lambda m: m.return_from_call(texture)),
+                             oracle.add_hook(get_descriptor, descriptor),
+                             oracle.add_hook(free, release)]
+                    try:
+                        oracle.call(targets["glCopyTexImage2D"][0],
+                                    [0xDE1, level, fmt, 0, 0, width, height, 0])
+                    finally:
+                        for hook in hooks:
+                            oracle.remove_hook(hook)
+                    error = oracle.readback(context, 8)[4:]
+                    record = normalized_texture(oracle.readback(texture, TEXTURE_BYTES))
+                    suite.compare("glCopyTexImage2D", config, bytes(native), error + record)
 
 
 def run_uploads(suite, targets):

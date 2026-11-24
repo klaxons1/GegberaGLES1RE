@@ -104,6 +104,10 @@ void differential_arm_coverage_callback(void *engine, uint64_t address, uint32_t
     condition = coverage->conditions[index];
     if (condition >= ARM_CONDITION_ALWAYS)
         return;
+    /* Both outcomes are permanent until reset; subsequent executions cannot
+     * add coverage and need no register read or predicate evaluation. */
+    if (coverage->outcomes[index] == (ARM_PREDICATE_FALSE | ARM_PREDICATE_TRUE))
+        return;
     error = coverage->read_register(engine, coverage->cpsr_register, &cpsr);
     if (error)
     {

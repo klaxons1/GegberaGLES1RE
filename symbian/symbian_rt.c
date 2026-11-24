@@ -1,8 +1,6 @@
 /* symbian_rt.c - Freestanding ARM EABI & C99 runtime helpers for Symbian EKA2.
  *
- * Routes aligned word copies and zero-fills directly to Symbian's XIP ROM
- * euser.dll cache-line burst routines (wordmove / memmove / memclr), and
- * eliminates any dependency on estlib.dll.
+ * Uses euser.dll memory routines without an estlib.dll dependency.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -14,7 +12,7 @@ void abort(void)
     sym_User_Invariant();
 }
 
-/* --- Fast memory primitives backed by euser ROM routines ----------------- */
+/* Memory primitives backed by euser.dll. */
 
 void *memcpy(void *dst, const void *src, size_t n)
 {
@@ -29,9 +27,7 @@ void *memmove(void *dst, const void *src, size_t n)
 {
     if (n == 0u || dst == src)
         return dst;
-    /* Note: euser wordmove handles overlapping regions safely on EKA2? No:
-     * wordmove copies forward only! Only use wordmove when non-overlapping
-     * or dst < src; otherwise use sym_memmove. */
+    /* Restrict wordmove to forward copies; memmove handles either direction. */
     if ((((uintptr_t)dst | (uintptr_t)src | (uintptr_t)n) & 3u) == 0u &&
         (uintptr_t)dst < (uintptr_t)src)
     {

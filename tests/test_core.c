@@ -1,11 +1,9 @@
-/* test_core.c - checks for the gerbera core foundational layer (grDefs.h). */
+/* Core state, geometry, rasterization, texture and compiler tests. */
 #include "gerbera/grDefs.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static int checks = 0, failures = 0;
 
 /* Render-stack records contain both pointers and 64-bit cache masks. */
 #define TEST_RENDER_STACK(name) \
@@ -13,16 +11,7 @@ static int checks = 0, failures = 0;
     unsigned char *name = name##Storage.bytes
 #define TEST_PIXEL_PIPE_OFFSET (14644 + HC_extraStackSpace(grGetBackend()))
 
-#define CHECK(cond)                          \
-    do                                       \
-    {                                        \
-        ++checks;                            \
-        if (!(cond))                         \
-        {                                    \
-            ++failures;                      \
-            printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-        }                                    \
-    } while (0)
+#include "test_support.h"
 
 static void test_descriptors(void)
 {
@@ -261,7 +250,7 @@ static void test_pack_color(void)
     }
     {
         unsigned int up = grUnpackColor(0x8u, &desc);   /* b = 001 */
-        CHECK(grUnpackRGBA(up, GR_COLOR_B) == 36);     /* decompile: (c>>1)|32c|4c, c=1 -> 36 */
+        CHECK(grUnpackRGBA(up, GR_COLOR_B) == 36);     /* (c>>1)|32c|4c, c=1 -> 36 */
     }
 
     /* color write mask: only R and B enabled */
@@ -332,8 +321,7 @@ static void test_texture(void)
     CHECK(grTextureMipLevelInitialized(&tex, 0) == 1);
 
     /* update: MIN filter = 6 has USE_MIPMAPS; chain walk fails at level 1
-     * (missing), so the final parmMask write is skipped entirely (faithful:
-     * stays at the initial 2) */
+     * (missing), so the final parmMask write is skipped and it remains 2. */
     grUpdateTexture(&tex);
     CHECK(tex.parmMask == 2u);
 
@@ -346,7 +334,7 @@ static void test_texture(void)
         tex.mipmap[2].pixels = pix3; tex.mipmap[2].log2Dim[0] = 0; tex.mipmap[2].log2Dim[1] = 0;
         tex.mipmap[2].texFormat = GR_TEXTUREFORMAT_RGBA;
         grUpdateTexture(&tex);
-        /* chain ends at level 2 (2x2 -> next would be 1x1 level 3 missing) */
+        /* The 4x4, 2x2, 1x1 chain ends at level 2. */
         CHECK(tex.numMipLevels == 3);
         CHECK((tex.parmMask & 8u) != 0);           /* mipmap chain complete */
         CHECK((tex.parmMask & 4u) != 0);
@@ -463,7 +451,7 @@ static void test_state_viewport(void)
     grSetViewport(&st, 400, 500, 0, 100);
     CHECK(st.renderScissor.x0 == 0 && st.renderScissor.x1 == 0);
     CHECK(st.renderScissor.y0 == 0 && st.renderScissor.y1 == 0);
-    /* scissor clipping only applies when SCISSOR_TEST is enabled (faithful) */
+    /* Scissor clipping only applies when SCISSOR_TEST is enabled. */
     grSetScissor(&st, 5, 200, 30, 300);
     CHECK(st.scissorRectangle.x1 == 200);
     CHECK(st.surfaceScissor.x1 == 320 && (HGuint32)st.surfaceScissor.y1 == 240u); /* ignored */
@@ -654,7 +642,7 @@ static void test_transform(void)
     CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_TEXTURE1) == 0);
     CHECK(grIsMatrixDirty(&st, GR_MATRIXMODE_MODELVIEW) == 1);  /* untouched */
 
-    /* user clip planes: planes 10..15 -> slots 0..5 (EPOC bases verified) */
+    /* User clip planes: planes 10..15 map to slots 0..5. */
     IFVector4_set(&eq, FIN(0.0f), FIN(1.0f), FIN(0.0f), FIN(-0.5f));
     grSetUserClipPlane(&st, GR_CLIP_USER0 + 2, &eq, &id);
     CHECK(st.origUserClipPlanes[2].m[0] == eq.m[0] &&
@@ -686,7 +674,7 @@ static void test_update_lights(void)
     int ret;
 
     /* grUpdateLight: directional -> mask 0x40 + headlight halfway =
-     * normalize(nVP + (0,0,2^21)); probed value pinned below */
+     * normalize(nVP + (0,0,2^21)). */
     memset(&st, 0, sizeof(st));
     st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
     IFVector4_set(&pos, FIN(2.0f), FIN(0.0f), FIN(0.0f), FIN(0.0f));
@@ -804,8 +792,7 @@ static void test_itc_transform(void)
     CHECK(out[0] == 100 && out[1] == 200);
     grTexCoordDivByQ(out, (int[]){100, 200, 0, 0});
     CHECK(out[0] == 100 && out[1] == 200);
-    /* q = 0.5: x/0.5 = 2x. The rcp approximation loses one LSB - probed
-     * value from the faithful implementation. */
+    /* q = 0.5: division doubles x, with one LSB lost to the reciprocal estimate. */
     grTexCoordDivByQ(out, (int[]){100, 200, 0, 1048576});
     CHECK(out[0] == 199 && out[1] == 399);
 }
@@ -907,7 +894,7 @@ static void test_update_pipeline(void)
     CHECK(st.applyFog == NULL);                    /* FOG cap off */
     CHECK(st.transformVE == 0);
     CHECK(st.vertexPipelineDirty == 0);
-    /* the decompile gates the point-distance-attention cache on a RAW
+    /* The point-distance-attenuation cache is gated on a raw
      * primitiveType == 0 - a value grGetPrimitiveVertices (called further
      * down grUpdateVertexPipeline) rejects, so the branch is dead-end code
      * behind grSetupCulling's type validation: changing pointDistAttn does
@@ -1056,7 +1043,7 @@ static void test_transform_vertex(void)
          * identity modelview keeps the equation */
         st.userClipPlanes[5] = st.origUserClipPlanes[5];
         grTransformVertex(&st, &vb[0]);
-        CHECK(st.userClipPlanes[5].m[0] == 536870912); /* 6.26 mantissa of 1.0 */
+        CHECK(st.userClipPlanes[5].m[0] == 536870912); /* 1.0 in the 2^29 mantissa scale. */
         CHECK(st.userClipPlanes[5].m[3] == -536870912);/* of -2.0 */
         CHECK(vb[0].clipMask == 0x8000u);              /* bit 6+9: 1-2 < 0 */
         /* grIsOutsideUserClipPlane directly */
@@ -1165,7 +1152,7 @@ static void test_state_lights(void)
     /* spot direction: stored negated */
     dir[0] = 0; dir[1] = 2097152; dir[2] = 0;
     grSetLightSpotDirection(&st, 2, dir, &orgDir);
-    CHECK(st.lights[2].spotDirectionNegated[1] == -2097152);
+    CHECK(st.lights[2].spotDirection[1] == -2097152);
     CHECK(fabs(IScalar_stof(IFVector3_getf(&st.lights[2].orgSpotDirection, 1)) + 1.0f) < 1e-6f);
 
     /* colors: ambient(0)/diffuse(1)/specular(2).
@@ -1223,6 +1210,23 @@ static void test_state_lights(void)
 /* --- light / grLightVertex / grApplyLighting --------------------------------- */
 #include "gerbera/grState.h"
 
+static _grVertex *init_lighting_vertex(Gerbera_s *state, unsigned char *pool,
+                                       _IMatrix4x4 *identity,
+                                       unsigned char colors[4])
+{
+    unsigned char list[] = {0, 0xFF};
+    memset(pool, 0, 4096);
+    memset(state, 0, sizeof(*state));
+    state->primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
+    IVertexTransform_copy(&state->modelviewTransform, identity);
+    state->renderStack = pool;
+    state->vertexArray[2].data = colors;
+    state->vertexArray[2].stride = 4;
+    state->vertexArray[2].type = GR_DATATYPE_UINT8;
+    grFetchVertexColorUINT8(state, list);
+    return (_grVertex *)(pool + 1332);
+}
+
 static void test_light_vertex(void)
 {
     Gerbera_s st;
@@ -1242,17 +1246,7 @@ static void test_light_vertex(void)
 
     /* directional light (0,0,1,0), white diffuse, vertex at the origin with
      * normal (0,0,1): fully lit, single-sided */
-    memset(pool, 0, 4096);
-    memset(&st, 0, sizeof(st));
-    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
-    IVertexTransform_copy(&st.modelviewTransform, &id);
-    st.renderStack = pool;
-    vb = (_grVertex *)(pool + 1332);
-    st.vertexArray[2].data = colors;
-    st.vertexArray[2].stride = 4;
-    st.vertexArray[2].type = GR_DATATYPE_UINT8;
-    vb[0].index = 0;
-    grFetchVertexColorUINT8(&st, list);
+    vb = init_lighting_vertex(&st, pool, &id, colors);
     IFVector4_set(&pos, FIN(0.0f), FIN(0.0f), FIN(1.0f), FIN(0.0f));
     grSetLightPosition(&st, 0, &pos);
     grSetLightSpotCutoff(&st, 0, FIN(180.0f));
@@ -1273,9 +1267,9 @@ static void test_light_vertex(void)
     XNormal3_setx(vb[0].normal, 0, 0, 65536);
     IMatrix4x4_inversetranspose(&st.normalsToEyeTransform, &id, 0);
     grApplyLighting(&st, list);
-    CHECK(st.lights[0].ndotL == 2097152);
-    CHECK(st.lights[0].specDot == 0);
-    CHECK(st.lights[0].xAtten == 0);                /* directional: untouched */
+    CHECK(st.lights[0].ld == 2097152);
+    CHECK(st.lights[0].ls == 0);
+    CHECK(st.lights[0].la == 0);                /* directional: untouched */
     CHECK(vb[0].color.final[0][0] == 0xFF00);
     CHECK(vb[0].color.final[0][1] == 0xFF00);
     CHECK(vb[0].color.final[0][2] == 0xFF00);
@@ -1285,17 +1279,7 @@ static void test_light_vertex(void)
     CHECK(vb[0].color.final[1][2] == 0xFF00);
 
     /* same light from behind, two-sided: front unlit, back fully lit */
-    memset(pool, 0, 4096);
-    memset(&st, 0, sizeof(st));
-    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
-    IVertexTransform_copy(&st.modelviewTransform, &id);
-    st.renderStack = pool;
-    vb = (_grVertex *)(pool + 1332);
-    st.vertexArray[2].data = colors;
-    st.vertexArray[2].stride = 4;
-    st.vertexArray[2].type = GR_DATATYPE_UINT8;
-    vb[0].index = 0;
-    grFetchVertexColorUINT8(&st, list);
+    vb = init_lighting_vertex(&st, pool, &id, colors);
     IFVector4_set(&pos, FIN(0.0f), FIN(0.0f), FIN(-1.0f), FIN(0.0f));
     grSetLightPosition(&st, 0, &pos);
     grSetLightSpotCutoff(&st, 0, FIN(180.0f));
@@ -1311,7 +1295,7 @@ static void test_light_vertex(void)
     XNormal3_setx(vb[0].normal, 0, 0, 65536);
     IMatrix4x4_inversetranspose(&st.normalsToEyeTransform, &id, 0);
     grApplyLighting(&st, list);
-    CHECK(st.lights[0].ndotL == -2097152);
+    CHECK(st.lights[0].ld == -2097152);
     CHECK(vb[0].color.final[0][0] == 0 && vb[0].color.final[0][1] == 0 &&
           vb[0].color.final[0][2] == 0);
     CHECK(vb[0].color.final[1][0] == 0xFF00);
@@ -1319,13 +1303,8 @@ static void test_light_vertex(void)
     CHECK(vb[0].color.final[1][2] == 0xFF00);
 
     /* positional light at (0,0,1,1) + transformVE: the vertex is brought to
-     * eye space (state 3) and lit; attenuation (1,0,0) keeps xAtten at 1.0 */
-    memset(pool, 0, 4096);
-    memset(&st, 0, sizeof(st));
-    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
-    IVertexTransform_copy(&st.modelviewTransform, &id);
-    st.renderStack = pool;
-    vb = (_grVertex *)(pool + 1332);
+     * eye space (state 3) and lit; attenuation (1,0,0) keeps la at 1.0 */
+    vb = init_lighting_vertex(&st, pool, &id, colors);
     {
         static float vpos[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 
@@ -1333,12 +1312,7 @@ static void test_light_vertex(void)
         st.vertexArray[0].stride = 16;
         st.vertexArray[0].size = 4;
         st.vertexArray[0].type = GR_DATATYPE_FLOAT;
-        st.vertexArray[2].data = colors;
-        st.vertexArray[2].stride = 4;
-        st.vertexArray[2].type = GR_DATATYPE_UINT8;
     }
-    vb[0].index = 0;
-    grFetchVertexColorUINT8(&st, list);
     IFVector4_set(&pos, FIN(0.0f), FIN(0.0f), FIN(1.0f), FIN(1.0f));
     grSetLightPosition(&st, 0, &pos);
     grSetLightSpotCutoff(&st, 0, FIN(180.0f));
@@ -1362,25 +1336,15 @@ static void test_light_vertex(void)
     IMatrix4x4_inversetranspose(&st.normalsToEyeTransform, &id, 0);
     grApplyLighting(&st, list);
     CHECK(grGetVertexPositionState(&vb[0]) == GR_POSITION_EYE_SPACE_CARTESIAN);
-    CHECK(st.lights[0].ndotL == 2097152);
-    CHECK(st.lights[0].xAtten == 2097152);
+    CHECK(st.lights[0].ld == 2097152);
+    CHECK(st.lights[0].la == 2097152);
     CHECK(vb[0].color.final[0][0] == 0xFF00);
     CHECK(vb[0].color.final[0][1] == 0xFF00);
     CHECK(vb[0].color.final[0][2] == 0xFF00);
 
     /* color material: diffuse scales with the per-vertex color */
-    memset(pool, 0, 4096);
-    memset(&st, 0, sizeof(st));
-    st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
-    IVertexTransform_copy(&st.modelviewTransform, &id);
-    st.renderStack = pool;
-    vb = (_grVertex *)(pool + 1332);
     colors[0] = 128; colors[1] = 128; colors[2] = 128;
-    st.vertexArray[2].data = colors;
-    st.vertexArray[2].stride = 4;
-    st.vertexArray[2].type = GR_DATATYPE_UINT8;
-    vb[0].index = 0;
-    grFetchVertexColorUINT8(&st, list);
+    vb = init_lighting_vertex(&st, pool, &id, colors);
     IFVector4_set(&pos, FIN(0.0f), FIN(0.0f), FIN(1.0f), FIN(0.0f));
     grSetLightPosition(&st, 0, &pos);
     grSetLightSpotCutoff(&st, 0, FIN(180.0f));
@@ -1419,15 +1383,12 @@ static void test_setup_culling(void)
     grSetCapability(&st, GR_CAPABILITY_VERTEX_ARRAY, 1);
     CHECK(grSetupCulling(&st, GR_PRIMITIVETYPE_TRIANGLE) == GR_COMMAND_STOP);
     CHECK(st.primitiveType == GR_PRIMITIVETYPE_TRIANGLE);
-    /* texture rect bypasses the vertex-data check (but the empty scissor
-     * reject catches it); the fresh verdict must be marked dirty or the
-     * cached-verdict assert (grApiFast.inl 157) fires on the stale 0 */
+    /* Texture rectangles bypass the vertex-data check but still reject an
+     * empty scissor. Mark the cached rejection result dirty before switching. */
     st.rejectAllStateDirty = 1;
     CHECK(grSetupCulling(&st, GR_PRIMITIVETYPE_TEXTURE_RECT) == GR_COMMAND_STOP);
     CHECK(st.rejectAllState == 1);
     CHECK(st.rejectAllStateDirty == 0);
-
-    /* invalid primitive type dies; skip that path (grDie aborts) */
 
     /* alpha test with GL_NEVER-ish func 0 rejects everything */
     memset(&st, 0, sizeof(st));
@@ -1468,7 +1429,7 @@ static void test_setup_culling(void)
     CHECK(st.enabledUserClipPlaneIndices == 0);
     CHECK(st.modelviewTransform.v[0].e == id.v[0].e);
     /* IVertexTransform_copy renormalizes the 3.29 identity mantissas to the
-     * shared-exponent record (probe: 0x40000000 mantissa, exp 0x8f) */
+     * shared-exponent record (0x40000000 mantissa, exponent 0x8f). */
     CHECK(st.objectToClipTransform.v[0].m[0] == 0x40000000);
     CHECK(st.objectToClipTransform.v[3].m[3] == 0x40000000);
     CHECK(st.objectToClipTransform.exp == 0x8f);
@@ -1614,9 +1575,7 @@ static void test_clear(void)
     for (i = 0; i < 24; ++i)
         CHECK(color16[i] == ((i >= 8 && i < 11) || (i >= 14 && i < 17) ? 0xFFFF : 0x5555));
 
-    /* dithered clear: useDithering + nonzero color go through grDitherColor;
-     * clearColor 129/129/129 with kernel bytes FF E6 13 89 -> only the two
-     * pixels over the 0x13 byte drop below the plain 0x8410 packing */
+    /* Dithered clears use grDitherColor; verify both rows of the RGB565 pattern. */
     st.drawSurface.buffers[0].stride = 12;
     st.useDithering = 1;
     grSetClearColor(&st, grSetRGBA(129, 129, 129, 255));
@@ -2026,9 +1985,8 @@ static void test_queueprimitive(void)
 
 /* --- grApiFast.inl: grFetchPrimitives + grRenderElements/grRenderArrays ----- */
 
-/* test fixtures for the real draw dispatch: the color-fetch stage marks the
- * fetched records COLOR_COMPUTED (the real stage does this after fetching),
- * and the compiled pixel pipeline is a no-op until the hc interpreter lands. */
+/* Dispatch fixtures mark fetched colors as computed and suppress pixel
+ * writes so the tests can inspect primitive queues and vertex lists. */
 static void noopPipeline(void *pipe)
 {
     (void)pipe;
@@ -3054,9 +3012,8 @@ static void test_linepoint(void)
     st->pixelPipelineCode = NULL;
 }
 
-/* --- test_tessellate: grFracDiv/grLerp/grClassifyTriangle/grSplitEdge + -------
- * the grTriangleTessellator recursion. All values hand-checked against the
- * probe run (the /2 in grFracDiv floors: ONE/2 - 1 for 1/2). */
+/* --- grFracDiv/grLerp/grClassifyTriangle/grSplitEdge and tessellation ------
+ * grFracDiv(1, 2) is one unit below ONE/2 in the fixed-point domain. */
 static void test_tessellate(void)
 {
     TEST_RENDER_STACK(stack);
@@ -3107,7 +3064,7 @@ static void test_tessellate(void)
           GR_TRIANGLESTATUS_AFFINE);
     vb[0].normal[2] = ONE; vb[1].normal[2] = 2 * ONE; vb[2].normal[2] = 2 * ONE;
     CHECK(grClassifyTriangle(st, vb, grSetIndices(0, 1, 2)) ==
-          GR_TRIANGLESTATUS_PERSPECTIVE);
+          GR_TRIANGLESTATUS_NONAFFINE);
 
     /* grSplitEdge: w-variance edge splits with the harmonic w and the
      * perspective-biased clip factors; flat and tiny edges do not */
@@ -3257,7 +3214,7 @@ static void test_pipecache(void)
     CHECK(grCacheGetFreeMemory(&cache) == 0);
     CHECK(cache.firstFree == NULL);
 
-    /* inserting now EVICTS the least-recently-used entry (A, stamp 2);
+    /* Inserting into the full arena evicts the least-recently-used entry (A, stamp 2);
      * its freed block (at the arena tail) is reused as-is: tail allocation
      * of the exact-fit free block returns the same address */
     sigA.bytes[1] = 1;
@@ -3284,13 +3241,38 @@ static void test_pipecache(void)
     CHECK(grCacheInsert(&cache, &sigA, 1, arena, 512) == NULL);
     grCacheInit(&cache, NULL, entries, 0, 0);
     CHECK(grCacheInsert(&cache, &sigA, 1, arena, 4) == NULL);
+
+    /* Both binaries use unsigned age ordering, even after full wrap. */
+    {
+        static const unsigned int stamps[] = {0x7FFFFFFCu, 0xFFFFFFFCu};
+        _grCacheSignature signatures[3];
+        unsigned char replacement[128];
+        int boundary, i;
+        memset(signatures, 0, sizeof(signatures));
+        for (i = 0; i < 3; ++i)
+            signatures[i].bytes[0] = (unsigned char)i;
+        for (boundary = 0; boundary < 2; ++boundary)
+        {
+            grCacheInit(&cache, arena, entries, sizeof(arena), 4);
+            cache.timeStamp = stamps[boundary];
+            for (i = 0; i < 3; ++i)
+                CHECK(grCacheInsert(&cache, &signatures[i], i, arena, 32) != NULL);
+            CHECK(grCacheFind(&cache, &signatures[0], &mask) == arena + 224);
+            CHECK(cache.timeStamp == stamps[boundary] + 4u);
+            CHECK(grCacheGetOldestUsed(&cache) == &entries[boundary ? 1 : 2]);
+            grCacheSetArena(&cache, replacement, sizeof(replacement));
+            CHECK(cache.arena == replacement && cache.entries == entries);
+            CHECK(cache.entryCount == 4 && cache.timeStamp == 0);
+            CHECK(grCacheGetFreeMemory(&cache) == sizeof(replacement));
+            CHECK(grCacheFind(&cache, &signatures[0], &mask) == NULL);
+        }
+    }
 }
 
 /* --- test_signature: signature machinery (grEvaluatePixelPipeline, ------------
  * grCompressSignature, grIsGradientUsed, grEnsureValidPixelPipeline,
- * grCheckPixelPipeConsistency). Byte positions are validated by the
- * compress asserts against the decompile's bit-count tables; the pinned
- * values come from the 32-bit DLL state walk. */
+ * grCheckPixelPipeConsistency). Expected packed values follow the original
+ * 32-bit DLL signature layout and bit-count tables. */
 static void test_signature(void);
 
 static void test_signature(void)
@@ -3414,24 +3396,24 @@ static void test_signature(void)
             st.textureUnit[2 * i].texture = &tex[i];
             st.useTexUnit[i] = 1;
         }
-        st.textureUnit[0].envMode = 1;
-        st.textureUnit[2].envMode = 5;
-        st.textureUnit[2].envFuncRGB = 1;
-        st.textureUnit[2].envFuncAlpha = 2;
-        st.textureUnit[2].envSrcRGB[0] = 0;
-        st.textureUnit[2].envSrcRGB[1] = 1;
-        st.textureUnit[2].envSrcRGB[2] = 2;
-        st.textureUnit[2].envOpRGB[0] = 0;
-        st.textureUnit[2].envOpRGB[1] = 1;
-        st.textureUnit[2].envOpRGB[2] = 2;
-        st.textureUnit[2].envSrcAlpha[0] = 1;
-        st.textureUnit[2].envSrcAlpha[1] = 2;
-        st.textureUnit[2].envSrcAlpha[2] = 0;
-        st.textureUnit[2].envOpAlpha[0] = 2;
-        st.textureUnit[2].envOpAlpha[1] = 1;
-        st.textureUnit[2].envOpAlpha[2] = 0;
-        st.textureUnit[2].envScaleRGB = 8;
-        st.textureUnit[2].envScaleAlpha = 9;
+        st.textureUnit[0].texEnvMode = 1;
+        st.textureUnit[2].texEnvMode = 5;
+        st.textureUnit[2].texEnvRGBCombFunc = 1;
+        st.textureUnit[2].texEnvAlphaCombFunc = 2;
+        st.textureUnit[2].texEnvRGBCombSrc[0] = 0;
+        st.textureUnit[2].texEnvRGBCombSrc[1] = 1;
+        st.textureUnit[2].texEnvRGBCombSrc[2] = 2;
+        st.textureUnit[2].texEnvRGBCombOperand[0] = 0;
+        st.textureUnit[2].texEnvRGBCombOperand[1] = 1;
+        st.textureUnit[2].texEnvRGBCombOperand[2] = 2;
+        st.textureUnit[2].texEnvAlphaCombSrc[0] = 1;
+        st.textureUnit[2].texEnvAlphaCombSrc[1] = 2;
+        st.textureUnit[2].texEnvAlphaCombSrc[2] = 0;
+        st.textureUnit[2].texEnvAlphaCombOperand[0] = 2;
+        st.textureUnit[2].texEnvAlphaCombOperand[1] = 1;
+        st.textureUnit[2].texEnvAlphaCombOperand[2] = 0;
+        st.textureUnit[2].texEnvRGBCombScale = 8;
+        st.textureUnit[2].texEnvAlphaCombScale = 9;
 
         grEvaluatePixelPipeline(&st, &sig);
         CHECK(sig.isValid == 1);
@@ -3509,7 +3491,7 @@ static void test_signature(void)
         CHECK(sig.texture[1][40] == 1);
         CHECK(sig.texture[1][41] == 1);
 
-        /* compress: pinned 10-word key for this TI=0x18AA signature */
+        /* Expected 10-word compressed key for this TI=0x18AA signature. */
         grCompressSignature(&cs, &sig);
         {
             static const unsigned int want[10] =
@@ -3541,8 +3523,8 @@ static void test_signature(void)
             /* Restore legal GLES surface/texenv invariants after the raw bitpack check */
             st.drawSurface.depthBytes   = 4;
             st.drawSurface.stencilBytes = 1;
-            st.textureUnit[2].envOpAlpha[1] = 3;
-            st.textureUnit[2].envOpAlpha[2] = 2;
+            st.textureUnit[2].texEnvAlphaCombOperand[1] = 3;
+            st.textureUnit[2].texEnvAlphaCombOperand[2] = 2;
             st.setjmpConfigStorage.setjmpWrap = eglHCWrapSetjmp;
             st.setjmpConfigStorage.longjmp    = eglHCWrapLongjmp;
             st.setjmpConfigStorage.jmpbufSize = (unsigned int)eglGetJmpbufSize();
@@ -3567,8 +3549,8 @@ static void test_signature(void)
             st.setjmpConfigStorage.jmpbufSize = (unsigned int)eglGetJmpbufSize();
             st.drawSurface.depthBytes   = 0;
             st.drawSurface.stencilBytes = 0;
-            st.textureUnit[2].envOpAlpha[1] = 1;
-            st.textureUnit[2].envOpAlpha[2] = 0;
+            st.textureUnit[2].texEnvAlphaCombOperand[1] = 1;
+            st.textureUnit[2].texEnvAlphaCombOperand[2] = 0;
         }
 
         /* hit path: the pre-inserted program is published */
@@ -3661,7 +3643,7 @@ static void test_setuprendering(void)
     st.stencilTestMask = 0xFF;
     st.stencilWriteMask = 0xBB;
 
-    /* scratch allocator: 64KB buffer for the 23860-byte render stack */
+    /* Scratch storage must hold the render stack and compiler allocations. */
     st.scratchAllocator.data = scratch;
     st.scratchAllocator.size = (int)sizeof(scratch);
     st.scratchAllocator.allocated = 0;
@@ -3794,62 +3776,19 @@ static void test_texturerect(void)
 /* --- test_renderrect: grRenderTextureRect ---------------------------------- */
 static void test_renderrect(void)
 {
-    Gerbera_s st;
-    _grPixelPipe pipe;
-    static unsigned char scanlineInfo[4096];
-    static unsigned char colorBuf[65536];
-    static unsigned char depthBuf[65536];
-    static unsigned char stencilBuf[65536];
-    int executed = 0;
-
-    memset(&st, 0, sizeof(st));
+    Gerbera_s state;
+    _grPixelPipe pipe, before;
+    memset(&state, 0, sizeof(state));
     memset(&pipe, 0, sizeof(pipe));
-    st.pixelPipeline = &pipe;
-    st.compilationFailed = 0;
-    st.activeGradientMask = 0;
-    st.numActiveGradients = 0;
+    state.pixelPipeline = &pipe;
+    state.compilationFailed = 1;
+    memcpy(&before, &pipe, sizeof(pipe));
 
-    /* draw surface: 64x64 */
-    st.drawSurface.width = 64;
-    st.drawSurface.height = 64;
-    st.drawSurface.buffers[0].data = colorBuf;
-    st.drawSurface.buffers[0].stride = 256;
-    st.drawSurface.buffers[1].data = depthBuf;
-    st.drawSurface.buffers[1].stride = 128;
-    st.drawSurface.buffers[2].data = stencilBuf;
-    st.drawSurface.buffers[2].stride = 64;
-
-    /* surface scissor covers the full surface */
-    st.surfaceScissor.x0 = 0;
-    st.surfaceScissor.y0 = 0;
-    st.surfaceScissor.x1 = 64;
-    st.surfaceScissor.y1 = 64;
-
-    /* scanline info lives in the pipe */
-    pipe.scanlineInfo = (unsigned int *)scanlineInfo;
-
-    /* a no-op pixel pipeline program */
-    st.pixelPipelineCode = NULL;
-    /* grExecutePixelPipeline would die on NULL code; use a stub */
-    /* (the test verifies the setup, not the execution) */
-
-    /* rect: (10, 10) with size (20, 20) in IScalar */
-    {
-        int x0 = IScalar_fixedToScalar(10 << 12, 12);
-        int y0 = IScalar_fixedToScalar(10 << 12, 12);
-        int w = IScalar_fixedToScalar(20 << 12, 12);
-        int h = IScalar_fixedToScalar(20 << 12, 12);
-        int z = IScalar_fixedToScalar(0, 12);
-
-        /* this will call grExecutePixelPipeline which needs a valid code
-         * pointer; skip the execution check by setting compilationFailed */
-        st.compilationFailed = 1;
-        grRenderTextureRect(&st, x0, y0, w, h, z);
-        /* with compilationFailed=1, the function returns early */
-        CHECK(pipe.numScanlines == 0);
-        executed = 1;
-    }
-    CHECK(executed == 1);
+    /* Compilation failure skips rectangle setup and pixel dispatch. */
+    grRenderTextureRect(&state, IScalar_immediate(10.0f), IScalar_immediate(10.0f),
+                         IScalar_immediate(20.0f), IScalar_immediate(20.0f), 0);
+    CHECK(pipe.numScanlines == 0);
+    CHECK(memcmp(&pipe, &before, sizeof(pipe)) == 0);
 }
 
 /* --- test_hcopcode: HC opcode encoding ------------------------------------ */
@@ -3857,7 +3796,7 @@ static void test_hcopcode(void)
 {
     HCInstr_s instr;
 
-    /* genOp3: op=3 (ADD), dst=5, src0=7, src1=9 */
+    /* genOp3: op=3 (ASR), dst=5, src0=7, src1=9 */
     instr = HC_genOp3(3, 5, 7, 9);
     CHECK(HC_getOpcodeOper(&instr) == 3);
     CHECK(HC_getOpcodeDst(&instr) == 5);
@@ -3881,15 +3820,15 @@ static void test_hcopcode(void)
     CHECK(HC_getOpcodeSrc0(&instr) == 4);
     CHECK(HC_getOpcodeArgCount(&instr) == 2);
 
-    /* genOp0: op=16 (EOP, argc=0) */
+    /* genOp0: op=16 (NOP, argc=0) */
     instr = HC_genOp0(16);
     CHECK(HC_getOpcodeOper(&instr) == 16);
     CHECK(HC_getOpcodeArgCount(&instr) == 0);
 
     /* opcode types: 0-22 ALUOP, 23-38 MEMOP, 39-54 BRANCH */
-    CHECK(HC_getOpcodeTypeOp(3) == 0);   /* ADD */
-    CHECK(HC_getOpcodeTypeOp(28) == 1);  /* LD */
-    CHECK(HC_getOpcodeTypeOp(40) == 2);  /* LABEL */
+    CHECK(HC_getOpcodeTypeOp(3) == 0);   /* ASR */
+    CHECK(HC_getOpcodeTypeOp(28) == 1);  /* LW2U */
+    CHECK(HC_getOpcodeTypeOp(40) == 2);  /* BRA */
 
     /* store ops: 31-38 */
     CHECK(HC_isStoreOp(31) != 0);
@@ -3934,7 +3873,7 @@ static void test_interpreter(void)
     count = grExecuteProgram(prog, &sig, 4096);
     CHECK(count > 0);
     CHECK(count < 4096);
-    /* deterministic output for this TI=0x18AA signature (pinned regression guard) */
+    /* Expected program size for this TI=0x18AA signature. */
     CHECK(count == 173);
     /* last instruction must be EOP */
     CHECK(HC_getOpcodeOper(&prog[count - 1]) == HCOP_EOP);
@@ -3959,9 +3898,9 @@ static void test_hcx86backend(void)
     unsigned char *remap;
     HCInstr_s prog[32];
     HCInstr_s *fixed = NULL;
-    int freeMasks[32];
+    unsigned int freeMasks[32];
     unsigned short duZero[32];
-    void *udZero[32];
+    UDChainStub_s *udZero[32];
     HCBackendInfo_s beInfo;
     void *codePtr = NULL;
     unsigned char *code;
@@ -3970,7 +3909,7 @@ static void test_hcx86backend(void)
     int uses[4];
     int i;
 
-    /* 1. CodeView HCOP_e & new hcOpcode helper checks */
+    /* CodeView HCOP_e values and opcode helpers. */
     CHECK(HCOP_ADD == 0);
     CHECK(HCOP_MOV == 14);
     CHECK(HCOP_NOP == 16);
@@ -4062,7 +4001,7 @@ static void test_hcx86backend(void)
     CHECK(be->codegen != NULL);
     CHECK(be->postRegallocFixer != NULL);
     CHECK(be->emulate != NULL);
-    CHECK(be->reserved9 == NULL);
+    CHECK(be->disasm == NULL);
     CHECK(be->isNative != NULL && be->isNative() == 1);
     CHECK(be->optimizationMask == NULL);
 
@@ -4099,8 +4038,8 @@ static void test_hcx86backend(void)
     prog[2] = HC_genOp3(HCOP_SUB, 1, 2, 1);        /* dst==s1, non-comm     */
     prog[3] = HC_genOp3Imm(HCOP_SB, 5, 2, 4);      /* reg 5 not in 0x1E     */
     prog[4] = HC_genOp0(HCOP_EOP);
-    beInfo.lst = prog;
-    beInfo.freeHardRegMasks = freeMasks;
+    beInfo.instructions = prog;
+    beInfo.freeRegMasks = freeMasks;
     beInfo.liveRegs = NULL;
     beInfo.chains.duChains = duZero;
     beInfo.chains.udChains = udZero;
@@ -4203,8 +4142,8 @@ static void test_hcx86backend(void)
     {
         unsigned short duBuf[5] = { 1, 1, 2, 0, 0 }; /* chain at [0..1]: len=1, val=1 */
         unsigned short udLink[2] = { 1, 0 };         /* chain: len=1, defSite=0       */
-        void *perUse1[2];
-        void *udArr[3];
+        DUChain_s *perUse1[2];
+        UDChainStub_s *udArr[3];
         HCBackendInfo_s fuseInfo;
 
         prog[0] = HC_genOp3Imm(HCOP_LD, 2, 4, 16);   /* LD EDX, [ESP+16] -> fused!    */
@@ -4212,13 +4151,13 @@ static void test_hcx86backend(void)
         prog[2] = HC_genOp0(HCOP_EOP);
 
         perUse1[0] = NULL;
-        perUse1[1] = udLink;
+        perUse1[1] = (DUChain_s *)udLink;
         udArr[0] = NULL;
-        udArr[1] = perUse1;
+        udArr[1] = (UDChainStub_s *)perUse1;
         udArr[2] = NULL;
 
-        fuseInfo.lst = prog;
-        fuseInfo.freeHardRegMasks = freeMasks;
+        fuseInfo.instructions = prog;
+        fuseInfo.freeRegMasks = freeMasks;
         fuseInfo.liveRegs = NULL;
         fuseInfo.chains.duChains = &duBuf[2];
         fuseInfo.chains.udChains = udArr;
@@ -4248,9 +4187,9 @@ static void test_hcarmbackend(void)
     unsigned char *remap;
     HCInstr_s prog[32];
     HCInstr_s *fixed = NULL;
-    int freeMasks[32];
+    unsigned int freeMasks[32];
     unsigned short duZero[32];
-    void *udZero[32];
+    UDChainStub_s *udZero[32];
     HCBackendInfo_s beInfo;
     void *codePtr = NULL;
     unsigned int *words;
@@ -4270,8 +4209,8 @@ static void test_hcarmbackend(void)
     CHECK(be->internalStackSpaceAfterInvars == NULL);
     CHECK(be->postRegallocFixer == NULL);
     CHECK(be->optimizationMask == NULL);
-    CHECK(be->reserved9 != NULL);
-    be->reserved9();
+    CHECK(be->disasm != NULL);
+    be->disasm(NULL, 0, NULL);
     be->emulate(&armEmulateProbeCallback, &probeSlot);
     CHECK(probeSlot == 0x5A5AA5A5);
 
@@ -4281,54 +4220,35 @@ static void test_hcarmbackend(void)
 
     /* 2. canCreateImmediate across ARM rotated-imm8 & load/store classes */
     {
-        HCInstr_s ins;
-        /* Class 0 (MOV/MOVN/MIN/MAX/CBcc): 1 chunk in imm OR ~imm */
-        ins = HC_genOp2Imm(HCOP_MOV, 1, 0);
-        CHECK(be->canCreateImmediate(&ins) == 1);
-        ins = HC_genOp2Imm(HCOP_MOV, 1, 0x00FF0000);
-        CHECK(be->canCreateImmediate(&ins) == 1);
-        ins = HC_genOp2Imm(HCOP_MOV, 1, (int)0xFF00FFFFu);
-        CHECK(be->canCreateImmediate(&ins) == 1);
-        ins = HC_genOp2Imm(HCOP_MOV, 1, 0x12345678);
-        CHECK(be->canCreateImmediate(&ins) == 0);
-
-        /* Class 1 (ADD/SUB/AND/OR/XOR/BIC): 1 chunk in positive imm only */
-        ins = HC_genOp3Imm(HCOP_ADD, 1, 2, 0x00FF0000);
-        CHECK(be->canCreateImmediate(&ins) == 1);
-        ins = HC_genOp3Imm(HCOP_ADD, 1, 2, (int)0xFF00FFFFu);
-        CHECK(be->canCreateImmediate(&ins) == 0);
-        ins = HC_genOp3Imm(HCOP_AND, 1, 2, 0x0101);
-        CHECK(be->canCreateImmediate(&ins) == 0);
-
-        /* Class 2 (shifts/ROR): always immediate-capable */
-        ins = HC_genOp3Imm(HCOP_LSL, 1, 2, 19);
-        CHECK(be->canCreateImmediate(&ins) == 1);
-
-        /* Class 4 (halfword / signed-byte load/store): (-256, 256) */
-        ins = HC_genOp3Imm(HCOP_LWS, 1, 0, 255);
-        CHECK(be->canCreateImmediate(&ins) == 1);
-        ins = HC_genOp3Imm(HCOP_LWS, 1, 0, -255);
-        CHECK(be->canCreateImmediate(&ins) == 1);
-        ins = HC_genOp3Imm(HCOP_LWS, 1, 0, 256);
-        CHECK(be->canCreateImmediate(&ins) == 0);
-        ins = HC_genOp3Imm(HCOP_SW, 1, 0, -256);
-        CHECK(be->canCreateImmediate(&ins) == 0);
-
-        /* Class 5 (word / unsigned-byte load/store): (-4096, 4096) */
-        ins = HC_genOp3Imm(HCOP_LD, 1, 0, 4095);
-        CHECK(be->canCreateImmediate(&ins) == 1);
-        ins = HC_genOp3Imm(HCOP_SD, 1, 0, -4095);
-        CHECK(be->canCreateImmediate(&ins) == 1);
-        ins = HC_genOp3Imm(HCOP_LD, 1, 0, 4096);
-        CHECK(be->canCreateImmediate(&ins) == 0);
-        ins = HC_genOp3Imm(HCOP_SD, 1, 0, -4096);
-        CHECK(be->canCreateImmediate(&ins) == 0);
-
-        /* Default class (MULS, scaled LD4): 0 */
-        ins = HC_genOp3Imm(HCOP_MULS, 1, 2, 3);
-        CHECK(be->canCreateImmediate(&ins) == 0);
-        ins = HC_genOp3Imm(HCOP_LD4, 1, 0, 4);
-        CHECK(be->canCreateImmediate(&ins) == 0);
+        static const struct {
+            int opcode, source, immediate, accepted;
+        } cases[] = {
+            /* MOV accepts a rotated byte in the value or its complement. */
+            {HCOP_MOV, 0, 0, 1},
+            {HCOP_MOV, 0, 0x00FF0000, 1},
+            {HCOP_MOV, 0, (int)0xFF00FFFFu, 1},
+            {HCOP_MOV, 0, 0x12345678, 0},
+            /* ALU operations require a rotated byte in the value itself. */
+            {HCOP_ADD, 2, 0x00FF0000, 1},
+            {HCOP_ADD, 2, (int)0xFF00FFFFu, 0},
+            {HCOP_AND, 2, 0x0101, 0},
+            {HCOP_LSL, 2, 19, 1},
+            /* Halfword/signed-byte offsets are strictly within +/-256. */
+            {HCOP_LWS, 0, 255, 1}, {HCOP_LWS, 0, -255, 1},
+            {HCOP_LWS, 0, 256, 0}, {HCOP_SW, 0, -256, 0},
+            /* Word/unsigned-byte offsets are strictly within +/-4096. */
+            {HCOP_LD, 0, 4095, 1}, {HCOP_SD, 0, -4095, 1},
+            {HCOP_LD, 0, 4096, 0}, {HCOP_SD, 0, -4096, 0},
+            {HCOP_MULS, 2, 3, 0}, {HCOP_LD4, 0, 4, 0}
+        };
+        unsigned int i;
+        for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+        {
+            HCInstr_s ins = cases[i].opcode == HCOP_MOV
+                ? HC_genOp2Imm(cases[i].opcode, 1, cases[i].immediate)
+                : HC_genOp3Imm(cases[i].opcode, 1, cases[i].source, cases[i].immediate);
+            CHECK(be->canCreateImmediate(&ins) == cases[i].accepted);
+        }
     }
 
     /* 3. preRegallocFixer: scaled memops, ROR #0, ROL lowering, 0xFFFF mask */
@@ -4376,8 +4296,8 @@ static void test_hcarmbackend(void)
     memset(freeMasks, 0, sizeof(freeMasks));
     memset(duZero, 0, sizeof(duZero));
     memset(udZero, 0, sizeof(udZero));
-    beInfo.lst = prog;
-    beInfo.freeHardRegMasks = freeMasks;
+    beInfo.instructions = prog;
+    beInfo.freeRegMasks = freeMasks;
     beInfo.liveRegs = NULL;
     beInfo.chains.duChains = duZero;
     beInfo.chains.udChains = udZero;
@@ -4454,9 +4374,9 @@ static void test_hcarmbackend(void)
         unsigned short duBuf[8] = { 1, 1, 2, 0, 0, 0, 0, 0 }; /* pc=0 -> use at pc=1 */
         unsigned short udShift[2] = { 1, 0 };                 /* def at pc=0         */
         unsigned short udSub[2] = { 1, 3 };                   /* def at pc=3         */
-        void *usesAt1[2];
-        void *usesAt4[1];
-        void *udArr[6];
+        DUChain_s *usesAt1[2];
+        DUChain_s *usesAt4[1];
+        UDChainStub_s *udArr[6];
         HCBackendInfo_s fuseInfo;
 
         prog[0] = HC_genOp3Imm(HCOP_LSL, 3, 2, 2);      /* fused into [1]!            */
@@ -4467,17 +4387,17 @@ static void test_hcarmbackend(void)
         prog[5] = HC_genOp0(HCOP_EOP);
 
         /* At pc=1 (SUB r1, r3, r4), HC_getUses returns uses={3, 4}: index 0 is r3 */
-        usesAt1[0] = udShift;
+        usesAt1[0] = (DUChain_s *)udShift;
         usesAt1[1] = NULL;
         /* At pc=4 (CBNEQ label0, r1, #0), HC_getUses returns uses={1}: index 0 is r1 */
-        usesAt4[0] = udSub;
+        usesAt4[0] = (DUChain_s *)udSub;
 
         memset(udArr, 0, sizeof(udArr));
-        udArr[1] = usesAt1;
-        udArr[4] = usesAt4;
+        udArr[1] = (UDChainStub_s *)usesAt1;
+        udArr[4] = (UDChainStub_s *)usesAt4;
 
-        fuseInfo.lst = prog;
-        fuseInfo.freeHardRegMasks = freeMasks;
+        fuseInfo.instructions = prog;
+        fuseInfo.freeRegMasks = freeMasks;
         fuseInfo.liveRegs = NULL;
         fuseInfo.chains.duChains = &duBuf[2];
         fuseInfo.chains.udChains = udArr;
@@ -4496,7 +4416,7 @@ static void test_hcarmbackend(void)
     }
 }
 
-/* --- test_hcdatastructs_and_emulator (4f) --------------------------------- */
+/* --- test_hcdatastructs_and_emulator -------------------------------------- */
 #include "gerbera/hc/hcAdjList.h"
 #include "gerbera/hc/hcAdjMtx.h"
 #include "gerbera/hc/hcBasicBlock.h"
@@ -4696,7 +4616,7 @@ static void test_hcdatastructs_and_emulator(void)
             HCQueue_enqueue(&arena, q, 100 + i);
         for (i = 0; i < 5; ++i)
             CHECK(HCQueue_dequeue(q) == 100 + i);
-        /* Queue now has 3 elements wrapped near end; enqueue 12 more to force grows */
+        /* Three elements wrap around the buffer end; twelve more force growth. */
         for (i = 8; i < 20; ++i)
             HCQueue_enqueue(&arena, q, 100 + i);
         for (i = 5; i < 20; ++i)
@@ -4774,6 +4694,13 @@ static void test_hcdatastructs_and_emulator(void)
         out = emulator_substitute(&in, 3, 10);
         CHECK(HC_getOpcodeOper(&out) == HCOP_MOV && HC_getOpcodeImm(&out) == 17);
 
+        /* Original substitution also matches an immediate's low 11 bits. */
+        in = HC_genOp3Imm(HCOP_ADD, 1, 2, 0x803);
+        out = emulator_substitute(&in, 3, 11);
+        CHECK(HC_getOpcodeOper(&out) == HCOP_ADD
+              && HC_getOpcodeSrc0(&out) == 2
+              && HC_getOpcodeImm(&out) == 11);
+
         /* SUB r1, r3, r4 with r3=50 -> SUBR r1, r4, #50 */
         in = HC_genOp3(HCOP_SUB, 1, 3, 4);
         out = emulator_substitute(&in, 3, 50);
@@ -4785,6 +4712,9 @@ static void test_hcdatastructs_and_emulator(void)
         in = HC_genOp3(HCOP_LD4, 1, 0, 3);
         out = emulator_substitute(&in, 3, 5);
         CHECK(HC_getOpcodeOper(&out) == HCOP_LD && HC_getOpcodeImm(&out) == 20);
+
+        out = emulator_substitute(&in, 3, 0x7FFFFFFF);
+        CHECK(HC_getOpcodeOper(&out) == HCOP_LD && HC_getOpcodeImm(&out) == -4);
 
         /* LD4 r1, r3, r2 (base is r3): NOT folded (scaled index is r2) */
         in = HC_genOp3(HCOP_LD4, 1, 3, 2);
@@ -4800,7 +4730,7 @@ static void test_hcdatastructs_and_emulator(void)
     }
 }
 
-/* --- test_hccompiler (4g): HC_compile / HC_compilePriv / pipeline cache --- */
+/* --- HC_compile / HC_compilePriv / pipeline cache ------------------------- */
 #include "gerbera/hc/hcCompiler.h"
 #include <setjmp.h>
 
@@ -5288,7 +5218,7 @@ static void test_hccompiler(void)
     }
 }
 
-/* --- Milestone 5b: grrTexture + grrBlit + grSetupTextureUnit ---------------- */
+/* --- grrTexture + grrBlit + grSetupTextureUnit ----------------------------- */
 
 static void test_grr_texture_and_blit(void)
 {
@@ -5511,7 +5441,7 @@ static void testSetupPipeHead(Gerbera_s *st, _grPixelPipe *pp)
     pp->checked.stencilWriteMask = st->stencilWriteMask;
     for (i = 1; i >= 0; --i)
         if (st->useTexUnit[i] != 0)
-            *(int *)pp->textureUnit[i].pad0 = st->textureUnit[2 * i].envColor;
+            *(int *)pp->textureUnit[i].pad0 = st->textureUnit[2 * i].texEnvColor;
 }
 
 static void testExecutePixelPipeline(Gerbera_s *st)
@@ -5930,7 +5860,6 @@ static void test_gerbera_lifecycle_and_api_small(void)
     grDestroyGerbera(st);
     free(workMem);
 }
-
 
 
 

@@ -1,6 +1,6 @@
 /* hcBucketDefs.h - per-register definition-site buckets + bitset LRU cache.
  *
- * Layout verified from CodeView LF_STRUCTURE TI=0x1A62 / TI=0x1A65:
+ * 32-bit layout from CodeView LF_STRUCTURE TI=0x1A62 / TI=0x1A65:
  *   +0   int numBuckets
  *   +4   unsigned short *bucketStart
  *   +8   HCBucketDefsCache_s bitVectorCache[16]

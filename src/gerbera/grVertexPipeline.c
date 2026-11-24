@@ -1,5 +1,4 @@
-/* grVertexPipeline.c - vertex pipeline (port of the decompiled
- * grVertexPipeline.inl; grows as the pipeline is reconstructed).
+/* grVertexPipeline.c - vertex pipeline (grVertexPipeline.inl).
  * Assert sites keep the original grVertexPipeline.inl file/line strings. */
 #include "gerbera/grState.h"
 
@@ -13,7 +12,7 @@
 unsigned int grTestLightColor(_grLight *light, int component)
 {
     GR_VP_CHECK(light != NULL, 393);
-    if (XColor3_isZero(&light->colors[component]) != 0)
+    if (XColor3_isZero(&light->colorsx[component]) != 0)
         return 0;
     return 0xFFFFFFFFu;
 }
@@ -21,7 +20,7 @@ unsigned int grTestLightColor(_grLight *light, int component)
 unsigned int grPrecalcLightColor(_grLight *light, int component, _XColor3 *materialColor)
 {
     GR_VP_CHECK(light != NULL && materialColor != NULL, 384);
-    XColor3_mul(&light->premul_colors[component], &light->colors[component], materialColor);
+    XColor3_mul(&light->premul_colors[component], &light->colorsx[component], materialColor);
     if (XColor3_isZero(&light->premul_colors[component]) != 0)
         return 0;
     return 0xFFFFFFFFu;
@@ -70,7 +69,7 @@ void grUpdateAmbientLightSum(Gerbera_s *state)
 
     state->ambientLightSum = state->ambientColor;
     for (pDirectional = state->l_directional; *pDirectional != NULL; ++pDirectional)
-        XColor3_add(&state->ambientLightSum, &state->ambientLightSum, &(*pDirectional)->colors[0]);
+        XColor3_add(&state->ambientLightSum, &state->ambientLightSum, &(*pDirectional)->colorsx[0]);
 }
 
 /* --- grUpdateLights (decompile 28223-28551; fragment assert lines
@@ -767,7 +766,7 @@ void grFetchVertexNormalDEFAULT(Gerbera_s *state, unsigned char *vertexList)
 
 /* --- texture coordinate transformers (fragments 1956-2253) ------------------
  * Each walks the vertex list, transforms the raw texcoord through
- * state->texCoordTransform[texUnit] and stores the 16.16 (x,y) result at
+ * state->texCoordTransform[texUnit] and stores the 10.21 (x,y) result at
  * vertex->texCoord[texUnit] (+56 + 8*texUnit). */
 
 void grTransformTexCoordINT8x2(Gerbera_s *state, unsigned char *vertexList, int texUnit)
@@ -1496,7 +1495,7 @@ void grTransformVertex(Gerbera_s *state, _grVertex *vertex)
 /* --- light (decompile 28554-28693; assert lines 774/781/799/807) -------------
  * Per-vertex per-light lighting: computes L (positional), the spot factor,
  * the attenuation and the diffuse/specular dots, storing the results into
- * the light record's per-vertex scratch (xAtten/ndotL/specDot) for the
+ * the light record's per-vertex scratch (la/ld/ls) for the
  * color accumulation in grLightVertex. Mutates nVP for positional lights
  * (it doubles as the per-vertex L vector) and halfway (specular). */
 
@@ -1515,7 +1514,7 @@ void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int
 
         if (bDirectional != 0)
             goto colorStage;
-        l->xAtten = 0;
+        l->la = 0;
         if ((mask & 0xE) == 0)
             continue;
         lvec = IVector3_normsub(l->nVP, ( _IVector3 *)&l->positionXYZ, pos);
@@ -1523,7 +1522,7 @@ void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int
         {
             if ((l->cosSpotCutoff < 0) && grAssert("light->cosSpotCutoff >= 0", "grVertexPipeline.inl", 774) != 0)
                 grDie(0);
-            spot = XScalar_min(XNormal3_dot(l->nVP, l->spotDirectionNegated), 0x200000);
+            spot = XScalar_min(XNormal3_dot(l->nVP, l->spotDirection), 0x200000);
             if (XScalar_cmplt(spot, l->cosSpotCutoff) == 0)
             {
                 /* inside the spot cone */
@@ -1548,8 +1547,8 @@ void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int
         {
             if ((mask & 0x10) != 0)
             {
-                if (XScalar_cmpne(l->exponent, 0x200000) != 0)
-                    spot = XScalar_pow(spot, l->exponent);
+                if (XScalar_cmpne(l->spotExponent, 0x200000) != 0)
+                    spot = XScalar_pow(spot, l->spotExponent);
                 {
                     int ok = 1;
                     int cond = (XScalar_zcmpge(spot) != 0) && (XScalar_cmple(spot, 0x200000) != 0);
@@ -1567,7 +1566,7 @@ void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int
             {
                 if ((atten < 0) && grAssert("xAtten >= 0", "grVertexPipeline.inl", 807) != 0)
                     grDie(0);
-                l->xAtten = atten;
+                l->la = atten;
             }
         colorStage:
             if ((mask & 0xC) != 0)
@@ -1609,8 +1608,8 @@ void light(_grLight **lights, int shininess, _IVector3 *pos, int *eyeNormal, int
                     }
                 }
             }
-            l->ndotL = ndotL;
-            l->specDot = specDot;
+            l->ld = ndotL;
+            l->ls = specDot;
         }
     }
 }
@@ -1695,42 +1694,42 @@ void grLightVertex(Gerbera_s *state, _grVertex *v)
             for (iter = state->l_directional; *iter != NULL; ++iter)
             {
                 l = *iter;
-                if (XScalar_zcmpgt(l->ndotL) != 0)
+                if (XScalar_zcmpgt(l->ld) != 0)
                 {
-                    XColor3Acc_madd(accFront, accFront, &l->colors[1], l->ndotL);
-                    if (XScalar_zcmpgt(l->specDot) != 0)
-                        XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->colors[2], l->specDot);
+                    XColor3Acc_madd(accFront, accFront, &l->colorsx[1], l->ld);
+                    if (XScalar_zcmpgt(l->ls) != 0)
+                        XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->colorsx[2], l->ls);
                 }
-                else if (XScalar_zcmplt(l->ndotL) != 0)
+                else if (XScalar_zcmplt(l->ld) != 0)
                 {
-                    int adot = XScalar_abs(l->ndotL);
+                    int adot = XScalar_abs(l->ld);
 
-                    XColor3Acc_madd(accBack, accBack, &l->colors[1], adot);
-                    if (XScalar_zcmpgt(l->specDot) != 0)
-                        XColor3Acc_madd(accBackSpec, accBackSpec, &l->colors[2], l->specDot);
+                    XColor3Acc_madd(accBack, accBack, &l->colorsx[1], adot);
+                    if (XScalar_zcmpgt(l->ls) != 0)
+                        XColor3Acc_madd(accBackSpec, accBackSpec, &l->colorsx[2], l->ls);
                 }
             }
             for (iter = state->l_positional; *iter != NULL; ++iter)
             {
                 l = *iter;
-                if (XScalar_zcmpeq(l->xAtten) == 0)
+                if (XScalar_zcmpeq(l->la) == 0)
                 {
-                    XColor3Acc_muls(tmpAcc, &l->premul_colors[0], l->xAtten);
+                    XColor3Acc_muls(tmpAcc, &l->premul_colors[0], l->la);
                     XColor3Acc_addAcc(accFront, accFront, tmpAcc);
                     XColor3Acc_addAcc(accBack, accBack, tmpAcc);
-                    if (XScalar_zcmpgt(l->ndotL) != 0)
+                    if (XScalar_zcmpgt(l->ld) != 0)
                     {
-                        XColor3Acc_madd(accFront, accFront, &l->colors[1], l->ndotL);
-                        if (XScalar_zcmpgt(l->specDot) != 0)
-                            XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->premul_colors[2], l->specDot);
+                        XColor3Acc_madd(accFront, accFront, &l->colorsx[1], l->ld);
+                        if (XScalar_zcmpgt(l->ls) != 0)
+                            XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->premul_colors[2], l->ls);
                     }
-                    else if (XScalar_zcmplt(l->ndotL) != 0)
+                    else if (XScalar_zcmplt(l->ld) != 0)
                     {
-                        int adot = XScalar_abs(l->ndotL);
+                        int adot = XScalar_abs(l->ld);
 
-                        XColor3Acc_madd(accBack, accBack, &l->colors[1], adot);
-                        if (XScalar_zcmpgt(l->specDot) != 0)
-                            XColor3Acc_madd(accBackSpec, accBackSpec, &l->premul_colors[2], l->specDot);
+                        XColor3Acc_madd(accBack, accBack, &l->colorsx[1], adot);
+                        if (XScalar_zcmpgt(l->ls) != 0)
+                            XColor3Acc_madd(accBackSpec, accBackSpec, &l->premul_colors[2], l->ls);
                     }
                 }
             }
@@ -1748,26 +1747,26 @@ void grLightVertex(Gerbera_s *state, _grVertex *v)
             for (iter = state->l_directional; *iter != NULL; ++iter)
             {
                 l = *iter;
-                if (XScalar_zcmplt(l->ndotL) == 0)
+                if (XScalar_zcmplt(l->ld) == 0)
                 {
-                    if (XScalar_zcmpgt(l->ndotL) != 0)
-                        XColor3Acc_madd(accFront, accFront, &l->colors[1], l->ndotL);
-                    if (XScalar_zcmpgt(l->specDot) != 0)
-                        XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->premul_colors[2], l->specDot);
+                    if (XScalar_zcmpgt(l->ld) != 0)
+                        XColor3Acc_madd(accFront, accFront, &l->colorsx[1], l->ld);
+                    if (XScalar_zcmpgt(l->ls) != 0)
+                        XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->premul_colors[2], l->ls);
                 }
             }
             for (iter = state->l_positional; *iter != NULL; ++iter)
             {
                 l = *iter;
-                if (XScalar_zcmpeq(l->xAtten) == 0)
+                if (XScalar_zcmpeq(l->la) == 0)
                 {
-                    XColor3Acc_madd(accFront, accFront, &l->colors[0], l->xAtten);
-                    if (XScalar_zcmplt(l->ndotL) == 0)
+                    XColor3Acc_madd(accFront, accFront, &l->colorsx[0], l->la);
+                    if (XScalar_zcmplt(l->ld) == 0)
                     {
-                        if (XScalar_zcmpgt(l->ndotL) != 0)
-                            XColor3Acc_madd(accFront, accFront, &l->colors[1], l->ndotL);
-                        if (XScalar_zcmpgt(l->specDot) != 0)
-                            XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->premul_colors[2], l->specDot);
+                        if (XScalar_zcmpgt(l->ld) != 0)
+                            XColor3Acc_madd(accFront, accFront, &l->colorsx[1], l->ld);
+                        if (XScalar_zcmpgt(l->ls) != 0)
+                            XColor3Acc_madd(accFrontSpec, accFrontSpec, &l->premul_colors[2], l->ls);
                     }
                 }
             }
@@ -1791,42 +1790,42 @@ void grLightVertex(Gerbera_s *state, _grVertex *v)
             for (iter = state->l_directional; *iter != NULL; ++iter)
             {
                 l = *iter;
-                if (XScalar_zcmpgt(l->ndotL) != 0)
+                if (XScalar_zcmpgt(l->ld) != 0)
                 {
-                    XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ndotL);
-                    if (XScalar_zcmpgt(l->specDot) != 0)
-                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->specDot);
+                    XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ld);
+                    if (XScalar_zcmpgt(l->ls) != 0)
+                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->ls);
                 }
-                else if (XScalar_zcmplt(l->ndotL) != 0)
+                else if (XScalar_zcmplt(l->ld) != 0)
                 {
-                    int adot = XScalar_abs(l->ndotL);
+                    int adot = XScalar_abs(l->ld);
 
                     XColor3Acc_madd(accBack, accBack, &l->premul_colors[1], adot);
-                    if (XScalar_zcmpgt(l->specDot) != 0)
-                        XColor3Acc_madd(accBack, accBack, &l->premul_colors[2], l->specDot);
+                    if (XScalar_zcmpgt(l->ls) != 0)
+                        XColor3Acc_madd(accBack, accBack, &l->premul_colors[2], l->ls);
                 }
             }
             for (iter = state->l_positional; *iter != NULL; ++iter)
             {
                 l = *iter;
-                if (XScalar_zcmpeq(l->xAtten) == 0)
+                if (XScalar_zcmpeq(l->la) == 0)
                 {
-                    XColor3Acc_muls(tmpAcc, &l->premul_colors[0], l->xAtten);
+                    XColor3Acc_muls(tmpAcc, &l->premul_colors[0], l->la);
                     XColor3Acc_addAcc(accFront, accFront, tmpAcc);
                     XColor3Acc_addAcc(accBack, accBack, tmpAcc);
-                    if (XScalar_zcmpgt(l->ndotL) != 0)
+                    if (XScalar_zcmpgt(l->ld) != 0)
                     {
-                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ndotL);
-                        if (XScalar_zcmpgt(l->specDot) != 0)
-                            XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->specDot);
+                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ld);
+                        if (XScalar_zcmpgt(l->ls) != 0)
+                            XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->ls);
                     }
-                    else if (XScalar_zcmplt(l->ndotL) != 0)
+                    else if (XScalar_zcmplt(l->ld) != 0)
                     {
-                        int adot = XScalar_abs(l->ndotL);
+                        int adot = XScalar_abs(l->ld);
 
                         XColor3Acc_madd(accBack, accBack, &l->premul_colors[1], adot);
-                        if (XScalar_zcmpgt(l->specDot) != 0)
-                            XColor3Acc_madd(accBack, accBack, &l->premul_colors[2], l->specDot);
+                        if (XScalar_zcmpgt(l->ls) != 0)
+                            XColor3Acc_madd(accBack, accBack, &l->premul_colors[2], l->ls);
                     }
                 }
             }
@@ -1838,26 +1837,26 @@ void grLightVertex(Gerbera_s *state, _grVertex *v)
             for (iter = state->l_directional; *iter != NULL; ++iter)
             {
                 l = *iter;
-                if (XScalar_zcmplt(l->ndotL) == 0)
+                if (XScalar_zcmplt(l->ld) == 0)
                 {
-                    if (XScalar_zcmpgt(l->ndotL) != 0)
-                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ndotL);
-                    if (XScalar_zcmpgt(l->specDot) != 0)
-                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->specDot);
+                    if (XScalar_zcmpgt(l->ld) != 0)
+                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ld);
+                    if (XScalar_zcmpgt(l->ls) != 0)
+                        XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->ls);
                 }
             }
             for (iter = state->l_positional; *iter != NULL; ++iter)
             {
                 l = *iter;
-                if (XScalar_zcmpeq(l->xAtten) == 0)
+                if (XScalar_zcmpeq(l->la) == 0)
                 {
-                    XColor3Acc_madd(accFront, accFront, &l->premul_colors[0], l->xAtten);
-                    if (XScalar_zcmplt(l->ndotL) == 0)
+                    XColor3Acc_madd(accFront, accFront, &l->premul_colors[0], l->la);
+                    if (XScalar_zcmplt(l->ld) == 0)
                     {
-                        if (XScalar_zcmpgt(l->ndotL) != 0)
-                            XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ndotL);
-                        if (XScalar_zcmpgt(l->specDot) != 0)
-                            XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->specDot);
+                        if (XScalar_zcmpgt(l->ld) != 0)
+                            XColor3Acc_madd(accFront, accFront, &l->premul_colors[1], l->ld);
+                        if (XScalar_zcmpgt(l->ls) != 0)
+                            XColor3Acc_madd(accFront, accFront, &l->premul_colors[2], l->ls);
                     }
                 }
             }

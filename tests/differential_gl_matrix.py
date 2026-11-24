@@ -53,6 +53,59 @@ def words(values):
     return struct.pack("<" + "I" * len(values), *(v & 0xFFFFFFFF for v in values))
 
 
+class MatrixFixture:
+    def __init__(self, suite):
+        self.oracle, self.lib = suite.oracle, suite.lib
+        arm = suite.arch == "arm"
+        self.get_context = 0xB59C if arm else 0x4085B0
+        self.lib.diff_gl_matrix_create.argtypes = [C.c_uint, C.c_void_p]
+        self.lib.diff_gl_matrix_create.restype = C.c_void_p
+        self.lib.diff_gl_matrix_destroy.argtypes = [C.c_void_p]
+        self.lib.diff_gl_matrix_destroy.restype = None
+        self.lib.diff_gl_matrix_snapshot.argtypes = [C.c_void_p, C.c_void_p]
+        self.lib.diff_gl_matrix_snapshot.restype = None
+        self.oracle.reset()
+        floats = words([0x3F800000 if i % 5 == 0 else 0 for i in range(16)])
+        source, destination = self.oracle.alloc(64, floats), self.oracle.alloc(80)
+        self.oracle.call(0x2D87C if arm else 0x4616D0, [destination, source])
+        self.identity = self.oracle.read(destination, 80)
+        self.defaults = self.oracle.read(0x350F4 if arm else 0x471A74, GETTER_BYTES)
+
+    def create_context(self, core, fill, width=0, height=0):
+        context = bytearray(CONTEXT_BYTES)
+        struct.pack_into("<I", context, 0, core)
+        struct.pack_into("<ii", context, 108, width, height)
+        context[GETTER_OFFSET:GETTER_OFFSET + GETTER_BYTES] = self.defaults
+        stacks = []
+        data = bytes((0, STACK_DEPTH, 0, fill)) + self.identity + bytes([fill]) * (80 * (STACK_DEPTH - 1))
+        for i in range(STACK_COUNT):
+            stack = self.oracle.alloc(STACK_BYTES, data)
+            stacks.append(stack)
+            struct.pack_into("<I", context, 24 + 4 * i, stack)
+            self.oracle.watch(stack, STACK_BYTES, f"matrixStack[{i}]")
+        ctx = self.oracle.alloc(CONTEXT_BYTES, bytes(context))
+        self.oracle.watch(ctx, CONTEXT_BYTES, "context")
+        self.oracle.watch(core, 0x3000, "core")
+        return ctx, stacks
+
+    def create_session(self, fill):
+        session = self.lib.diff_gl_matrix_create(fill, C.create_string_buffer(self.identity, 80))
+        if not session:
+            raise ValueError("matrix fixture allocation failed")
+        return session
+
+    def snapshot(self, ctx, core, stacks):
+        raw = self.oracle.read(ctx, CONTEXT_BYTES)
+        pointer_changes = int(struct.unpack_from("<I", raw, 0)[0] != core)
+        for i, stack in enumerate(stacks):
+            pointer_changes |= int(struct.unpack_from("<I", raw, 24 + 4 * i)[0] != stack) << (i + 1)
+        pointer_changes |= int(any(struct.unpack_from("<I", raw, offset)[0]
+                                   for offset in (8, 12, 16, 20, 76, 80, 84, 116, 120))) << 14
+        result = words([pointer_changes]) + self.oracle.readback(ctx + 4, 4)
+        result += self.oracle.readback(ctx + 88, 28) + self.oracle.readback(ctx + 124, 944)
+        return result + b"".join(self.oracle.readback(p, STACK_BYTES) for p in stacks)
+
+
 def command(name, *values):
     if name.endswith("f"):
         values = struct.unpack("<" + "I" * len(values), struct.pack("<" + "f" * len(values), *values))
@@ -98,49 +151,19 @@ def run(suite):
     oracle, lib = suite.oracle, suite.lib
     operations = (tuple((entry[0], *address, entry[3]) for entry, address in zip(OPERATIONS, ARM_RANGES))
                   if suite.arch == "arm" else OPERATIONS)
-    get_context = 0xB59C if suite.arch == "arm" else 0x4085B0
-    set_matrix = 0x2D87C if suite.arch == "arm" else 0x4616D0
-    getter_defaults = 0x350F4 if suite.arch == "arm" else 0x471A74
     for name, start, end, _ in operations:
         suite.register(name, start, end)
-    lib.diff_gl_matrix_create.argtypes = [C.c_uint, C.c_void_p]
-    lib.diff_gl_matrix_create.restype = C.c_void_p
-    lib.diff_gl_matrix_destroy.argtypes = [C.c_void_p]
-    lib.diff_gl_matrix_destroy.restype = None
     lib.diff_gl_matrix_step.argtypes = [C.c_void_p, C.c_int, C.c_void_p]
     lib.diff_gl_matrix_step.restype = C.c_uint32
-    lib.diff_gl_matrix_snapshot.argtypes = [C.c_void_p, C.c_void_p]
-    lib.diff_gl_matrix_snapshot.restype = None
-    # Establish identity from the original; setfv itself has independent checks.
-    oracle.reset()
-    floats = words([0x3F800000 if i % 5 == 0 else 0 for i in range(16)])
-    source, destination = oracle.alloc(64, floats), oracle.alloc(80)
-    oracle.call(set_matrix, [destination, source])
-    identity = oracle.read(destination, 80)
-    defaults = oracle.read(getter_defaults, GETTER_BYTES)
-    native_identity = C.create_string_buffer(identity, len(identity))
+    fixture = MatrixFixture(suite)
 
     def execute(sequence, fill, case):
         oracle.reset()
         core = oracle.alloc(0x3000)
-        context = bytearray(CONTEXT_BYTES)
-        struct.pack_into("<I", context, 0, core)
-        context[GETTER_OFFSET:GETTER_OFFSET + GETTER_BYTES] = defaults
-        stacks = []
-        for i in range(STACK_COUNT):
-            data = bytes((0, STACK_DEPTH, 0, fill)) + identity + bytes([fill]) * (80 * (STACK_DEPTH - 1))
-            stack = oracle.alloc(STACK_BYTES, data)
-            stacks.append(stack)
-            struct.pack_into("<I", context, 0x18 + 4 * i, stack)
-            oracle.watch(stack, STACK_BYTES, f"matrixStack[{i}]")
-        ctx = oracle.alloc(CONTEXT_BYTES, bytes(context))
+        ctx, stacks = fixture.create_context(core, fill)
         arguments = oracle.alloc(64)
-        oracle.watch(ctx, CONTEXT_BYTES, "context")
-        oracle.watch(core, 0x3000, "core")
-        hook = oracle.add_hook(get_context, lambda machine: machine.return_from_call(ctx))
-        session = lib.diff_gl_matrix_create(fill, native_identity)
-        if not session:
-            raise ValueError("matrix fixture allocation failed")
+        hook = oracle.add_hook(fixture.get_context, lambda machine: machine.return_from_call(ctx))
+        session = fixture.create_session(fill)
         native_snapshot = C.create_string_buffer(SNAPSHOT_BYTES)
         try:
             for step, (operation, values) in enumerate(sequence):
@@ -151,15 +174,7 @@ def run(suite):
                 native_result = lib.diff_gl_matrix_step(session, operation, C.create_string_buffer(data, 64))
                 # Void API return registers are unspecified. GetError is not.
                 result = result if name == "glGetError" else 0
-                raw = oracle.read(ctx, CONTEXT_BYTES)
-                pointer_changes = int(struct.unpack_from("<I", raw, 0)[0] != core)
-                for i, stack in enumerate(stacks):
-                    pointer_changes |= int(struct.unpack_from("<I", raw, 0x18 + 4 * i)[0] != stack) << (i + 1)
-                pointer_changes |= int(any(struct.unpack_from("<I", raw, offset)[0]
-                                           for offset in (8, 12, 16, 20, 76, 80, 84, 116, 120))) << 14
-                original = words([pointer_changes]) + oracle.readback(ctx + 4, 4)
-                original += oracle.readback(ctx + 88, 28) + oracle.readback(ctx + 124, 944)
-                original += b"".join(oracle.readback(p, STACK_BYTES) for p in stacks)
+                original = fixture.snapshot(ctx, core, stacks)
                 lib.diff_gl_matrix_snapshot(session, native_snapshot)
                 suite.compare_bytes(name, {"matrix_sequence": case, "step": step, "fill": fill,
                                            "prefix": sequence[:step + 1]},

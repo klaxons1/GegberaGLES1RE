@@ -9,9 +9,7 @@
 #include "../src/gerbera/egl/eglSymbian.c"
 #include "../src/gerbera/egl/eglUtil.c"
 
-static int checks, failures;
-#define CHECK(c) do { ++checks; if (!(c)) { ++failures; \
-    fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
+#include "test_support.h"
 
 static void *tls;
 static uintptr_t environment[32];

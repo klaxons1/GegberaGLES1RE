@@ -1,9 +1,8 @@
 /* hgFloat.c - IEEE 754 bit-pattern float helpers.
  *
- * Clean port of the decompiled hgFloat.c / hgFloat.inl code from the Gerbera
- * GLES1 driver.  The F_* operations never touch floating point hardware:
- * everything happens on the raw bit patterns, which makes compares
- * NaN-safe and keeps the code identical across FPUs.
+ * The F_* operations use integer arithmetic on IEEE single-precision bit
+ * patterns. Comparisons follow the driver's bit ordering, including its
+ * treatment of NaNs and signed zero.
  */
 #include "hg/hgFloat.h"
 #include "hg/hgInt32.h"
@@ -17,9 +16,7 @@ enum { F32_MAX_FINITE_BITS = 0x7F7FFFFF };
 
 HGint32 F_ISVALID(HGuint32 a)
 {
-    /* NaN has exponent 255 with nonzero mantissa, Inf has mantissa 0:
-     * anything with exponent field <= 255 and not (255, nonzero) passes.
-     * The original only rejects NaN (mantissa nonzero, exp 255). */
+    /* Reject NaNs; signed infinities pass this check. */
     return (a & 0x7FFFFFFFu) <= 0x7F800000u;
 }
 
@@ -29,7 +26,7 @@ HGint32 F_FINITE(HGuint32 a)
 }
 
 /* ------------------------------------------------------------------ */
-/* total order compares                                               */
+/* bit-pattern compares                                              */
 /* ------------------------------------------------------------------ */
 
 HGint32 F_MAKE_COMPARABLE(HGuint32 a)
@@ -99,7 +96,7 @@ HGint32 F_ZCMPLE(HGuint32 a)
 
 HGint32 F_ZCMPGE(HGuint32 a)
 {
-    return a <= 0x80000000u;     /* positive and not +Inf */
+    return a <= 0x80000000u;     /* sign clear, or negative zero */
 }
 
 HGint32 F_ZCMPGT(HGuint32 a)
@@ -259,7 +256,7 @@ HGuint32 F_SUB(HGuint32 a, HGuint32 b)
 
 HGint32 radiansToUnitScalar(HGuint32 a)
 {
-    /* convert a float in radians into a 2.30-ish unit scalar */
+    /* Scale radians by 2^29/pi for the unit-scalar trig functions. */
     HGint32 e = extractBiasedExponent(a);
     HGuint32 m = extractMantissa(a);
     HGint32 mm = (HGint32)(m << 6);
@@ -270,7 +267,7 @@ HGint32 radiansToUnitScalar(HGuint32 a)
         mm = -(HGint32)(m * 64);
     lsh = hgMin32(hgMaxZero32(e - 125), 63);
     rsh = hgMin32(hgMaxZero32(125 - e) + 2, 31);
-    scaled = hgMul64(mm, 1367130513);   /* 2^33 / pi rounded */
+    scaled = hgMul64(mm, 1367130513);   /* approximation to 2^32/pi */
     return hgLsl64h(scaled, lsh) >> rsh;
 }
 
@@ -286,7 +283,7 @@ HGuint32 unitScalarToFloat(int s)
 
 HGint32 IUnitScalar_sin(int x)
 {
-    /* Taylor series of sin on a 2.30 unit scalar; original hgFloat.c:2337 */
+    /* Sine polynomial: x represents radians * 2^29/pi (hgFloat.c:2337). */
     HGint32 y = hgAbs32(x);
     HGint32 x2, ya, yb, yc, yd, ye, yf, r;
     HGint64 s;
@@ -316,7 +313,7 @@ HGint32 IUnitScalar_sin(int x)
 
 HGint32 IUnitScalar_cos(int x)
 {
-    /* Taylor series of cos on a 2.30 unit scalar; original hgFloat.c:2407 */
+    /* Cosine polynomial: x represents radians * 2^29/pi (hgFloat.c:2407). */
     HGint32 xa = hgAbs32(x);
     HGuint32 y = (HGuint32)xa;
     HGint32 x2, t, ta, tb, tc, td, r;
