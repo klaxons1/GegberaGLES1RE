@@ -25,7 +25,7 @@ extern const unsigned char g_mutableParamsMask[12];
 
 /* --- grExecutePixelPipeline (grPixelPipeline.h 153; DLL 24757-24775) --------- */
 
-#if !defined(__SYMBIAN32__) && !(defined(__arm__) && UINTPTR_MAX == 0xFFFFFFFFu)
+#if !defined(GR_NATIVE_JIT)
 static int grEvalCompareFunc64(int func, unsigned int lhs, unsigned int rhs)
 {
     switch (func)
@@ -898,7 +898,7 @@ step_pixel:
         if (stencilRow != NULL) stencilRow += surf->buffers[2].stride;
     }
 }
-#endif /* !__SYMBIAN32__ && !32-bit __arm__ */
+#endif /* !GR_NATIVE_JIT */
 
 void grExecutePixelPipeline(Gerbera_s *state)
 {
@@ -910,10 +910,13 @@ void grExecutePixelPipeline(Gerbera_s *state)
     if (state->pixelPipeline == NULL &&
         grAssert("state->renderStack->pixelPipelineStack", "grPixelPipeline.h", 154) != 0)
         grDie(0);
-#if defined(__SYMBIAN32__) || (defined(__arm__) && UINTPTR_MAX == 0xFFFFFFFFu)
-    /* Native 32-bit ARM JIT execution (matches docs/libgles_cm.dll.epoc:
+#if defined(GR_NATIVE_JIT)
+    /* Native 32-bit JIT execution. EPOC ARM (docs/libgles_cm.dll.epoc):
      * r0 = renderStack + 14644, with [r0..r0+63] reserved for HCARMBackend
-     * scratch spills and [r0+64..r0+375] == state->pixelPipeline). */
+     * scratch spills and [r0+64..] == state->pixelPipeline. Win32 x86
+     * (docs/libGLES_CM.dll.c:24774): the cdecl argument is
+     * &renderStack[1830].whichPool == renderStack + 14644; the HCX86Backend
+     * prologue pivots esp onto that stack area. */
     pixelPipelineCode((char *)state->renderStack + 14644);
 #else
     if (state->pipelineCache != NULL)

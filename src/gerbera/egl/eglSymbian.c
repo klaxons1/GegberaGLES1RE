@@ -21,13 +21,35 @@
 #define MAP_ANONYMOUS 0x20
 #endif
 #endif
+#elif defined(_WIN32)
+/* kernel32 VirtualAlloc/VirtualFree, declared here so this TU does not pull
+ * in <windows.h> (its BOOL/far/near macros clash with the recovered code). */
+__declspec(dllimport) void *__stdcall VirtualAlloc(void *address, size_t size,
+                                                   unsigned long type,
+                                                   unsigned long protect);
+__declspec(dllimport) int __stdcall VirtualFree(void *address, size_t size,
+                                                unsigned long type);
+#define EGL_WIN_MEM_COMMIT             0x00001000ul
+#define EGL_WIN_MEM_RESERVE            0x00002000ul
+#define EGL_WIN_MEM_RELEASE            0x00008000ul
+#define EGL_WIN_PAGE_EXECUTE_READWRITE 0x40ul
 #endif
+
 
 #include "gerbera/egl/eglInternal.h"
 #include "gerbera/grState.h"
 #include "gerbera/hc/hcBackend.h"
 #include "hg/hgInt32.h"
 #include "hg/hgMemory.h"
+
+/* Pipeline-cache arenas hold JIT code that is executed natively when
+ * GR_NATIVE_JIT is set (grState.h), so they must be executable (DEP/NX). */
+#if defined(GR_NATIVE_JIT) && !defined(__SYMBIAN32__) && defined(_WIN32)
+#define EGL_EXEC_VIRTUALALLOC 1
+#elif (defined(GR_NATIVE_JIT) || defined(__arm__)) && !defined(__SYMBIAN32__) && \
+      (defined(__unix__) || defined(__APPLE__))
+#define EGL_EXEC_MMAP 1
+#endif
 
 /* --- PE .rdata s_validColors (0x4702B4..0x4702E3) -------------------------- */
 static const eglValidColorInfo_s s_validColors[6] =
@@ -714,7 +736,22 @@ grExecutable_s *eglAllocExecutable(unsigned int size)
     exec = (grExecutable_s *)malloc(sizeof(grExecutable_s));
     if (exec == NULL)
         return NULL;
-#if defined(__arm__) && (defined(__unix__) || defined(__APPLE__))
+#if defined(EGL_EXEC_VIRTUALALLOC)
+    {
+        size_t mapSize = ((size_t)size + 4095u) & ~(size_t)4095u;
+        void *mem = VirtualAlloc(NULL, mapSize,
+                                 EGL_WIN_MEM_COMMIT | EGL_WIN_MEM_RESERVE,
+                                 EGL_WIN_PAGE_EXECUTE_READWRITE);
+        if (mem == NULL)
+        {
+            free(exec);
+            return NULL;
+        }
+        exec->data = mem;
+        exec->size = (int)mapSize;
+        return exec;
+    }
+#elif defined(EGL_EXEC_MMAP)
     {
         size_t mapSize = ((size_t)size + 4095u) & ~(size_t)4095u;
         void *mem = mmap(NULL, mapSize, PROT_READ | PROT_WRITE | PROT_EXEC,
@@ -743,7 +780,9 @@ grExecutable_s *eglAllocExecutable(unsigned int size)
 void eglFreeExecutable(grExecutable_s *executable)
 {
     EGL_ASSERT_AT("eglSymbian.inl", 306, "executable", executable != NULL);
-#if defined(__arm__) && (defined(__unix__) || defined(__APPLE__))
+#if defined(EGL_EXEC_VIRTUALALLOC)
+    VirtualFree(executable->data, 0, EGL_WIN_MEM_RELEASE);
+#elif defined(EGL_EXEC_MMAP)
     munmap(executable->data, (size_t)executable->size);
 #else
     free(executable->data);

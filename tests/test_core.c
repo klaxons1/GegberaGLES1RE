@@ -2763,9 +2763,22 @@ static void test_interpolate(void)
 }
 
 /* Count rasterized fragments to catch cracks, overlaps, and skewed line ends. */
+/* Mock pipelines receive what grExecutePixelPipeline passes to JIT code:
+ * the pixel-pipe record itself on hosted (C evaluator) builds, or the JIT
+ * stack base renderStack+14644 (record at +HC_extraStackSpace) on
+ * GR_NATIVE_JIT builds, like the original DLLs. */
+static _grPixelPipe *testPipeFromArg(void *arg)
+{
+#if defined(GR_NATIVE_JIT)
+    return (_grPixelPipe *)((char *)arg + HC_extraStackSpace(grGetBackend()));
+#else
+    return (_grPixelPipe *)arg;
+#endif
+}
+
 static void lineCoveragePipeline(void *pipe)
 {
-    _grPixelPipe *pp = (_grPixelPipe *)pipe;
+    _grPixelPipe *pp = testPipeFromArg(pipe);
     unsigned short *row = (unsigned short *)pp->colorRow;
     int y;
     for (y = 0; y < pp->numScanlines; ++y, row += 64)
@@ -5395,6 +5408,83 @@ static void test_grr_texture_and_blit(void)
 /* Exercise the host pixel pipeline with texture coordinates prepared by the
  * recovered setup routine and code cached by the normal compiler path. */
 #if !defined(__SYMBIAN32__) && !(defined(__arm__) && UINTPTR_MAX == 0xFFFFFFFFu)
+/* On GR_NATIVE_JIT builds (32-bit x86 hosts) the compiled program runs
+ * natively and addresses the record relative to renderStack+14644, so the
+ * caller's stack-local pipe is staged into a real render stack (with room
+ * for the full 9216-byte record) for the call. */
+#if defined(GR_NATIVE_JIT)
+static union { HGint64 alignment; unsigned char bytes[GR_RENDER_STACK_SIZE + 1024]; } s_jitRenderStack;
+
+static _grPixelPipe *testJitPipe(void)
+{
+    return (_grPixelPipe *)(s_jitRenderStack.bytes + TEST_PIXEL_PIPE_OFFSET);
+}
+
+/* the pixel-pipe head block grSetupRendering publishes for the program
+ * (grApiFast.inl 288-432); the C evaluator reads these from the state */
+static void testSetupPipeHead(Gerbera_s *st, _grPixelPipe *pp)
+{
+    int i;
+
+    pp->ditherKernel = (void *)g_orderedDitherKernel;
+    pp->checked.colorBufferStride = st->drawSurface.buffers[0].stride;
+    pp->checked.depthBufferStride = st->drawSurface.buffers[1].stride;
+    pp->checked.stencilBufferStride = st->drawSurface.buffers[2].stride;
+    pp->checked.fogColor = st->packedFogColor;
+    pp->checked.alphaReference = st->alphaReference;
+    pp->checked.stencilReference = st->stencilReference;
+    pp->checked.stencilReferenceMasked =
+        (unsigned char)(st->stencilReference & st->stencilTestMask);
+    pp->checked.stencilTestMask = st->stencilTestMask;
+    pp->checked.stencilWriteMask = st->stencilWriteMask;
+    for (i = 1; i >= 0; --i)
+        if (st->useTexUnit[i] != 0)
+            *(int *)pp->textureUnit[i].pad0 = st->textureUnit[2 * i].envColor;
+}
+
+static void testExecutePixelPipeline(Gerbera_s *st)
+{
+    _grPixelPipe *user = (_grPixelPipe *)st->pixelPipeline;
+    void *savedStack = st->renderStack;
+    _grPixelPipe *staged = testJitPipe();
+
+    /* the C evaluator re-reads the live state; JIT code is specialized,
+     * so refresh the cached program for state changed since the last
+     * grEnsureValidPixelPipeline (e.g. the blend cases below) */
+    int testMask = st->activeGradientMask;
+    int g;
+
+    grEnsureValidPixelPipeline(st);
+    memcpy(staged, user, sizeof(*staged));
+    testSetupPipeHead(st, staged);
+    /* The C evaluator substitutes the current color (defaultColorRGBA) and
+     * fogAtZero for gradients the test leaves inactive; the real driver
+     * feeds them through grSetupTriangleGradients as constant gradients.
+     * Do the same for whatever the compiled program reads. */
+    for (g = 1; g <= 5; ++g)
+    {
+        if ((st->activeGradientMask & (1 << g)) != 0 && (testMask & (1 << g)) == 0)
+        {
+            staged->reference[g] = (g == 1) ? (int)(st->fogAtZero << 8)
+                                            : st->defaultColorRGBA[g - 2] << 8;
+            staged->xAdder[g] = 0;
+            staged->yAdder[g] = 0;
+        }
+    }
+    st->renderStack = s_jitRenderStack.bytes;
+    st->pixelPipeline = staged;
+    grExecutePixelPipeline(st);
+    /* no copy-back: like the original programs, the JIT consumes the scan
+     * state in place (numScanlines, scanlineInfo and row pointers advance),
+     * while the C evaluator leaves the caller's record untouched */
+    st->pixelPipeline = user;
+    st->renderStack = savedStack;
+    st->activeGradientMask = testMask;
+}
+#else
+#define testExecutePixelPipeline grExecutePixelPipeline
+#endif
+
 static unsigned int sample_pixel(Gerbera_s *st, _grTexture *tex, int s, int t,
                                  int linear, int wrap)
 {
@@ -5408,6 +5498,8 @@ static unsigned int sample_pixel(Gerbera_s *st, _grTexture *tex, int s, int t,
     grSetTextureWrapMode(tex, 0, wrap);
     grSetTextureWrapMode(tex, 1, wrap);
     grUpdateTexture(tex);
+    /* a bound color buffer makes the signature write color (writeColor) */
+    st->drawSurface.buffers[0].data = &pixel;
     grSetActiveTexture(st, 0, tex);
     st->useTexUnit[0] = 1;
     st->textureUnitEnabled[0] = 1;
@@ -5422,8 +5514,9 @@ static unsigned int sample_pixel(Gerbera_s *st, _grTexture *tex, int s, int t,
     pp.colorRow = &pixel;
     pp.numScanlines = 1;
     pp.scanlineInfo = &span;
-    grExecutePixelPipeline(st);
+    testExecutePixelPipeline(st);
     st->pixelPipeline = NULL;
+    st->drawSurface.buffers[0].data = NULL;
     return pixel;
 }
 
@@ -5489,6 +5582,7 @@ static void test_pixel_sampling(void)
         st->drawSurface.width = 5;
         st->drawSurface.height = 2;
         st->drawSurface.buffers[0].stride = 5 * sizeof(unsigned int);
+        st->drawSurface.buffers[0].data = pixels;
         for (env = 0; env < 2; ++env)
         {
             grSetTexEnvMode(st, 0, env ? GR_TEXENVMODE_REPLACE : GR_TEXENVMODE_MODULATE);
@@ -5510,7 +5604,7 @@ static void test_pixel_sampling(void)
             pp.colorRow = pixels;
             pp.numScanlines = 2;
             pp.scanlineInfo = spans;
-            grExecutePixelPipeline(st);
+            testExecutePixelPipeline(st);
             CHECK(pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 0);
             CHECK(pixels[3] == 0xFF00FF00u && pixels[4] == 0xFFFF0000u);
             CHECK(pixels[5] == 0xFFFFFFFFu && pixels[6] == 0xFF0000FFu);
@@ -5518,6 +5612,7 @@ static void test_pixel_sampling(void)
             CHECK(pixels[9] == 0xFFFFFFFFu);
         }
         st->pixelPipeline = NULL;
+        st->drawSurface.buffers[0].data = NULL;
         st->drawSurface.width = st->drawSurface.height = 1;
         st->drawSurface.buffers[0].stride = sizeof(unsigned int);
         grSetTexEnvMode(st, 0, GR_TEXENVMODE_MODULATE);
@@ -5525,6 +5620,8 @@ static void test_pixel_sampling(void)
     {
         TEST_RENDER_STACK(renderStack);
         _grPixelPipe pp;
+        _grPixelPipe *rp;
+        unsigned char *rs;
         unsigned int pixels[8] = { 0 };
         unsigned short depth[8] = { 0 };
         unsigned char stencil[8] = { 0 };
@@ -5543,16 +5640,35 @@ static void test_pixel_sampling(void)
         st->drawSurface.buffers[2].stride = 2;
         grSetRectangle(&st->surfaceScissor, 0, 2, 0, 4);
         grEnsureValidPixelPipeline(st);
-        memset(&pp, 0, sizeof(pp));
-        st->pixelPipeline = &pp;
-        st->renderStack = renderStack;
+#if defined(GR_NATIVE_JIT)
+        rp = testJitPipe();
+        rs = s_jitRenderStack.bytes;
+#else
+        rp = &pp;
+        rs = renderStack;
+#endif
+        memset(rp, 0, sizeof(*rp));
+#if defined(GR_NATIVE_JIT)
+        testSetupPipeHead(st, rp);
+#endif
+        st->pixelPipeline = rp;
+        st->renderStack = rs;
+#if defined(GR_NATIVE_JIT)
+        /* keep the program's gradient mask: grSetupTextureRectGradients
+         * then feeds the current color as constant color gradients */
+        grRenderTextureRect(st, IScalar_zero(), IScalar_zero(),
+                            IScalar_intToScalar(2), IScalar_intToScalar(2), IScalar_zero());
+        /* the JIT program counts numScanlines down to zero in place */
+        CHECK(rp->yStart == 2 && rp->numScanlines == 0);
+#else
         st->activeGradientMask = 0xC0;
         st->numActiveGradients = 2;
         st->activeGradientIndex[0] = 6;
         st->activeGradientIndex[1] = 7;
         grRenderTextureRect(st, IScalar_zero(), IScalar_zero(),
                             IScalar_intToScalar(2), IScalar_intToScalar(2), IScalar_zero());
-        CHECK(pp.yStart == 2 && pp.numScanlines == 2);
+        CHECK(rp->yStart == 2 && rp->numScanlines == 2);
+#endif
         CHECK(pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 0 && pixels[3] == 0);
         CHECK(pixels[4] == 0xFF0000FFu && pixels[5] == 0xFFFFFFFFu);
         CHECK(pixels[6] == 0xFFFF0000u && pixels[7] == 0xFF00FF00u);
@@ -5619,6 +5735,8 @@ static void test_pixel_sampling(void)
         grEnableCapability(st, GR_CAPABILITY_BLEND);
         st->srcBlendFactor = GR_BLENDFACTOR_SRC_ALPHA;
         st->dstBlendFactor = GR_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        st->drawSurface.buffers[0].data = &pixel;
+        st->drawSurface.buffers[2].data = &stencil;
         for (general = 0; general < 2; ++general)
         {
             memset(&pipe, 0, sizeof(pipe));
@@ -5633,7 +5751,7 @@ static void test_pixel_sampling(void)
             pipe.reference[5] = 64 << 16;
             st->pixelPipeline = &pipe;
             grSetCapability(st, GR_CAPABILITY_STENCIL_TEST, general);
-            grExecutePixelPipeline(st);
+            testExecutePixelPipeline(st);
             CHECK(pixel == 0x7B3F5E7Eu);
         }
         pixel = 0x8F3A7172u;
@@ -5643,9 +5761,11 @@ static void test_pixel_sampling(void)
         pipe.reference[5] = 131 << 16;
         st->srcBlendFactor = GR_BLENDFACTOR_SRC_ALPHA_SATURATE;
         st->dstBlendFactor = GR_BLENDFACTOR_ONE;
-        grExecutePixelPipeline(st);
+        testExecutePixelPipeline(st);
         CHECK(pixel == 0xFF658CB8u);
         st->pixelPipeline = NULL;
+        st->drawSurface.buffers[0].data = NULL;
+        st->drawSurface.buffers[2].data = NULL;
     }
     grDestroyGerbera(st);
     free(work);

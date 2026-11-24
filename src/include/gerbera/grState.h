@@ -14,6 +14,8 @@
 #ifndef GR_STATE_H
 #define GR_STATE_H
 
+#include <stddef.h>
+#include <stdint.h>
 #include "hg/hgDefs.h"
 #include "gerbera/grDefs.h"
 #include "gerbera/grTexture.h"
@@ -271,7 +273,18 @@ typedef struct _grPixelPipe
     unsigned char tail[8040];                 /* +624..9215 */
 } _grPixelPipe;                               /* 9216 bytes */
 
-#if defined(__SYMBIAN32__) || (defined(__arm__) && UINTPTR_MAX == 0xFFFFFFFFu)
+/* GR_NATIVE_JIT: execute the HC-compiled pixel pipeline natively, exactly
+ * like the original DLLs (EPOC ARM: HCARMBackend; Win32 x86: HCX86Backend).
+ * The JIT programs address the pixel-pipe record with the original 32-bit
+ * offsets, so this needs a 32-bit target. 64-bit hosts (and builds with
+ * -DGR_DISABLE_JIT) run grExecutePixelPipeline64, a C evaluator of the
+ * same pipeline signature. */
+#if !defined(GR_DISABLE_JIT) && UINTPTR_MAX == 0xFFFFFFFFu && \
+    (defined(__SYMBIAN32__) || defined(__arm__) || defined(__i386__) || defined(_M_IX86))
+#define GR_NATIVE_JIT 1
+#endif
+
+#if defined(GR_NATIVE_JIT)
 typedef char _grPixelPipe_check_ref_offset[(offsetof(_grPixelPipe, reference) == 192) ? 1 : -1];
 typedef char _grPixelPipe_check_xadd_offset[(offsetof(_grPixelPipe, xAdder) == 232) ? 1 : -1];
 typedef char _grPixelPipe_check_yadd_offset[(offsetof(_grPixelPipe, yAdder) == 272) ? 1 : -1];

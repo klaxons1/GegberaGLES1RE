@@ -1,6 +1,30 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (merged SOMETHINKWORKS, Gerbera rebuilt)
+Last updated: 2026-11-22 (Win32 ClassiCube rebuilt with the native x86 JIT)
+
+## Win32 ClassiCube with the native x86 JIT
+
+- New `GR_NATIVE_JIT` (grState.h): on 32-bit ARM/Symbian and 32-bit x86
+  (unless `-DGR_DISABLE_JIT`), `grExecutePixelPipeline` calls the
+  HC-compiled program natively with `renderStack + 14644`, matching both
+  original DLLs. Before this change, only ARM ran JIT code natively;
+  x86 builds used the C evaluator `grExecutePixelPipeline64`.
+- `eglAllocExecutable` uses `VirtualAlloc(PAGE_EXECUTE_READWRITE)` on Win32
+  and `mmap(PROT_EXEC)` on 32-bit POSIX hosts.
+- `tests/test_core.c`: on JIT builds the pixel-sampling tests stage the pipe
+  into a real render stack, publish the `grSetupRendering` head block and
+  bind a color buffer, so they test real JIT output.
+- On 32-bit x86 Linux (zig, `-UNDEBUG`), all 51591 core checks pass with
+  JIT code. One opengl check fails (test_opengl.c:1095, stencil mask).
+- Root cause found: the x86 output differs from the original Win32 compiler
+  (run under unicorn) for 10 of the 16 test_opengl programs. The
+  pre-regalloc IR is identical; `pruneGraph` round 0 spills an extra
+  register. Not fixed yet. Next suspects: `computeSpillCosts`, the
+  interference graph, and HCRandom state.
+- Rebuilt `demo/win32/libGLES_CM.dll` (401,408 bytes; the C evaluator is no
+  longer linked), `ClassiCube.exe` and the zip. Symbian code is unchanged
+  (only header bytes differ).
+
 
 ## Merged SOMETHINKWORKS (70bbc43) and rebuilt Gerbera
 
