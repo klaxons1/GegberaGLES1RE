@@ -89,6 +89,55 @@ Each run also copies the surface to `EColor64K`, `EColor16M`, `EColor4K` and
 `EColor64K` and that RGB8 requests get RGB565.
 These are automated host/emulator results, not physical-phone validation.
 
+## M3G (JSR-184) core engine compatibility
+
+Checked against Nokia's M3G 1.1 engine `m3g/m3gcore11` from
+[SymbianSource/oss.FCL.sf.os.graphics](https://github.com/SymbianSource/oss.FCL.sf.os.graphics)
+(EPL-1.0, master `ff133bc`; its sources are identical to `toaarnio/m3gcore`).
+m3gcore draws only through GLES 1.1 + EGL, so it was built for the host from
+source and run on PixelFlinger (`tests/m3g/`). Its debug build checks
+`glGetError()` after GL work and asserts on unexpected EGL errors.
+
+Gaps found in `egl_symbian.cpp` and fixed:
+
+- `EGL_MATCH_NATIVE_PIXMAP` was rejected with `EGL_BAD_ATTRIBUTE`. m3gcore
+  passes it for every bitmap target and asserts on the error; in release builds
+  it then read an uninitialized config count. It is now accepted: a 16-bit
+  bitmap matches a 16-bit config, and a 32-bit bitmap matches a 24/32-bit
+  config. An unsupported bitmap gives `EGL_BAD_NATIVE_PIXMAP`.
+- `EGL_SAMPLE_BUFFERS`/`EGL_SAMPLES` > 0 were ignored, so a 4x request
+  matched a config without multisampling. Such requests now return 0 configs,
+  which makes m3gcore fall back to 2x and then 1x as intended.
+- `eglBindAPI`/`eglQueryAPI` (EGL 1.2) were missing. m3gcore11 calls
+  `eglBindAPI(EGL_OPENGL_ES_API)` before every MakeCurrent. Both are now
+  available through `eglGetProcAddress`. The DLL keeps the frozen 175-ordinal
+  ABI, so a Symbian build of m3gcore11 against `libgles_cm.lib` needs a
+  `eglGetProcAddress` shim. Host builds export the real symbols.
+- Pixmap surfaces render into a RAM copy of the `CFbsBitmap`. The bitmap's
+  existing pixels were never read in, so M3G frames on a `Graphics` target
+  erased the 2D UI under them. The copy is now synchronized at the EGL points:
+  - Native pixels are read in when the surface is created, when it becomes
+    current, and on `eglWaitNative`.
+  - GL results are written out on `glFinish`, `eglWaitGL`, release and destroy.
+  - A dirty flag set by `glClear`/`glDraw*`/`glDrawTex*` stops a mid-frame
+    `eglWaitNative` from reading the bitmap over unfinished GL work. m3gcore
+    calls it before every render call. It also stops a later flush from
+    overwriting newer native drawing with stale GL pixels.
+  - `EColor16MAP` output is now premultiplied.
+
+Paths now covered: bitmap targets (`EColor16MU`/`64K`/`16MA`), direct pixmap
+rendering, Image2D targets (RGBA8 pbuffer + `glReadPixels`), render to texture,
+application EGL surfaces, Background color and image, World/Mesh/perspective
+camera, lighting, linear fog, alpha blending, depth, RGB/RGBA/paletted
+mipmapped textures, two texture units and Sprite3D. These pass on both builds.
+
+Known limitations, not in PixelFlinger:
+- m3gcore's `m3gBindMemoryTarget` asserts with any EGL whose configs support
+  window, pixmap and pbuffer surfaces together; memory targets are meant for
+  its NGL backend.
+- Window targets cannot be run on the host.
+- Nothing has been run on a real device.
+
 ## Building & Verification
 
 ```bash
@@ -118,4 +167,9 @@ g++ -std=gnu++14 -O2 -g -fsanitize=address -fno-strict-aliasing -fno-exceptions 
   pixelflinger/libpixelflinger/*.cpp pixelflinger/libpixelflinger/codeflinger/*.cpp \
   pixelflinger/libpixelflinger/codeflinger/tinyutils/*.cpp pixelflinger/libagl/*.cpp \
   -lm -lpthread -o /tmp/test_pf_headless && /tmp/test_pf_headless
+
+# 4. Fetch m3gcore11 from SymbianSource and run it on host PixelFlinger
+#    (needs network for the first sparse clone; reuse one with M3G_SRC=...):
+pixelflinger/tests/m3g/run_m3gcore_host.sh
+pixelflinger/tests/m3g/run_m3gcore_host.sh --16bpp
 ```

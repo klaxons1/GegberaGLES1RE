@@ -25,6 +25,47 @@
 #include "symbian_os.h"
 void  pf_symbian_set_egl_state(void* state, void (*destroyFn)(void*));
 void* pf_symbian_get_egl_state(void);
+#else
+/* Headless builds emulate the small CFbsBitmap surface used by EGL pixmaps so
+ * the Symbian pixmap conversion/synchronization code is exercised on host. */
+#include "pf_host_bitmap.h"
+struct SymTSize { int iWidth; int iHeight; };
+static inline PfHostBitmap* pfHostBitmap(void* p)
+{
+    PfHostBitmap* b = (PfHostBitmap*)p;
+    return (b && b->magic == PF_HOST_BITMAP_MAGIC && b->data &&
+            b->width > 0 && b->height > 0) ? b : 0;
+}
+static inline void sym_CFbsBitmap_SizeInPixels(SymTSize* out, void* p)
+{
+    PfHostBitmap* b = pfHostBitmap(p);
+    out->iWidth = b ? b->width : 0;
+    out->iHeight = b ? b->height : 0;
+}
+static inline int sym_CFbsBitmap_DisplayMode(void* p)
+{
+    PfHostBitmap* b = pfHostBitmap(p);
+    return b ? b->displayMode : 0;
+}
+static inline int sym_CFbsBitmap_ScanLineLength(int width, int mode)
+{
+    return pf_host_bitmap_stride(width, mode);
+}
+static inline void sym_CFbsBitmap_LockHeap(void* p, int)
+{
+    PfHostBitmap* b = pfHostBitmap(p);
+    if (b && ++b->lockCount > b->maxLockCount) b->maxLockCount = b->lockCount;
+}
+static inline void sym_CFbsBitmap_UnlockHeap(void* p, int)
+{
+    PfHostBitmap* b = pfHostBitmap(p);
+    if (b) --b->lockCount;
+}
+static inline void* sym_CFbsBitmap_DataAddress(void* p)
+{
+    PfHostBitmap* b = pfHostBitmap(p);
+    return b ? b->data : 0;
+}
 #endif
 
 #include "../libagl/context.h"
@@ -166,8 +207,11 @@ struct PfSurface {
     void*               windowGc;
     void*               wsBitmap;
     int                 wsDispMode;
-    void*               nativePixmap;
 #endif
+    void*               nativePixmap;
+    /* Pixmap only: GL has rendered into the RAM copy since the last
+     * import/export, so the RAM copy is newer than the native bitmap. */
+    int                 glDirty;
 
     PfSurface*          next;
 };
@@ -307,7 +351,6 @@ static void bindReadToGl(PfSurface* s, ogles_context_t* gl)
     gl->rasterizer.procs.readBuffer(gl, &s->color);
 }
 
-#ifdef __SYMBIAN32__
 /* Blit RAM GGLSurface -> Symbian CFbsBitmap / CWsBitmap inside a brief LockHeap/UnlockHeap.
  * Supports EColor4K, EColor64K, EColor16M, EColor16MU, EColor16MA, EColor16MAP. */
 static bool pfBlitSurfaceToBitmap(const PfSurface* s, void* dstBmp, bool forceOpaqueAlpha)
@@ -366,7 +409,15 @@ static bool pfBlitSurfaceToBitmap(const PfSurface* s, void* dstBmp, bool forceOp
                 uint32_t* dp = (uint32_t*)(dstBase + y * dstByteStride);
                 for (int x = 0; x < copyW; ++x) {
                     uint32_t v = sp[x]; /* 0xAABBGGRR -> Symbian 0xAARRGGBB */
-                    dp[x] = alphaOr | (v & 0xFF00FF00u) | ((v & 0x000000FFu) << 16) | ((v >> 16) & 0x000000FFu);
+                    uint32_t out = alphaOr | (v & 0xFF00FF00u) | ((v & 0x000000FFu) << 16) | ((v >> 16) & 0x000000FFu);
+                    uint32_t a = out >> 24;
+                    if (dstMode == SYM_DISP_ECOLOR16MAP && a != 255u) { /* premultiplied */
+                        uint32_t r = (((out >> 16) & 255u) * a + 127u) / 255u;
+                        uint32_t g = (((out >> 8) & 255u) * a + 127u) / 255u;
+                        uint32_t b = ((out & 255u) * a + 127u) / 255u;
+                        out = (a << 24) | (r << 16) | (g << 8) | b;
+                    }
+                    dp[x] = out;
                 }
             }
         } else if ((srcFmt == GGL_PIXEL_FORMAT_RGBA_8888 || srcFmt == GGL_PIXEL_FORMAT_RGBX_8888) &&
@@ -471,6 +522,89 @@ static bool pfBlitSurfaceToBitmap(const PfSurface* s, void* dstBmp, bool forceOp
     return dstBase != 0;
 }
 
+static bool pfIsSupportedBitmapMode(int mode)
+{
+    return mode == SYM_DISP_ECOLOR4K || mode == SYM_DISP_ECOLOR64K ||
+           mode == SYM_DISP_ECOLOR16M || mode == SYM_DISP_ECOLOR16MU ||
+           mode == SYM_DISP_ECOLOR16MA || mode == SYM_DISP_ECOLOR16MAP;
+}
+
+/* Import native CFbsBitmap pixels into a pixmap surface. EGL pixmap rendering
+ * must start from, and preserve, the native contents (e.g. MIDP/M3G draws 3D
+ * on top of 2D UI). PixelFlinger renders into RAM, so this mirrors the export
+ * performed by pfBlitSurfaceToBitmap(). */
+static bool pfImportBitmapToSurface(PfSurface* s, void* srcBmp)
+{
+    if (!s || !s->color.data || !srcBmp)
+        return false;
+    SymTSize srcSz = { 0, 0 };
+    sym_CFbsBitmap_SizeInPixels(&srcSz, srcBmp);
+    int mode = sym_CFbsBitmap_DisplayMode(srcBmp);
+    if (srcSz.iWidth <= 0 || srcSz.iHeight <= 0 || !pfIsSupportedBitmapMode(mode))
+        return false;
+    int srcStride = sym_CFbsBitmap_ScanLineLength(srcSz.iWidth, mode);
+    int copyW = (s->width < srcSz.iWidth) ? s->width : srcSz.iWidth;
+    int copyH = (s->height < srcSz.iHeight) ? s->height : srcSz.iHeight;
+    if (copyW <= 0 || copyH <= 0 || srcStride <= 0)
+        return false;
+
+    const int dstBpp = s->cfg->bytesPerPixel;
+    const int dstStride = s->stridePixels * dstBpp;
+    uint8_t* dstBase = (uint8_t*)s->color.data;
+    const uint8_t fmt = s->cfg->gglFormat;
+
+    sym_CFbsBitmap_LockHeap(srcBmp, 0);
+    const uint8_t* srcBase = (const uint8_t*)sym_CFbsBitmap_DataAddress(srcBmp);
+    if (srcBase) {
+        for (int y = 0; y < copyH; ++y) {
+            const uint8_t* sp = srcBase + y * srcStride;
+            uint8_t* dp = dstBase + y * dstStride;
+            if (fmt == GGL_PIXEL_FORMAT_RGB_565 && mode == SYM_DISP_ECOLOR64K) {
+                memcpy(dp, sp, (size_t)copyW * 2u);
+                continue;
+            }
+            for (int x = 0; x < copyW; ++x) {
+                uint32_t r, g, b, a = 255;
+                if (mode == SYM_DISP_ECOLOR64K) {
+                    uint32_t v = ((const uint16_t*)sp)[x];
+                    r = (v >> 11) & 31; r = (r << 3) | (r >> 2);
+                    g = (v >> 5) & 63;  g = (g << 2) | (g >> 4);
+                    b = v & 31;         b = (b << 3) | (b >> 2);
+                } else if (mode == SYM_DISP_ECOLOR4K) {
+                    uint32_t v = ((const uint16_t*)sp)[x];
+                    r = ((v >> 8) & 15) * 17; g = ((v >> 4) & 15) * 17; b = (v & 15) * 17;
+                } else if (mode == SYM_DISP_ECOLOR16M) {
+                    b = sp[x * 3]; g = sp[x * 3 + 1]; r = sp[x * 3 + 2];
+                } else {
+                    uint32_t v = ((const uint32_t*)sp)[x]; /* 0xAARRGGBB */
+                    r = (v >> 16) & 255; g = (v >> 8) & 255; b = v & 255;
+                    if (mode == SYM_DISP_ECOLOR16MA) {
+                        a = v >> 24;
+                    } else if (mode == SYM_DISP_ECOLOR16MAP) {
+                        a = v >> 24;
+                        if (a) {
+                            r = (r * 255 + a / 2) / a; if (r > 255) r = 255;
+                            g = (g * 255 + a / 2) / a; if (g > 255) g = 255;
+                            b = (b * 255 + a / 2) / a; if (b > 255) b = 255;
+                        }
+                    }
+                }
+                if (fmt == GGL_PIXEL_FORMAT_RGB_565) {
+                    ((uint16_t*)dp)[x] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+                } else if (fmt == GGL_PIXEL_FORMAT_RGBA_4444) {
+                    ((uint16_t*)dp)[x] = (uint16_t)(((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4));
+                } else { /* RGBA_8888 / RGBX_8888, memory order R,G,B,A */
+                    if (fmt == GGL_PIXEL_FORMAT_RGBX_8888) a = 255;
+                    ((uint32_t*)dp)[x] = (a << 24) | (b << 16) | (g << 8) | r;
+                }
+            }
+        }
+    }
+    sym_CFbsBitmap_UnlockHeap(srcBmp, 0);
+    return srcBase != 0;
+}
+
+#ifdef __SYMBIAN32__
 static bool syncWindowSurfaceSize(PfSurface* s, ogles_context_t* currentGl, PfEglState* st)
 {
     if (!s || s->kind != PF_SURF_WINDOW || !s->nativeWindow)
@@ -530,15 +664,43 @@ extern "C" void pf_egl_sync_window_surface(void)
 #endif
 }
 
+/* Pixmap surfaces render into a private RAM copy of the CFbsBitmap.
+ * EGL requires GL and native rendering to the pixmap to be serialized with
+ * glFinish/eglWaitGL (GL -> native) and eglWaitNative (native -> GL); the
+ * copy is synchronized at exactly those points. glDirty prevents exporting
+ * stale GL contents over newer native drawing and importing over GL
+ * rendering that has not been finished yet. */
 static void flushPixmapIfNeeded(PfSurface* s)
 {
-#ifdef __SYMBIAN32__
-    if (s && s->kind == PF_SURF_PIXMAP && s->nativePixmap) {
-        (void)pfBlitSurfaceToBitmap(s, s->nativePixmap, false);
+    if (s && s->kind == PF_SURF_PIXMAP && s->nativePixmap && s->glDirty) {
+        if (pfBlitSurfaceToBitmap(s, s->nativePixmap, false))
+            s->glDirty = 0;
     }
-#else
-    (void)s;
-#endif
+}
+
+static void importPixmapIfNeeded(PfSurface* s)
+{
+    if (s && s->kind == PF_SURF_PIXMAP && s->nativePixmap && !s->glDirty) {
+        (void)pfImportBitmapToSurface(s, s->nativePixmap);
+    }
+}
+
+/* Called by libagl before every operation that writes color/depth pixels. */
+extern "C" void pf_egl_mark_drawn(void)
+{
+    PfEglState* st = getEglState(false);
+    if (st && st->currentDraw && st->currentDraw->kind == PF_SURF_PIXMAP)
+        st->currentDraw->glDirty = 1;
+}
+
+/* glFinish() completes GL rendering; EGL requires pixmap results to be
+ * visible to native rendering afterwards (M3G relies on this). */
+extern "C" void pf_egl_finish_hook(void)
+{
+    PfEglState* st = getEglState(false);
+    if (st && st->currentCtx) {
+        flushPixmapIfNeeded(st->currentDraw);
+    }
 }
 
 static void freeSurfaceImmediate(PfSurface* s)
@@ -863,9 +1025,12 @@ EGLAPI EGLBoolean EGLAPIENTRY eglGetConfigAttrib(EGLDisplay dpy, EGLConfig confi
 static int matchConfigsHelper(EGLint reqId, EGLint reqBuf, EGLint reqR, EGLint reqG,
                               EGLint reqB, EGLint reqA, EGLint reqD, EGLint reqS,
                               EGLint reqSurf, EGLint reqBindRgb, EGLint reqBindRgba,
-                              EGLConfig* configs, EGLint config_size)
+                              EGLConfig* configs, EGLint config_size,
+                              int reqPixmapBits = 0, bool reqMultisample = false)
 {
     int matched = 0;
+    if (reqMultisample)   /* no multisample buffers are implemented */
+        return 0;
     for (int i = 0; i < kNumConfigs; i++) {
         const PfConfigDesc& c = kConfigs[i];
         if (reqId != EGL_DONT_CARE) {
@@ -881,6 +1046,9 @@ static int matchConfigsHelper(EGLint reqId, EGLint reqBuf, EGLint reqR, EGLint r
             EGLint stMask = EGL_WINDOW_BIT | EGL_PIXMAP_BIT | EGL_PBUFFER_BIT;
             if ((stMask & reqSurf) != reqSurf) continue;
             if (reqBindRgba == EGL_TRUE && c.alphaSize == 0) continue;
+            /* EGL_MATCH_NATIVE_PIXMAP: same color depth class as the bitmap. */
+            if (reqPixmapBits == 16 && c.bufferSize != 16) continue;
+            if (reqPixmapBits == 32 && c.bufferSize < 24) continue;
             (void)reqBindRgb;
         }
         if (configs && matched < config_size)
@@ -907,6 +1075,8 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
     EGLint reqBuf = 0, reqR = 0, reqG = 0, reqB = 0, reqA = 0, reqD = 0, reqS = 0;
     EGLint reqSurf = EGL_WINDOW_BIT;
     EGLint reqBindRgb = EGL_DONT_CARE, reqBindRgba = EGL_DONT_CARE;
+    int reqPixmapBits = 0;
+    bool reqMultisample = false;
 
     if (attrib_list) {
         for (int i = 0; attrib_list[i] != EGL_NONE; i += 2) {
@@ -928,9 +1098,23 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
             case EGL_NATIVE_RENDERABLE:
             case EGL_NATIVE_VISUAL_ID:
             case EGL_NATIVE_VISUAL_TYPE:
-            case EGL_LEVEL:
             case EGL_SAMPLE_BUFFERS:
             case EGL_SAMPLES:
+                if (v != EGL_DONT_CARE && v > 0) reqMultisample = true;
+                break;
+            case EGL_MATCH_NATIVE_PIXMAP: {
+                if (v == EGL_NONE) break; /* EGL 1.3: EGL_NONE means don't match */
+                void* bmp = (void*)(intptr_t)v;
+                SymTSize sz = { 0, 0 };
+                sym_CFbsBitmap_SizeInPixels(&sz, bmp);
+                int mode = sym_CFbsBitmap_DisplayMode(bmp);
+                if (sz.iWidth <= 0 || sz.iHeight <= 0 || !pfIsSupportedBitmapMode(mode))
+                    return pfSetError(EGL_BAD_NATIVE_PIXMAP, EGL_FALSE);
+                reqPixmapBits = (mode == SYM_DISP_ECOLOR64K || mode == SYM_DISP_ECOLOR4K) ? 16 : 32;
+                reqSurf |= EGL_PIXMAP_BIT;
+                break;
+            }
+            case EGL_LEVEL:
             case EGL_TRANSPARENT_TYPE:
             case EGL_TRANSPARENT_RED_VALUE:
             case EGL_TRANSPARENT_GREEN_VALUE:
@@ -949,12 +1133,14 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
     }
 
     int matched = matchConfigsHelper(reqId, reqBuf, reqR, reqG, reqB, reqA, reqD, reqS,
-                                     reqSurf, reqBindRgb, reqBindRgba, configs, config_size);
+                                     reqSurf, reqBindRgb, reqBindRgba, configs, config_size,
+                                     reqPixmapBits, reqMultisample);
     /* Fallback for Symbian games requesting stencil/24-bit depth so they still launch */
     if (matched == 0 && (reqS > 0 || reqD > 16)) {
         matched = matchConfigsHelper(reqId, reqBuf, reqR, reqG, reqB, reqA,
                                      (reqD > 16) ? 16 : reqD, 0,
-                                     reqSurf, reqBindRgb, reqBindRgba, configs, config_size);
+                                     reqSurf, reqBindRgb, reqBindRgba, configs, config_size,
+                                     reqPixmapBits, reqMultisample);
     }
 
 #ifdef PF_FRAMEBUFFER_16BPP
@@ -965,7 +1151,8 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
         (reqBuf > 16 || reqR > 5 || reqG > 6 || reqB > 5 || reqA > 4)) {
         matched = matchConfigsHelper(reqId, 0, 0, 0, 0, 0,
                                      (reqD > 16) ? 16 : reqD, 0,
-                                     reqSurf, reqBindRgb, EGL_DONT_CARE, configs, config_size);
+                                     reqSurf, reqBindRgb, EGL_DONT_CARE, configs, config_size,
+                                     reqPixmapBits ? 16 : 0, reqMultisample);
     }
 #endif
     *num_config = matched;
@@ -1180,10 +1367,10 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePixmapSurface(EGLDisplay dpy, EGLConfig c
     if (!pixmap)
         return pfSetError(EGL_BAD_NATIVE_PIXMAP, EGL_NO_SURFACE);
 
-#ifdef __SYMBIAN32__
     SymTSize sz = { 0, 0 };
     sym_CFbsBitmap_SizeInPixels(&sz, pixmap);
-    if (sz.iWidth <= 0 || sz.iHeight <= 0)
+    if (sz.iWidth <= 0 || sz.iHeight <= 0 ||
+        !pfIsSupportedBitmapMode(sym_CFbsBitmap_DisplayMode(pixmap)))
         return pfSetError(EGL_BAD_NATIVE_PIXMAP, EGL_NO_SURFACE);
 
     PfSurface* s = (PfSurface*)calloc(1, sizeof(PfSurface));
@@ -1201,16 +1388,15 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePixmapSurface(EGLDisplay dpy, EGLConfig c
     s->texTarget    = EGL_NO_TEXTURE;
 
     if (!allocColorAndDepth(s, sz.iWidth, sz.iHeight)) {
+        s->nativePixmap = 0; /* do not overwrite the bitmap while freeing */
         freeSurfaceImmediate(s);
         return pfSetError(EGL_BAD_ALLOC, EGL_NO_SURFACE);
     }
+    importPixmapIfNeeded(s);
 
     s->next = st->surfaces;
     st->surfaces = s;
     return pfSetError(EGL_SUCCESS, (EGLSurface)s);
-#else
-    return pfSetError(EGL_BAD_NATIVE_PIXMAP, EGL_NO_SURFACE);
-#endif
 }
 
 EGLAPI EGLBoolean EGLAPIENTRY eglDestroySurface(EGLDisplay dpy, EGLSurface surface)
@@ -1454,6 +1640,13 @@ EGLAPI EGLBoolean EGLAPIENTRY eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
     ogles_context_t* gl = (ogles_context_t*)ctx;
     setGlThreadSpecific(gl);
 
+    /* A pixmap that becomes current must reflect native drawing done while
+     * it was not bound to this context. */
+    if (d->boundCtx != ctx)
+        importPixmapIfNeeded(d);
+    if (r != d && r->boundCtx != ctx)
+        importPixmapIfNeeded(r);
+
     d->boundCtx = ctx;
     r->boundCtx = ctx;
     newHdr->draw = d;
@@ -1537,6 +1730,10 @@ EGLAPI EGLBoolean EGLAPIENTRY eglWaitNative(EGLint engine)
 {
     if (engine != EGL_CORE_NATIVE_ENGINE)
         return pfSetError(EGL_BAD_PARAMETER, EGL_FALSE);
+    /* Native rendering into the current pixmap must become visible to GL. */
+    PfEglState* st = getEglState(false);
+    if (st && st->currentCtx)
+        importPixmapIfNeeded(st->currentDraw);
     return EGL_TRUE;
 }
 
@@ -1602,6 +1799,12 @@ EGLAPI EGLBoolean EGLAPIENTRY eglCopyBuffers(EGLDisplay dpy, EGLSurface surface,
         return pfSetError(EGL_BAD_NATIVE_PIXMAP, EGL_FALSE);
     return pfSetError(EGL_SUCCESS, EGL_TRUE);
 #else
+    if (pfHostBitmap(target)) {
+        if (!pfBlitSurfaceToBitmap(s, target, false))
+            return pfSetError(EGL_BAD_NATIVE_PIXMAP, EGL_FALSE);
+        return pfSetError(EGL_SUCCESS, EGL_TRUE);
+    }
+    /* Legacy headless target: tightly packed 0xAARRGGBB words. */
     if (!s->color.data)
         return pfSetError(EGL_BAD_SURFACE, EGL_FALSE);
     uint32_t* dst32 = (uint32_t*)target;
@@ -1716,6 +1919,27 @@ struct PfProcEntry {
 
 #define PF_PROC(fn) { #fn, (__eglMustCastToProperFunctionPointerType)&fn }
 
+/* EGL 1.2 client API selection (used e.g. by the Symbian^3 m3gcore11 M3G
+ * engine). Only OpenGL ES exists here. The Symbian DLL keeps the frozen
+ * 175-ordinal libgles_cm ABI, so there these are reachable only through
+ * eglGetProcAddress; headless host builds also export the real symbols. */
+static EGLBoolean pfEglBindAPI(EGLenum api)
+{
+    if (api != EGL_OPENGL_ES_API)
+        return pfSetError(EGL_BAD_PARAMETER, EGL_FALSE);
+    return pfSetError(EGL_SUCCESS, EGL_TRUE);
+}
+
+static EGLenum pfEglQueryAPI(void)
+{
+    return EGL_OPENGL_ES_API;
+}
+
+#ifndef __SYMBIAN32__
+EGLAPI EGLBoolean EGLAPIENTRY eglBindAPI(EGLenum api) { return pfEglBindAPI(api); }
+EGLAPI EGLenum EGLAPIENTRY eglQueryAPI(void) { return pfEglQueryAPI(); }
+#endif
+
 static const PfProcEntry kProcTable[] = {
     PF_PROC(glDrawTexsOES),
     PF_PROC(glDrawTexiOES),
@@ -1738,7 +1962,9 @@ static const PfProcEntry kProcTable[] = {
     PF_PROC(eglBindTexImage),
     PF_PROC(eglReleaseTexImage),
     PF_PROC(eglSurfaceAttrib),
-    PF_PROC(eglSwapInterval)
+    PF_PROC(eglSwapInterval),
+    { "eglBindAPI",  (__eglMustCastToProperFunctionPointerType)pfEglBindAPI },
+    { "eglQueryAPI", (__eglMustCastToProperFunctionPointerType)pfEglQueryAPI }
 };
 
 EGLAPI __eglMustCastToProperFunctionPointerType EGLAPIENTRY eglGetProcAddress(const char *procname)

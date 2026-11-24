@@ -326,8 +326,11 @@ void glDisable(GLenum cap) {
     enable_disable(c, cap, 0);
 }
 
+extern "C" void pf_egl_finish_hook(void);
+
 void glFinish()
-{ // nothing to do for our software implementation
+{ // rendering is synchronous; publish EGL pixmap results to native code
+    pf_egl_finish_hook();
 }
 
 void glFlush()
@@ -586,9 +589,11 @@ void glBlendFunc(GLenum sfactor, GLenum dfactor) {
 }
 
 extern "C" void pf_egl_sync_window_surface(void);
+extern "C" void pf_egl_mark_drawn(void);
 
 void glClear(GLbitfield mask) {
     pf_egl_sync_window_surface();
+    pf_egl_mark_drawn();
     ogles_context_t* c = ogles_context_t::get();
     c->rasterizer.procs.clear(c, mask);
 }

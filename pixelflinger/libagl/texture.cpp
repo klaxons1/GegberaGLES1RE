@@ -30,6 +30,7 @@ namespace android {
 // Symbian EGL revalidates the (possibly resized) window surface; a
 // no-op on other platforms. Defined in symbian/egl_symbian.cpp.
 extern "C" void pf_egl_sync_window_surface(void);
+extern "C" void pf_egl_mark_drawn(void);
 
 // ----------------------------------------------------------------------------
 
@@ -800,6 +801,7 @@ static void drawTexxOES(GLfixed x, GLfixed y, GLfixed z, GLfixed w, GLfixed h,
     // the window surface may have been resized behind our back (e.g.
     // Symbian window server); revalidate before we touch any pixel
     pf_egl_sync_window_surface();
+    pf_egl_mark_drawn();
 
     drawTexxOESImp(x, y, z, w, h, c);
 }
@@ -814,6 +816,7 @@ static void drawTexiOES(GLint x, GLint y, GLint z, GLint w, GLint h, ogles_conte
     // the window surface may have been resized behind our back (e.g.
     // Symbian window server); revalidate before we touch any pixel
     pf_egl_sync_window_surface();
+    pf_egl_mark_drawn();
 
     if (ggl_likely(c->rasterizer.state.enabled_tmu == 1)) {
         const int tmu = 0;

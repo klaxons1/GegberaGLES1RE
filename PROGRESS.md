@@ -1,6 +1,31 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (PixelFlinger four-subsystem regression audit)
+Last updated: 2026-11-22 (PixelFlinger M3G m3gcore11 compatibility)
+
+## PixelFlinger: M3G (m3gcore11) compatibility
+
+- Built Nokia's M3G 1.1 engine from SymbianSource/oss.FCL.sf.os.graphics
+  `m3g/m3gcore11` on the host. Its sources are identical to toaarnio/m3gcore.
+  Ran it on PixelFlinger with its debug asserts and GL error checks on, using
+  `pixelflinger/tests/m3g/run_m3gcore_host.sh`.
+  - m3gcore is ILP32, so the host binary is non-PIE and keeps its heap below
+    2 GB (`low4g_malloc.c`).
+  - `PfHostBitmap` (`symbian/pf_host_bitmap.h`) stands in for `CFbsBitmap`.
+- Fixed in `egl_symbian.cpp`:
+  - `EGL_MATCH_NATIVE_PIXMAP` is now supported.
+  - Multisample requests now match no configs.
+  - `eglBindAPI`/`eglQueryAPI` are available via `eglGetProcAddress`; the
+    175-ordinal ABI is unchanged.
+  - Pixmap surfaces now import native bitmap pixels. GL work is exported on
+    glFinish/eglWaitGL, with a dirty flag fed from libagl draw calls.
+  - `EColor16MAP` output is premultiplied.
+- Tests:
+  - m3gcore host suite passes on the 32-bit and 16-bit builds (bitmap, Image2D,
+    EGL surface, world, light, fog, blend, depth, paletted, multitexture and
+    sprite cases).
+  - New Unicorn pixmap-sync checks run on the ARM DLL.
+  - Both Unicorn suites and the 13 host ASan tests still pass.
+  - Nothing has been run on a real device.
 
 ## PixelFlinger 16-bit framebuffer variant
 

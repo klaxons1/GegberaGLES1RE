@@ -30,6 +30,7 @@
 // Symbian EGL revalidates the (possibly resized) window surface; a
 // no-op on other platforms. Defined in symbian/egl_symbian.cpp.
 extern "C" void pf_egl_sync_window_surface(void);
+extern "C" void pf_egl_mark_drawn(void);
 
 // ----------------------------------------------------------------------------
 
@@ -1417,6 +1418,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count)
     // Symbian window server); revalidate the framebuffer bindings
     // before we touch any pixel
     pf_egl_sync_window_surface();
+    pf_egl_mark_drawn();
 
     validate_arrays(c, mode);
 
@@ -1477,6 +1479,7 @@ void glDrawElements(
     // Symbian window server); revalidate the framebuffer bindings
     // before we touch any pixel
     pf_egl_sync_window_surface();
+    pf_egl_mark_drawn();
 
     // clear the vertex-cache
     c->vc.clear();

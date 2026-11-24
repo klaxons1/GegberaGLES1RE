@@ -652,6 +652,88 @@ def run_symbian_e32_scene(allow_jit: bool, config_rgb_bits=(5, 6, 5), max_exec_b
     assert call("glGetError") == 0, "targeted regression GL error"
     print("  lights / saturated depth / COMBINE / point-sprite pixel regressions passed")
 
+    # M3G (m3gcore11) style EGL pixmap rendering into a native CFbsBitmap:
+    # EGL_MATCH_NATIVE_PIXMAP + multisample probing, import of native pixels
+    # on MakeCurrent/eglWaitNative, export on glFinish/eglWaitGL, and no
+    # re-import over unfinished GL rendering.
+    def bmp_put(b, x, y, rgb):
+        r, g, bl = rgb
+        o = b["data"] + y * b["stride"] + x * BPP_BY_MODE[b["mode"]]
+        if b["mode"] == 7:
+            mu.mem_write(o, struct.pack("<H", ((r >> 3) << 11) | ((g >> 2) << 5) | (bl >> 3)))
+        else:
+            mu.mem_write(o, bytes((bl, g, r, 255)))
+
+    def bmp_get(b, x, y):
+        o = b["data"] + y * b["stride"] + x * BPP_BY_MODE[b["mode"]]
+        if b["mode"] == 7:
+            v = struct.unpack("<H", mu.mem_read(o, 2))[0]
+            r, g, bl = (v >> 11) & 31, (v >> 5) & 63, v & 31
+            return ((r << 3) | (r >> 2), (g << 2) | (g >> 4), (bl << 3) | (bl >> 2))
+        d = mu.mem_read(o, 3)
+        return (d[2], d[1], d[0])
+
+    PW = PH = 32
+    for mode in (11, 7, 12):
+        stride = (PW * BPP_BY_MODE[mode] + 3) & ~3
+        handle = halloc(16, True)
+        pb = {"w": PW, "h": PH, "mode": mode, "data": halloc(stride * PH, True), "stride": stride, "locked": 0}
+        bitmaps[handle] = pb
+        for yy in range(PH):
+            for xx in range(PW):
+                bmp_put(pb, xx, yy, (0, 255, 0))
+        rgb = (5, 6, 5) if mode == 7 else (8, 8, 8)
+        pattrs = [0x3024, rgb[0], 0x3023, rgb[1], 0x3022, rgb[2], 0x3021, 0,
+                  0x3025, 16, 0x3033, 0x0002, 0x3041, handle, 0x3032, 1, 0x3031, 4, 0x3038]
+        mu.mem_write(attr_mem, struct.pack(f"<{len(pattrs)}i", *pattrs))
+        assert call("eglChooseConfig", dpy, attr_mem, cfg_out, 1, num_out) == 1
+        assert struct.unpack("<i", mu.mem_read(num_out, 4))[0] == 0, "no multisample configs"
+        assert call("eglGetError") == 0x3000, "m3gcore asserts EGL_SUCCESS here"
+        pattrs[15], pattrs[17] = 0, 0
+        mu.mem_write(attr_mem, struct.pack(f"<{len(pattrs)}i", *pattrs))
+        assert call("eglChooseConfig", dpy, attr_mem, cfg_out, 1, num_out) == 1
+        assert struct.unpack("<i", mu.mem_read(num_out, 4))[0] == 1, ("MATCH_NATIVE_PIXMAP", mode)
+        pcfg = struct.unpack("<I", mu.mem_read(cfg_out, 4))[0]
+        assert call("eglGetConfigAttrib", dpy, pcfg, 0x3020, num_out) == 1
+        bsize = struct.unpack("<i", mu.mem_read(num_out, 4))[0]
+        # 32-bit bitmaps get a 24/32-bit config; 16-bit bitmaps (and every
+        # bitmap in the 16-bit build) get an RGB565-class config.
+        assert bsize == 16 if (mode == 7 or FB16) else bsize >= 24, (mode, bsize)
+        psurf = call("eglCreatePixmapSurface", dpy, pcfg, handle, 0)
+        pctx = call("eglCreateContext", dpy, pcfg, 0, 0)
+        assert psurf and pctx
+        assert call("eglMakeCurrent", dpy, psurf, psurf, pctx) == 1
+        assert call("eglQueryContext", dpy, pctx, 0x3028, num_out) == 1
+        assert struct.unpack("<i", mu.mem_read(num_out, 4))[0] == pcfg, "EGL_CONFIG_ID usable as EGLConfig"
+        assert pixel(16, 16) == (0, 255, 0), ("native content imported", mode, pixel(16, 16))
+        call("glEnable", 0x0C11)
+        call("glScissor", 8, 8, 16, 16)
+        clear(1, 0, 0)
+        call("glDisable", 0x0C11)
+        call("glFinish")
+        assert bmp_get(pb, 16, 16) == (255, 0, 0) and bmp_get(pb, 1, 1) == (0, 255, 0), ("glFinish export", mode)
+        assert pb["locked"] == 0
+        for yy in range(4):
+            for xx in range(4):
+                bmp_put(pb, xx, yy, (255, 255, 0))          # native 2D drawing
+        assert call("eglWaitNative", 0x305B) == 1
+        assert pixel(1, PH - 2) == (255, 255, 0), ("eglWaitNative import", mode, pixel(1, PH - 2))
+        call("glEnable", 0x0C11)
+        call("glScissor", 24, 0, 8, 8)
+        clear(0, 0, 1)
+        call("glDisable", 0x0C11)
+        assert call("eglWaitNative", 0x305B) == 1          # must not drop unfinished GL work
+        assert pixel(28, 4) == (0, 0, 255), ("dirty GL kept", mode, pixel(28, 4))
+        assert call("eglWaitGL") == 1
+        assert bmp_get(pb, 28, PH - 4) == (0, 0, 255) and bmp_get(pb, 1, 1) == (255, 255, 0)
+        assert call("eglMakeCurrent", dpy, surf, surf, ctx) == 1
+        assert call("eglDestroySurface", dpy, psurf) == 1 and call("eglDestroyContext", dpy, pctx) == 1
+        assert pb["locked"] == 0
+    assert call("eglBindAPI", 0x30A0) == 1 and call("eglQueryAPI") == 0x30A0
+    assert call("eglBindAPI", 0x30A1) == 0 and call("eglGetError") == 0x300C
+    assert call("glGetError") == 0
+    print("  M3G-style EGL pixmap sync (16MU/64K/16MA), MATCH_NATIVE_PIXMAP, eglBindAPI passed")
+
     # Clean teardown via eglTerminate
     assert call("eglTerminate", dpy) == 1
 
