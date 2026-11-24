@@ -32,16 +32,71 @@ _E32Dll_ModuleHandle:
     .hidden _E32Dll_Body
     .type _E32Dll_Body, %function
 _E32Dll_Body:
-    cmp     r0, #2                  /* KModuleEntryReasonThreadDetach == 2   */
-    bne     1f
-    push    {r4, lr}
-    bl      sym_OnThreadDetach
-    mov     r0, #0
-    pop     {r4, pc}
-1:
+    /* Reasons 2/3 are process attach/detach. The original DLL has empty
+     * constructor/destructor lists and does not release EGL thread state. */
     mov     r0, #0                  /* KErrNone                              */
     bx      lr
     .size _E32Dll_Body, . - _E32Dll_Body
+
+/* TRAP_IGNORE(CCoeEnv::ConstructL), with the native ARM EHABI personality.
+ * AllocZL and the constructor remain outside this trap, as in ARM 0x9250.
+ * Only this frame needs exception tables: all trapped calls go straight to
+ * the OS. A leave is consumed by GetReason; an unrelated exception panics. */
+    .section .text.sym_CCoeEnv_ConstructTrapped, "ax", %progbits
+    .align 2
+    .global sym_CCoeEnv_ConstructTrapped
+    .hidden sym_CCoeEnv_ConstructTrapped
+    .type sym_CCoeEnv_ConstructTrapped, %function
+sym_CCoeEnv_ConstructTrapped:
+    .fnstart
+    .save {r4, r5, r6, lr}
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    bl      sym_User_MarkCleanupStack
+.Ltrap_begin:
+    mov     r5, r0
+    mov     r0, r4
+    bl      sym_CCoeEnv_ConstructL
+    mov     r0, r5
+    bl      sym_User_UnMarkCleanupStack
+    b       .Ltrap_return
+.Lcatch_leave:
+    bl      __cxa_begin_catch
+    bl      sym_XLeaveException_GetReason
+.Lcatch_body:
+    b       .Lcatch_end
+.Lcatch_other:
+    bl      __cxa_begin_catch
+    bl      sym_User_Invariant
+.Lcatch_end:
+    bl      __cxa_end_catch
+.Ltrap_return:
+    pop     {r4, r5, r6, pc}
+.Lcatch_cleanup:
+    bl      __cxa_end_catch
+    bl      __cxa_end_cleanup
+    .size sym_CCoeEnv_ConstructTrapped, . - sym_CCoeEnv_ConstructTrapped
+    .personalityindex 0
+    .handlerdata
+    /* EHABI16 catch descriptors: length|1, offset, PREL31 landing pad,
+     * absolute typeinfo. The reference catch sets landing-pad bit 31. */
+    .short .Lcatch_body - .Ltrap_begin + 1
+    .short .Ltrap_begin - sym_CCoeEnv_ConstructTrapped
+    .reloc ., R_ARM_PREL31, .Lcatch_leave
+    .word 0x80000000
+    .word _ZTI15XLeaveException
+    .short .Lcatch_body - .Ltrap_begin + 1
+    .short .Ltrap_begin - sym_CCoeEnv_ConstructTrapped
+    .reloc ., R_ARM_PREL31, .Lcatch_other
+    .word 0
+    .word 0xffffffff
+    /* End the active catch if GetReason unexpectedly propagates. */
+    .short .Ltrap_return - .Lcatch_body
+    .short .Lcatch_body - sym_CCoeEnv_ConstructTrapped
+    .reloc ., R_ARM_PREL31, .Lcatch_cleanup
+    .word 0
+    .word 0
+    .fnend
 
 /* --- Dll::Tls / Dll::SetTls / Dll::FreeTls ------------------------------- */
 

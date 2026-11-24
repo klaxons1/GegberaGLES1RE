@@ -544,7 +544,45 @@ def check_scalars(suite, functions):
                         return64=return64)
 
 
+def check_hc_evaluator(suite):
+    """Exercise every HC arithmetic/branch opcode, including variable shifts."""
+    arm = suite.arch == "arm"
+    targets = (("emulator_evalALUOp", 0x2C978, 0x2CABC, range(23)),
+               ("emulator_evalConditional", 0x2C89C, 0x2C978, range(41, 53))) if arm else (
+               ("emulator_evalALUOp", 0x45D7C0, 0x45DA42, range(23)),
+               ("emulator_evalConditional", 0x45D670, 0x45D769, range(41, 53)))
+    matching_reference = suite.arm_reference == arm
+    edges = word_edges(32)
+    pairs = [(a, b) for a in edges for b in
+             (0, 1, 31, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF)]
+    pairs.extend((suite.rng.getrandbits(32), suite.rng.getrandbits(32))
+                 for _ in range(suite.samples))
+    for name, start, end, ops in targets:
+        suite.register(name, start, end)
+        native = getattr(suite.lib, name)
+        native.argtypes = [ctypes.c_int, ctypes.c_uint32, ctypes.c_uint32]
+        native.restype = ctypes.c_uint32
+        for op in ops:
+            if name == "emulator_evalALUOp" and op in (2, 5):  # ASD / LSD
+                shifts = list(range(-31, 32))
+                if matching_reference:
+                    shifts += [-0x80000000, -513, -256, -255, -129, -128,
+                               -127, -64, -33, -32, 32, 33, 64, 127, 128,
+                               255, 256, 257, 511, 512, 0x7FFFFFFF]
+                inputs = [(a, b & MASK32) for a in
+                          (0, 1, 0x80000000, 0x80000001, 0x7FFFFFFF, MASK32)
+                          for b in shifts]
+            elif name == "emulator_evalALUOp" and op in (3, 6, 7, 18, 19):
+                # These opcodes explicitly assert counts below 32 in PE.
+                inputs = [(a, b) for a in edges for b in range(32)]
+            else:
+                inputs = pairs
+            for a, b in inputs:
+                suite.check(name, start, [op, a, b], native(op, a, b))
+
+
 def run(suite):
+    check_hc_evaluator(suite)
     if suite.arch == "arm":
         from differential_arm_numeric import run as run_arm
         return run_arm(suite)

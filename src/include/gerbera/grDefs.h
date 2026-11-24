@@ -18,9 +18,7 @@ HG_EXTERN_C_BEGIN
 /* --- image formats -------------------------------------------------------
  * grGetImageFormatNumComponents' bit table (0x11A319 >> 3*f) & 7 gives
  * components {1,3,4,1,2,3,4} for f = 0..6, which pins the numeric order
- * below (matching the switch cases in the decompile). Index 6 has 4
- * components but no visible case label in any TU yet (TODO: name it when
- * a caller pins it; GR_IMAGEFORMAT_MAX = 7 from the range assert). */
+ * below (matching the switch cases in the decompile). */
 enum GR_IMAGEFORMAT_e
 {
     GR_IMAGEFORMAT_ALPHA = 0,
@@ -36,13 +34,12 @@ enum GR_IMAGEFORMAT_e
 
 /* --- data types ----------------------------------------------------------
  * grGetDataTypeSize_dataTypeSizes[12] verbatim from the binary (line 5690).
- * GR_DATATYPE_MAX assumed = 12 (table length); the range assert pins it as
- * `(unsigned)dataType < GR_DATATYPE_MAX`.
+ * GR_DATATYPE_MAX = 9, as checked by grIsValidDataType.
  * Names pinned from the vertex-array fetchers (grUpdateVertexPipeline
  * switches): 0 = INT8 (normal arrays; default assert "type ==
  * GR_DATATYPE_INT8"), 1 = UINT8 (color arrays), 2 = INT16, 6 = FLOAT
  * ("color_array->type == GR_DATATYPE_FLOAT"), 7 = FIXED
- * ("sizeArray->type == GR_DATATYPE_FIXED"). 3..5, 8..11 unpinned. */
+ * ("sizeArray->type == GR_DATATYPE_FIXED"). */
 enum GR_DATATYPE_e
 {
     GR_DATATYPE_INT8 = 0,       /* size 1 */

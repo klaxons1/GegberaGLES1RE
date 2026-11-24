@@ -16,6 +16,10 @@ IMPLIBS = [
         "euser{000a0000}[100039e5].dll",
         {
             32: "sym_RAllocator_Close",
+            46: "sym_RArrayBase_Close",
+            48: "sym_RArrayBase_Append",
+            53: "sym_RArrayBase_HeapSort",
+            59: "sym_RArrayBase_Ctor",
             120: "sym_RHandleBase_Close",
             593: "sym_User_LeaveIfError",
             644: "sym_User_Free",
@@ -27,6 +31,7 @@ IMPLIBS = [
             905: "sym_RChunk_CreateLocalCode",
             1210: "sym_UserSvr_DllFreeTls",
             1363: "sym_UserHeap_ChunkHeap",
+            1507: "sym_RArrayBase_At",
             1652: "sym_TRect_IsEmpty",
             1702: "sym_RChunk_Base",
             1703: "sym_RChunk_Size",
@@ -36,8 +41,22 @@ IMPLIBS = [
             1956: "sym_wordmove",
             2060: "sym_User_MarkCleanupStack",
             2061: "sym_User_UnMarkCleanupStack",
+            2082: "sym_XLeaveException_GetReason",
             2176: "sym_UserSvr_DllTls",
             2177: "sym_UserSvr_DllSetTls",
+        },
+    ),
+    (
+        "drtaeabi{000a0000}.dso",
+        "drtaeabi{000a0000}.dll",
+        {
+            158: "__aeabi_unwind_cpp_pr0",
+            159: "__aeabi_unwind_cpp_pr1",
+            160: "__aeabi_unwind_cpp_pr2",
+            180: "__cxa_begin_catch",
+            183: "__cxa_end_catch",
+            184: "__cxa_end_cleanup",
+            206: "_ZTI15XLeaveException",
         },
     ),
     (
@@ -115,7 +134,8 @@ def main() -> None:
             f.write("EXPORTS\n")
             for i in range(1, max_ord + 1):
                 if i in ordinals:
-                    f.write(f"\t{ordinals[i]} @ {i} NONAME\n")
+                    kind = " DATA 8" if ordinals[i] == "_ZTI15XLeaveException" else ""
+                    f.write(f"\t{ordinals[i]} @ {i} NONAME{kind}\n")
                 else:
                     f.write(f"\t_unused_{dso_name.split('{')[0]}_{i} @ {i} NONAME ABSENT\n")
 

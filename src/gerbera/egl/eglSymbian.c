@@ -12,6 +12,9 @@
 
 #ifdef __SYMBIAN32__
 #include "symbian_os.h"
+#elif defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #elif defined(__unix__) || defined(__APPLE__)
 #include <sys/mman.h>
 #ifndef MAP_ANONYMOUS
@@ -21,18 +24,6 @@
 #define MAP_ANONYMOUS 0x20
 #endif
 #endif
-#elif defined(_WIN32)
-/* kernel32 VirtualAlloc/VirtualFree, declared here so this TU does not pull
- * in <windows.h> (its BOOL/far/near macros clash with the recovered code). */
-__declspec(dllimport) void *__stdcall VirtualAlloc(void *address, size_t size,
-                                                   unsigned long type,
-                                                   unsigned long protect);
-__declspec(dllimport) int __stdcall VirtualFree(void *address, size_t size,
-                                                unsigned long type);
-#define EGL_WIN_MEM_COMMIT             0x00001000ul
-#define EGL_WIN_MEM_RESERVE            0x00002000ul
-#define EGL_WIN_MEM_RELEASE            0x00008000ul
-#define EGL_WIN_PAGE_EXECUTE_READWRITE 0x40ul
 #endif
 
 
@@ -42,14 +33,6 @@ __declspec(dllimport) int __stdcall VirtualFree(void *address, size_t size,
 #include "hg/hgInt32.h"
 #include "hg/hgMemory.h"
 
-/* Pipeline-cache arenas hold JIT code that is executed natively when
- * GR_NATIVE_JIT is set (grState.h), so they must be executable (DEP/NX). */
-#if defined(GR_NATIVE_JIT) && !defined(__SYMBIAN32__) && defined(_WIN32)
-#define EGL_EXEC_VIRTUALALLOC 1
-#elif (defined(GR_NATIVE_JIT) || defined(__arm__)) && !defined(__SYMBIAN32__) && \
-      (defined(__unix__) || defined(__APPLE__))
-#define EGL_EXEC_MMAP 1
-#endif
 
 /* --- PE .rdata s_validColors (0x4702B4..0x4702E3) -------------------------- */
 static const eglValidColorInfo_s s_validColors[6] =
@@ -173,8 +156,8 @@ int egliGetTotalConfigs(void)
 eglState_s *egliInitState(void)
 {
     eglState_s *state;
+    eglDisplay_s *display;
     void *coe;
-    int ownEnv = 0;
     int maxRam = 0x1000000;
     int numColors = 0;
     int numGrays = 0;
@@ -182,19 +165,25 @@ eglState_s *egliInitState(void)
     state = (eglState_s *)sym_User_Alloc((int)sizeof(eglState_s));
     if (state == NULL)
         return NULL;
-    hgMemSet(state, 0, sizeof(*state));
-
     if (sym_CCoeEnv_Static() == NULL)
     {
         void *env = sym_User_AllocZL(SYM_CCOEENV_SIZE);
-        void *mark;
         env = sym_CCoeEnv_Ctor(env);
-        mark = sym_User_MarkCleanupStack();
-        sym_CCoeEnv_ConstructL(env);
-        sym_User_UnMarkCleanupStack(mark);
-        ownEnv = 1;
+        sym_CCoeEnv_ConstructTrapped(env);
     }
-    state->ownEnvironment = ownEnv;
+
+    display = (eglDisplay_s *)sym_User_Alloc((int)sizeof(*display));
+    if (display == NULL)
+    {
+        sym_User_Free(state);
+        return NULL;
+    }
+    /* ARM 0x92AC clears the ownership flag written before this memset, as
+     * well as the initial error. Preserve that original lifecycle bug. */
+    hgMemSet(state, 0, sizeof(*state));
+    hgMemSet(display, 0, sizeof(*display));
+    eglInitRefCount(&display->refCount);
+    state->windowDisplay = display;
 
     if (sym_HAL_Get(SYM_HAL_MEMORY_RAM, &maxRam) != 0 || maxRam <= 0)
         maxRam = 0x1000000;
@@ -202,9 +191,8 @@ eglState_s *egliInitState(void)
     state->heap = sym_UserHeap_ChunkHeap(NULL, 0, maxRam, 1, 0, 0);
     if (state->heap == NULL)
     {
-        if (ownEnv != 0)
-            sym_CCoeEnv_DestroyEnvironment(sym_CCoeEnv_Static());
         sym_User_Free(state);
+        sym_User_Free(display);
         return NULL;
     }
 
@@ -216,10 +204,9 @@ eglState_s *egliInitState(void)
     }
     else
     {
-        state->displayMode = EGL_SYMBIAN_ECOLOR64K;
+        state->displayMode = 0;
     }
 
-    state->errorCode = EGL_SUCCESS;
     egliSetGlobal(state);
     return state;
 }
@@ -235,6 +222,7 @@ __attribute__((externally_visible)) void egliDestroyState(void)
             sym_RAllocator_Close(state->heap);
             state->heap = NULL;
         }
+        sym_User_Free(state->windowDisplay);
         if (state->ownEnvironment != 0)
         {
             sym_CCoeEnv_DestroyEnvironment(sym_CCoeEnv_Static());
@@ -499,7 +487,10 @@ int egliBlitToPixmap(eglSurface_s *surface, eglNativePixmap_s *target)
     void *dstData;
 
     if (surface == NULL || target == NULL || egliConfigPixmapMatch(surface->configID, target) == 0)
+    {
+        eglSetError(EGL_BAD_MATCH);
         return 0;
+    }
 
     lockedDraw = grLockSurface(GR_SURFACE_DRAW);
     if (lockedDraw == 0)
@@ -662,8 +653,13 @@ int grReleaseSurface(int op)
 #else /* !__SYMBIAN32__ */
 
 /* --- Hosted TLS & default display mode ------------------------------------- */
-static void      *s_tlsSlot = NULL;
-static eglState_s s_directState;
+#if defined(_MSC_VER)
+#define EGL_THREAD_LOCAL __declspec(thread)
+#else
+#define EGL_THREAD_LOCAL __thread
+#endif
+static EGL_THREAD_LOCAL void *s_tlsSlot = NULL;
+static EGL_THREAD_LOCAL eglState_s s_directState;
 static int        s_defaultDisplayMode = EGL_SYMBIAN_ECOLOR64K;
 
 void egliSetDefaultDisplayMode(int displayMode)
@@ -736,22 +732,7 @@ grExecutable_s *eglAllocExecutable(unsigned int size)
     exec = (grExecutable_s *)malloc(sizeof(grExecutable_s));
     if (exec == NULL)
         return NULL;
-#if defined(EGL_EXEC_VIRTUALALLOC)
-    {
-        size_t mapSize = ((size_t)size + 4095u) & ~(size_t)4095u;
-        void *mem = VirtualAlloc(NULL, mapSize,
-                                 EGL_WIN_MEM_COMMIT | EGL_WIN_MEM_RESERVE,
-                                 EGL_WIN_PAGE_EXECUTE_READWRITE);
-        if (mem == NULL)
-        {
-            free(exec);
-            return NULL;
-        }
-        exec->data = mem;
-        exec->size = (int)mapSize;
-        return exec;
-    }
-#elif defined(EGL_EXEC_MMAP)
+#if (defined(__arm__) || defined(__i386__)) && (defined(__unix__) || defined(__APPLE__))
     {
         size_t mapSize = ((size_t)size + 4095u) & ~(size_t)4095u;
         void *mem = mmap(NULL, mapSize, PROT_READ | PROT_WRITE | PROT_EXEC,
@@ -765,6 +746,15 @@ grExecutable_s *eglAllocExecutable(unsigned int size)
         exec->size = (int)mapSize;
         return exec;
     }
+#elif defined(_WIN32) && (defined(__i386__) || defined(_M_IX86))
+    exec->data = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (exec->data == NULL)
+    {
+        free(exec);
+        return NULL;
+    }
+    exec->size = (int)size;
+    return exec;
 #else
     exec->data = malloc((size_t)size);
     if (exec->data == NULL)
@@ -780,10 +770,10 @@ grExecutable_s *eglAllocExecutable(unsigned int size)
 void eglFreeExecutable(grExecutable_s *executable)
 {
     EGL_ASSERT_AT("eglSymbian.inl", 306, "executable", executable != NULL);
-#if defined(EGL_EXEC_VIRTUALALLOC)
-    VirtualFree(executable->data, 0, EGL_WIN_MEM_RELEASE);
-#elif defined(EGL_EXEC_MMAP)
+#if (defined(__arm__) || defined(__i386__)) && (defined(__unix__) || defined(__APPLE__))
     munmap(executable->data, (size_t)executable->size);
+#elif defined(_WIN32) && (defined(__i386__) || defined(_M_IX86))
+    VirtualFree(executable->data, 0, MEM_RELEASE);
 #else
     free(executable->data);
 #endif
@@ -1122,7 +1112,10 @@ int egliBlitToPixmap(eglSurface_s *surface, eglNativePixmap_s *target)
                   surface != NULL && egliIsValidNativePixmap(target) != 0);
 
     if (egliConfigPixmapMatch(surface->configID, target) == 0)
+    {
+        eglSetError(EGL_BAD_MATCH);
         return 0;
+    }
 
     lockedDraw = grLockSurface(GR_SURFACE_DRAW);
     if (lockedDraw == 0)
@@ -1398,15 +1391,39 @@ EGLAPI EGLint EGLAPIENTRY eglGetError(void)
     }
 }
 
-/* --- Config Sorting (TEGLCachedConfig insertion sort, matching RArray) ----- */
+/* --- Config Sorting (native RArray, hosted insertion sort) ---------------- */
 
 int egliCompareConfigs(const TEGLCachedConfig *config1, const TEGLCachedConfig *config2)
 {
     return eglCompareConfigs(&config1->iConfig, &config2->iConfig, config1->iFilter);
 }
 
+#ifdef __SYMBIAN32__
+static int egliCompareNativeConfigs(const void *a, const void *b)
+{
+    return egliCompareConfigs((const TEGLCachedConfig *)a, (const TEGLCachedConfig *)b);
+}
+#endif
+
 void egliSortConfigs(EGLConfig *configs, int configCount, const eglConfig *filter)
 {
+#ifdef __SYMBIAN32__
+    SymRArrayBase array;
+    TEGLCachedConfig item;
+    int i;
+
+    sym_RArrayBase_Ctor(&array, (int)sizeof(item));
+    for (i = 0; i < configCount; ++i)
+    {
+        item.iFilter = filter;
+        eglFillConfig(&item.iConfig, configs[i]);
+        (void)sym_RArrayBase_Append(&array, &item);
+    }
+    sym_RArrayBase_HeapSort(&array, egliCompareNativeConfigs);
+    for (i = 0; i < configCount; ++i)
+        configs[i] = ((const TEGLCachedConfig *)sym_RArrayBase_At(&array, i))->iConfig.configID;
+    sym_RArrayBase_Close(&array);
+#else
     TEGLCachedConfig cached[EGL_NUM_BUFFER_FORMATS];
     int i, j;
 
@@ -1433,4 +1450,5 @@ void egliSortConfigs(EGLConfig *configs, int configCount, const eglConfig *filte
 
     for (i = 0; i < configCount; ++i)
         configs[i] = cached[i].iConfig.configID;
+#endif
 }

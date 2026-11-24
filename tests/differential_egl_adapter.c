@@ -120,7 +120,7 @@ void *differential_egl_objects_create(const int *input)
         p->surface.prev = i ? &f->surfaces[i - 1].surface : NULL;
         p->surface.next = i < 2 ? &f->surfaces[i + 1].surface : NULL;
         p->surface.display = &f->display;
-        p->surface.configID = 1 + i * 3;
+        p->surface.configID = input[11] + i * 3;
         p->surface.colorBufferStride = 2 * input[0];
         p->surface.width = input[0];
         p->surface.height = input[1];
@@ -144,7 +144,7 @@ void *differential_egl_objects_create(const int *input)
     if (input[10] & 2) f->state.currentReadSurface = &f->surfaces[0].surface;
     if (input[10] & 4) f->state.currentDrawSurface = &f->surfaces[2].surface;
     if (input[10] & 8) f->state.currentDisplay = &f->display;
-    egliSetGlobal(&f->state);
+    egliSetGlobal((input[10] & 16) ? NULL : &f->state);
     return f;
 }
 
@@ -200,7 +200,7 @@ void differential_egl_objects_snapshot(void *fixture, unsigned int *out)
 
 int differential_egl_objects_step(void *fixture, int operation, const int *args, int *output)
 {
-    (void)fixture;
+    DifferentialEGLObjects *f = fixture;
     switch (operation)
     {
     case 0: return eglQuerySurface(args[0], args[1], args[2], args[3] ? output : NULL);
@@ -211,6 +211,25 @@ int differential_egl_objects_step(void *fixture, int operation, const int *args,
     case 5: return eglGetCurrentContext();
     case 6: return eglGetCurrentSurface(args[0]);
     case 7: return eglGetCurrentDisplay();
+    case 8: return eglWaitGL();
+    case 9: return eglWaitNative(args[0]);
+    case 10: return eglSwapInterval(args[0], args[1]);
+    case 11: return eglSwapBuffers(args[0], args[1]);
+    case 12:
+    {
+        eglNativePixmap_s target;
+        unsigned int pixel = 0;
+        memset(&target, 0, sizeof(target));
+        target.width = f->surfaces[0].surface.width;
+        target.height = f->surfaces[0].surface.height;
+        target.width += (args[2] == 2) ? -1 : (args[2] == 3);
+        target.height += (args[2] == 4) ? -1 : (args[2] == 5);
+        target.stride = target.width * 2;
+        target.displayMode = args[2] == 6 ? EGL_SYMBIAN_ECOLOR16MA : EGL_SYMBIAN_ECOLOR64K;
+        target.data = &pixel;
+        return eglCopyBuffers(args[0], args[1], args[2] ? &target : NULL);
+    }
+    case 13: return eglGetError();
     default: abort();
     }
 }
@@ -220,6 +239,31 @@ void differential_egl_objects_destroy(void *fixture)
     DifferentialEGLObjects *f = fixture;
     egliSetGlobal(f->previous);
     free(f);
+}
+
+void differential_egl_lifecycle(int tag, int count, const int *commands, unsigned int *output)
+{
+    void *previous = egliGetGlobal();
+    int i;
+    egliSetGlobal((void *)(uintptr_t)tag);
+    for (i = 0; i < count; ++i)
+    {
+        int major = -777, minor = -777;
+        int operation = commands[2 * i], display = commands[2 * i + 1];
+        switch (operation)
+        {
+        case 0: *output++ = eglInitialize(display, &major, &minor); break;
+        case 1: *output++ = eglTerminate(display); break;
+        case 2: *output++ = eglGetCurrentContext(); break;
+        default: abort();
+        }
+        *output++ = eglGetError();
+        *output++ = egliGetState() != NULL;
+        *output++ = (unsigned int)major;
+        *output++ = (unsigned int)minor;
+    }
+    eglTerminate(1);
+    egliSetGlobal(previous);
 }
 
 void differential_egl_pbuffer(int displayID, int configID, const int *attributes,

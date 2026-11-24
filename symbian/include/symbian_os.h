@@ -32,6 +32,13 @@ typedef struct SymTRect
     SymTPoint iBr;
 } SymTRect;
 
+typedef struct SymRArrayBase
+{
+    int count;
+    void *entries;
+    int entrySize, keyOffset, allocated, granularity, spare1, spare2;
+} SymRArrayBase;
+
 /* --- HAL attribute constants ---------------------------------------------- */
 #define SYM_HAL_MEMORY_RAM 15 /* HALData::EMemoryRAM */
 
@@ -42,6 +49,11 @@ void  sym_DllFreeTls(void);
 
 /* --- euser{000a0000}[100039e5].dll ordinal imports ------------------------ */
 void  sym_RAllocator_Close(void *alloc);                                    /* @ 32   */
+void  sym_RArrayBase_Close(SymRArrayBase *array);                           /* @ 46   */
+int   sym_RArrayBase_Append(SymRArrayBase *array, const void *entry);        /* @ 48   */
+void  sym_RArrayBase_HeapSort(SymRArrayBase *array,
+                             int (*compare)(const void *, const void *)); /* @ 53   */
+void  sym_RArrayBase_Ctor(SymRArrayBase *array, int entrySize);              /* @ 59   */
 void  sym_RHandleBase_Close(void *handle);                                  /* @ 120  */
 void  sym_User_LeaveIfError(int err);                                       /* @ 593  */
 void  sym_User_Free(void *ptr);                                             /* @ 644  */
@@ -55,6 +67,7 @@ int   sym_RChunk_CreateLocalCode(void *chunk, int size, int maxSize,
 void  sym_UserSvr_DllFreeTls(int handle);                                   /* @ 1210 */
 void *sym_UserHeap_ChunkHeap(const void *name, int minLen, int maxLen,
                              int growBy, int align, int singleThread);      /* @ 1363 */
+void *sym_RArrayBase_At(const SymRArrayBase *array, int index);              /* @ 1507 */
 int   sym_TRect_IsEmpty(const SymTRect *rect);                              /* @ 1652 */
 void *sym_RChunk_Base(const void *chunk);                                   /* @ 1702 */
 int   sym_RChunk_Size(const void *chunk);                                   /* @ 1703 */
@@ -65,6 +78,7 @@ void *sym_memmove(void *trg, const void *src, unsigned int len);            /* @
 void *sym_wordmove(void *trg, const void *src, unsigned int len);           /* @ 1956 */
 void *sym_User_MarkCleanupStack(void);                                      /* @ 2060 */
 void  sym_User_UnMarkCleanupStack(void *trapHandler);                       /* @ 2061 */
+int   sym_XLeaveException_GetReason(const void *exception);                 /* @ 2082 */
 void *sym_UserSvr_DllTls(int handle, int dllUid);                           /* @ 2176 */
 int   sym_UserSvr_DllSetTls(int handle, int dllUid, void *ptr);             /* @ 2177 */
 
@@ -100,6 +114,8 @@ void  sym_CFbsBitmap_LockHeap(const void *bmp, int always);                 /* @
 void  sym_CCoeEnv_ConstructL(void *coeEnv);                                 /* @ 136  */
 void *sym_CCoeEnv_Static(void);                                             /* @ 182  */
 void *sym_CCoeEnv_Ctor(void *coeEnv);                                       /* @ 192  */
+/* ARM EHABI TRAP_IGNORE around ConstructL, implemented in symbian_entry.S. */
+void  sym_CCoeEnv_ConstructTrapped(void *coeEnv);
 
 /* --- hal{000a0000}[100039e8].dll & gdi{000a0000}[10003b15].dll ------------ */
 int   sym_HAL_Get(int attr, int *val);                                      /* @ 1    */

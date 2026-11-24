@@ -284,7 +284,7 @@ typedef struct _grPixelPipe
 #define GR_NATIVE_JIT 1
 #endif
 
-#if defined(GR_NATIVE_JIT)
+#if UINTPTR_MAX == 0xFFFFFFFFu
 typedef char _grPixelPipe_check_ref_offset[(offsetof(_grPixelPipe, reference) == 192) ? 1 : -1];
 typedef char _grPixelPipe_check_xadd_offset[(offsetof(_grPixelPipe, xAdder) == 232) ? 1 : -1];
 typedef char _grPixelPipe_check_yadd_offset[(offsetof(_grPixelPipe, yAdder) == 272) ? 1 : -1];
@@ -450,6 +450,7 @@ typedef struct _grClipTriangle
  * counter at +1192 counting DWORDS), +1196/+1264 fetch lists, +1332 vertex
  * buffer, 23860 bytes total (grApiFast.inl 381). */
 #define GR_RENDER_STACK_COMMAND_QUEUE_INDEX 1192
+#define GR_RENDER_STACK_PIXEL_PIPELINE 14644
 #define GR_RENDER_STACK_SCANLINE_INFO 15668  /* &renderStack[1958].whichPool;
                                               * u32 left|numPixels<<16 per
                                               * scanline, up to 2048 entries
@@ -567,12 +568,10 @@ enum GR_FOGMODE_e
  *   25/26 = TEXTURE_COORD_ARRAY_0/1 (bytes 80/81),
  *   29 = POINT_SIZE_ARRAY (byte 82),
  *   7 = FOG (byte 60, also GL_FOG 0x0B60).
- *   22 = NORMAL_ARRAY is a flagged guess (the gap between 21 and 23; the
- *   normal fetcher checks only LIGHTING, never a NORMAL_ARRAY cap).
+ *   22 = NORMAL_ARRAY (oglEnable maps GL_NORMAL_ARRAY to capability 22).
  * Clip planes 0x3000..0x3005 map to caps 30..35 (ogl layer; the grSmall
  * clip-plane enum used by grSetUserClipPlane is 10..15, a different space).
- * Caps 0,8,9,11..13,17,20,24,27,28,39 are internal (not GL tokens); among
- * them LIGHT_MODEL_TWO_SIDE, whose number is NOT pinned - placeholder 39. */
+ * LIGHT_MODEL_TWO_SIDE maps to capability 39 in oglLightModelfv. */
 enum GR_CAPABILITY_e
 {
     GR_CAPABILITY_ALPHA_TEST = 1,
@@ -1213,7 +1212,7 @@ void grQueuePrimitive3(Gerbera_s *state, int i0, int i1, int i2);
 void grFlushPrimitiveBatch(Gerbera_s *state);
 void grClipPrimitive(Gerbera_s *state, unsigned int origIndices, int numVertices);
 /* rasterizer / vertex-gradient entry points reached by grFlushPrimitiveBatch
- * and grClipPrimitive (die-stubs until their sessions) */
+ * and grClipPrimitive */
 void grUpdateVertexPipeline(Gerbera_s *state);
 void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
                                   unsigned int origIndices, int side);
@@ -1484,9 +1483,7 @@ int             eglGetJmpbufSize(void);
 int             eglHCWrapSetjmp(void *jmpbuf, int (*func)(void *), void *args);
 void            eglHCWrapLongjmp(void *jmpbuf, int val);
 
-/* --- grr layer (grrClear.inl + grrRender.inl, implemented in grrRender.c) --
- * the flush side of the clear queue; the lock/release pair is egl material
- * (eglSymbian.inl) - stubbed here until the egl module ports. */
+/* --- grr layer: clear queue and EGL surface lock/release ------------------ */
 enum GR_SURFACEOP_e
 {
     GR_SURFACE_DRAW = 0,
@@ -1495,7 +1492,7 @@ enum GR_SURFACEOP_e
 
 int  grLockSurface(int op);         /* returns 1 when the heap was locked */
 int  grReleaseSurface(int op);
-/* hc-module entry points (stubs until the hc session) */
+/* hc-module entry points */
 void *grGetBackend(void);
 int  HC_extraStackSpace(void *backend);
 int  grScratchGrowMemory(Gerbera_s *state);

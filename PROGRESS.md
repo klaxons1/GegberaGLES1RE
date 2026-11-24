@@ -1,6 +1,27 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (Win32 ClassiCube rebuilt with the native x86 JIT)
+Last updated: 2026-11-24 (merged SOMETHINKWORKS 15a94c0, rebuilt Symbian + Win32)
+
+## Merged SOMETHINKWORKS 15a94c0 ("patch by saem persun") and rebuilt
+
+- Conflicts were in grState.h, grPixelPipeline.c and eglSymbian.c, where
+  both branches added x86 native JIT dispatch. The resolution:
+  - Keeps the `GR_NATIVE_JIT` switch, so `-DGR_DISABLE_JIT` still selects
+    the C evaluator.
+  - Uses upstream's `GR_RENDER_STACK_PIXEL_PIPELINE` (14644).
+  - Checks the pixel-pipe offsets on every 32-bit target.
+  - Uses upstream's `<windows.h>` VirtualAlloc/VirtualFree code.
+- Host `make test`: hg 333, imath 407, geometry 61, core 51645, opengl 523,
+  egl 881, symbian surface 90, Symbian state 309, EGL threads; all pass.
+- 32-bit x86 (native JIT, `-UNDEBUG`): all pass except the known JIT
+  stencil case, test_opengl.c:1106 (formerly :1095).
+- Differential (`--seconds 1500 --no-coverage`): 0 mismatches (ARM 54369,
+  x86 71115). The default 60 s `make differential` budget is now too short.
+- `test_native_dispatch.py` (ARM + i386) and `test_symbian_entry.py` pass.
+- Rebuilt `symbian/out/libgles_cm.dll` (232,564 bytes; text 229,684,
+  data/bss 0) and the SDK zip, plus Win32 `libGLES_CM.dll` (401,920
+  bytes, 190 exports, imports VirtualAlloc/VirtualFree), `ClassiCube.exe`
+  (1,466,880) and the zip.
 
 ## Win32 ClassiCube with the native x86 JIT
 

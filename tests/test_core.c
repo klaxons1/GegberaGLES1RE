@@ -2439,6 +2439,32 @@ static void test_gradients(void)
     st.depthOffsetUnits = 0;
     st.drawSurface.depthBytes = 0;
 
+    /* Offset units and the reference use wrapping ARM ADD/LSL operations. */
+    {
+        static const int cases[][7] = {
+            { -1, 0, 0, 0, 0, 1, -257 },
+            { 0x7FFFFFFF, 0, 1, 0, 0, 1, 0x7FFFFF00 },
+            { (int)0x80000000u, 0, (int)0x80000000u, 0, 0, 2, (int)0x80000000u },
+            { -65536, 0, 0, 0, 0, 4, -65537 },
+            { 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF, 65536, 0, 2, -4 },
+            { 0, 0x7FFFFFFF, 1, (int)0x80000000u, 65536, 1, (int)0x80000000u }
+        };
+        int index;
+        for (index = 0; index < 6; ++index)
+        {
+            st.depthOffsetUnits = cases[index][0];
+            st.depthOffsetFactor = cases[index][1];
+            pp->reference[0] = cases[index][2];
+            pp->xAdder[0] = cases[index][3];
+            pp->yAdder[0] = cases[index][4];
+            st.drawSurface.depthBytes = (unsigned char)cases[index][5];
+            grComputeDepthOffset(&st);
+            CHECK(pp->reference[0] == cases[index][6]);
+        }
+        st.depthOffsetUnits = st.depthOffsetFactor = 0;
+        st.drawSurface.depthBytes = 0;
+    }
+
 #undef GRAD_POISON
 
     /* grSetupGradient vs grComputeDeltas produce identical adders (the
@@ -2473,6 +2499,36 @@ static void test_gradients(void)
     grSetupGradient(&info, GR_GRADIENT_TEX1_S, 0, 1, (int)0x80000000u);
     CHECK(pp->xAdder[GR_GRADIENT_TEX1_S] == 1);
     CHECK(pp->reference[GR_GRADIENT_TEX1_S] == 0x7FFFFFFF);
+    CHECK(grComputeGradientReference(4096, 0, (int)0x80000000u, 0) == (int)0x80000000u);
+    CHECK(grComputeGradientReference(0, 4096, 0, (int)0x80000000u) == (int)0x80000000u);
+
+    /* ARM 0x15D4C/0x15E8C negate in 32 bits before multiplying. A minimum
+     * signed derivative therefore stays negative, including across the
+     * high-word shift branch used for very small gradients. */
+    {
+        static const int shifts[] = { 0, 18, 31 };
+        static const int expected[] = { (int)0x80000000u, -8192, -1 };
+        int index, axis;
+        memset(&info, 0, sizeof(info));
+        info.pPP = pp;
+        info.v01sxPerArea = info.v02syPerArea = 16384;
+        for (index = 0; index < 3; ++index)
+        {
+            info.shift = shifts[index];
+            for (axis = 0; axis < 2; ++axis)
+            {
+                int g01 = axis == 0 ? (int)0x80000000u : 1;
+                int g02 = axis == 1 ? (int)0x80000000u : 1;
+                grSetupGradient(&info, GR_GRADIENT_TEX1_T, g01, g02, 123);
+                grComputeDeltas(&info, GR_GRADIENT_TEX1_S, g01, g02);
+                CHECK(pp->reference[GR_GRADIENT_TEX1_T] == 123);
+                CHECK(pp->xAdder[GR_GRADIENT_TEX1_T] == (axis == 0 ? expected[index] : -1));
+                CHECK(pp->yAdder[GR_GRADIENT_TEX1_T] == (axis == 1 ? expected[index] : -1));
+                CHECK(pp->xAdder[GR_GRADIENT_TEX1_S] == pp->xAdder[GR_GRADIENT_TEX1_T]);
+                CHECK(pp->yAdder[GR_GRADIENT_TEX1_S] == pp->yAdder[GR_GRADIENT_TEX1_T]);
+            }
+        }
+    }
 
 #undef GRAD_VALUE
 }
@@ -4686,6 +4742,22 @@ static void test_hcdatastructs_and_emulator(void)
     CHECK(emulator_evalALUOp(HCOP_LSR, 0xFFFFFFF0u, 4u) == 0x0FFFFFFF);
     CHECK(emulator_evalALUOp(HCOP_ASD, 0xFFFFFFF0u, (unsigned int)-2) == -4);
     CHECK(emulator_evalALUOp(HCOP_LSD, 0xFFFFFFF0u, (unsigned int)-4) == 0x0FFFFFFF);
+    {
+        static const int shifts[] = { 32, -32, 256, -256, (int)0x80000000u };
+#if GERBERA_ARM_REFERENCE
+        static const unsigned int asd[] = { 0, 0xFFFFFFFFu, 0x87654321u, 0x87654321u, 0x87654321u };
+        static const unsigned int lsd[] = { 0, 0, 0x87654321u, 0x87654321u, 0x87654321u };
+#else
+        static const unsigned int asd[] = { 0x87654321u, 0x87654321u, 0x87654321u, 0x87654321u, 0x87654321u };
+        static const unsigned int lsd[] = { 0x87654321u, 0x87654321u, 0x87654321u, 0x87654321u, 0x87654321u };
+#endif
+        int index;
+        for (index = 0; index < 5; ++index)
+        {
+            CHECK((unsigned int)emulator_evalALUOp(HCOP_ASD, 0x87654321u, (unsigned int)shifts[index]) == asd[index]);
+            CHECK((unsigned int)emulator_evalALUOp(HCOP_LSD, 0x87654321u, (unsigned int)shifts[index]) == lsd[index]);
+        }
+    }
     CHECK((unsigned int)emulator_evalALUOp(HCOP_ROL, 0x80000001u, 1u) == 3u);
     CHECK((unsigned int)emulator_evalALUOp(HCOP_ROR, 3u, 1u) == 0x80000001u);
     CHECK(emulator_evalALUOp(HCOP_MAXS, (unsigned int)-5, 3u) == 3);

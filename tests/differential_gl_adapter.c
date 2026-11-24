@@ -257,6 +257,12 @@ void diff_gl_matrix_snapshot(DiffMatrixSession *session, unsigned char *output)
 
 /* Public fixed-function state operations share the persistent matrix fixture.
  * Core output uses the original ARM field offsets, excluding pointers. */
+void diff_gl_state_surface(DiffMatrixSession *session, int width, int height)
+{
+    session->context.drawSurfaceWidth = session->core.drawSurface.width = width;
+    session->context.drawSurfaceHeight = session->core.drawSurface.height = height;
+}
+
 void diff_gl_state_snapshot(DiffMatrixSession *session, unsigned char output[0x3000])
 {
     Gerbera_s *s = &session->core;
@@ -270,6 +276,7 @@ void diff_gl_state_snapshot(DiffMatrixSession *session, unsigned char output[0x3
     BYTE(25, lightActiveDirtyMask); BYTE(26, lightActiveMask);
     BYTE(27, lightTypeDirtyMask); BYTE(28, lightColorDirtyMask);
     BYTE(30, rejectAllStateDirty); BYTE(31, pixelPipelineDirty);
+    BYTE(33, scissorDirty);
     BYTE(50, ambientLightSumDirty); BYTE(52, baseColorDirty);
     memcpy(output + 53, s->capabilities, sizeof(s->capabilities));
     FIELD(532, fogStart); FIELD(536, fogEnd); FIELD(540, fogDensity);
@@ -277,6 +284,9 @@ void diff_gl_state_snapshot(DiffMatrixSession *session, unsigned char output[0x3
     output[594] = (unsigned char)s->fogAtZero;
     output[595] = (unsigned char)(s->fogAtZero >> 8);
     FIELD(5520, material); FIELD(5576, ambientColor);
+    FIELD(220, scissorRectangle); FIELD(236, surfaceScissor);
+    FIELD(252, renderScissor); FIELD(268, viewportRectangle);
+    FIELD(284, viewportOffset); FIELD(296, viewportScale);
     for (i = 0; i < GR_VERTEXARRAY_MAX; ++i)
     {
         _grVertexArray *a = &s->vertexArray[i];
@@ -385,6 +395,10 @@ uint32_t diff_gl_state_step(DiffMatrixSession *session, int operation,
     case 46: glEnable(input[0]); break;
     case 47: glDisable(input[0]); break;
     case 48: result = glIsEnabled(input[0]); break;
+    case 49: glFrontFace(input[0]); break;
+    case 50: glCullFace(input[0]); break;
+    case 51: glViewport((int)input[0], (int)input[1], (int)input[2], (int)input[3]); break;
+    case 52: glScissor((int)input[0], (int)input[1], (int)input[2], (int)input[3]); break;
     }
     egliSetGlobal(previous);
     return result;

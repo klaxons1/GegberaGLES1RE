@@ -66,16 +66,30 @@ static unsigned int asr(int s0, int s)
 
 static unsigned int asd(int s0, int s)
 {
-    if (s >= 0)
-        return (unsigned int)((unsigned int)s0 << s);
-    return (unsigned int)(s0 >> (-(signed char)s));
+    unsigned int count = s < 0 ? 0u - (unsigned int)s : (unsigned int)s;
+#if GERBERA_ARM_REFERENCE
+    /* ARM register shifts use the low byte and saturate at 32; the PE
+     * evaluator masks the count to five bits. Avoid C's oversized shifts. */
+    count &= 255u;
+    if (count >= 32u)
+        return s < 0 ? (unsigned int)(s0 >> 31) : 0u;
+#else
+    count &= 31u;
+#endif
+    return s < 0 ? (unsigned int)(s0 >> count) : (unsigned int)s0 << count;
 }
 
 static unsigned int lsd(unsigned int s0, int s)
 {
-    if (s >= 0)
-        return s0 << s;
-    return s0 >> (-(signed char)s);
+    unsigned int count = s < 0 ? 0u - (unsigned int)s : (unsigned int)s;
+#if GERBERA_ARM_REFERENCE
+    count &= 255u;
+    if (count >= 32u)
+        return 0u;
+#else
+    count &= 31u;
+#endif
+    return s < 0 ? s0 >> count : s0 << count;
 }
 
 int emulator_evalConditional(HCOP_e op, unsigned int s0, unsigned int s1)

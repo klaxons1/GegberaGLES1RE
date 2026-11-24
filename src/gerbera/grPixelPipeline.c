@@ -115,7 +115,8 @@ static unsigned int grSampleTexel64(const _grTexture *texObj,
         {
             int base = raw[i] >> shift;
             coords[i] = hgClamp32_0_x(base, masks[i]);
-            next[i] = hgClamp32_0_x(base + 1, masks[i]);
+            /* HC ADD wraps before the clamp, including INT_MAX at shift zero. */
+            next[i] = hgClamp32_0_x((int)((unsigned int)base + 1u), masks[i]);
         }
         else if (texObj->wrapMode[i] == GR_WRAPMODE_MIRRORED_REPEAT)
         {
@@ -204,6 +205,8 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
         texC[3] = 255;
     }
 
+    /* Bytecode +0x41E scales MODULATE by (second + 1)/256; +0x445
+     * truncates INTERPOLATE with complementary weights summing to 255. */
     switch (us->envMode)
     {
     case GR_TEXENVMODE_REPLACE:
@@ -231,7 +234,11 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
         break;
 
     case GR_TEXENVMODE_DECAL:
-        if (baseFormat == GR_TEXTUREFORMAT_RGB8 ||
+        /* The original environment mapping replaces RGB for every non-RGBA format. */
+        if (baseFormat == GR_TEXTUREFORMAT_ALPHA8 ||
+            baseFormat == GR_TEXTUREFORMAT_LUMINANCE8 ||
+            baseFormat == GR_TEXTUREFORMAT_LUMINANCE8_ALPHA8 ||
+            baseFormat == GR_TEXTUREFORMAT_RGB8 ||
             baseFormat == GR_TEXTUREFORMAT_RGB565 ||
             baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGB8 ||
             baseFormat == GR_TEXTUREFORMAT_PALETTE4_RGB565 ||
@@ -245,7 +252,7 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
         else
         {
             for (c = 0; c < 3; ++c)
-                curRGBA[c] = (prevC[c] * (255 - texC[3]) + texC[c] * texC[3] + 127) / 255;
+                curRGBA[c] = (prevC[c] * (255 - texC[3]) + texC[c] * texC[3]) >> 8;
         }
         break;
 
@@ -253,7 +260,7 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
         if (baseFormat != GR_TEXTUREFORMAT_ALPHA8)
         {
             for (c = 0; c < 3; ++c)
-                curRGBA[c] = (prevC[c] * (255 - texC[c]) + envRGBA[c] * texC[c] + 127) / 255;
+                curRGBA[c] = (prevC[c] * (255 - texC[c]) + envRGBA[c] * texC[c]) >> 8;
         }
         if (baseFormat == GR_TEXTUREFORMAT_ALPHA8 ||
             baseFormat == GR_TEXTUREFORMAT_LUMINANCE8_ALPHA8 ||
@@ -267,7 +274,7 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
             baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA4 ||
             baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA5551)
         {
-            curRGBA[3] = (prevC[3] * texC[3] + 127) / 255;
+            curRGBA[3] = (prevC[3] * texC[3] + prevC[3]) >> 8;
         }
         break;
 
@@ -289,7 +296,7 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
             baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA4 ||
             baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA5551)
         {
-            curRGBA[3] = (prevC[3] * texC[3] + 127) / 255;
+            curRGBA[3] = (prevC[3] * texC[3] + prevC[3]) >> 8;
         }
         break;
 
@@ -328,14 +335,15 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
         if (us->envFuncRGB == GR_TEXENVCOMBFUNC_DOT3_RGB ||
             us->envFuncRGB == GR_TEXENVCOMBFUNC_DOT3_RGBA)
         {
-            int dot = 4 * ((argRGB[0][0] - 128) * (argRGB[1][0] - 128) +
-                           (argRGB[0][1] - 128) * (argRGB[1][1] - 128) +
-                           (argRGB[0][2] - 128) * (argRGB[1][2] - 128)) / 255;
-            dot = hgClamp32_0_x(dot * (int)us->envScaleRGB, 255);
-            curRGBA[0] = curRGBA[1] = curRGBA[2] = dot;
+            /* Bytecode +0x47C centers both operands at 127 and shifts by six. */
+            int dot = ((argRGB[0][0] - 127) * (argRGB[1][0] - 127) +
+                       (argRGB[0][1] - 127) * (argRGB[1][1] - 127) +
+                       (argRGB[0][2] - 127) * (argRGB[1][2] - 127)) >> 6;
+            curRGBA[0] = curRGBA[1] = curRGBA[2] =
+                hgClamp32_0_x(dot * (int)us->envScaleRGB, 255);
             if (us->envFuncRGB == GR_TEXENVCOMBFUNC_DOT3_RGBA)
             {
-                curRGBA[3] = dot;
+                curRGBA[3] = hgClamp32_0_x(dot * (int)us->envScaleAlpha, 255);
                 break;
             }
         }
@@ -345,15 +353,15 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
             {
                 int r = argRGB[0][c];
                 if (us->envFuncRGB == GR_TEXENVCOMBFUNC_MODULATE)
-                    r = (argRGB[0][c] * argRGB[1][c] + 127) / 255;
+                    r = (argRGB[0][c] * argRGB[1][c] + argRGB[0][c]) >> 8;
                 else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_ADD)
                     r = argRGB[0][c] + argRGB[1][c];
                 else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_ADD_SIGNED)
-                    r = argRGB[0][c] + argRGB[1][c] - 128;
+                    r = argRGB[0][c] + argRGB[1][c] - 127;
                 else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_SUBTRACT)
                     r = argRGB[0][c] - argRGB[1][c];
                 else if (us->envFuncRGB == GR_TEXENVCOMBFUNC_INTERPOLATE)
-                    r = (argRGB[0][c] * argRGB[2][c] + argRGB[1][c] * (255 - argRGB[2][c]) + 127) / 255;
+                    r = (argRGB[0][c] * argRGB[2][c] + argRGB[1][c] * (255 - argRGB[2][c])) >> 8;
                 curRGBA[c] = hgClamp32_0_x(r * (int)us->envScaleRGB, 255);
             }
         }
@@ -361,15 +369,15 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
         {
             int ra = argA[0];
             if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_MODULATE)
-                ra = (argA[0] * argA[1] + 127) / 255;
+                ra = (argA[0] * argA[1] + argA[0]) >> 8;
             else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_ADD)
                 ra = argA[0] + argA[1];
             else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_ADD_SIGNED)
-                ra = argA[0] + argA[1] - 128;
+                ra = argA[0] + argA[1] - 127;
             else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_SUBTRACT)
                 ra = argA[0] - argA[1];
             else if (us->envFuncAlpha == GR_TEXENVCOMBFUNC_INTERPOLATE)
-                ra = (argA[0] * argA[2] + argA[1] * (255 - argA[2]) + 127) / 255;
+                ra = (argA[0] * argA[2] + argA[1] * (255 - argA[2])) >> 8;
             curRGBA[3] = hgClamp32_0_x(ra * (int)us->envScaleAlpha, 255);
         }
         break;
@@ -380,7 +388,7 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
         if (baseFormat != GR_TEXTUREFORMAT_ALPHA8)
         {
             for (c = 0; c < 3; ++c)
-                curRGBA[c] = (prevC[c] * texC[c] + 127) / 255;
+                curRGBA[c] = (prevC[c] * texC[c] + prevC[c]) >> 8;
         }
         if (baseFormat == GR_TEXTUREFORMAT_ALPHA8 ||
             baseFormat == GR_TEXTUREFORMAT_LUMINANCE8_ALPHA8 ||
@@ -394,7 +402,7 @@ static void grApplyTexEnv64(const Gerbera_s *state, int unit,
             baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA4 ||
             baseFormat == GR_TEXTUREFORMAT_PALETTE8_RGBA5551)
         {
-            curRGBA[3] = (prevC[3] * texC[3] + 127) / 255;
+            curRGBA[3] = (prevC[3] * texC[3] + prevC[3]) >> 8;
         }
         break;
     }
@@ -477,8 +485,6 @@ static unsigned int grApplyLogicOp64(int op, unsigned int s, unsigned int d)
     default:                       return s;
     }
 }
-
-#define GR_DIV255_EXACT(v) ((int)(((unsigned int)(v) * 257u + 257u) >> 16))
 
 /* HC ADD/MUL operate on 32-bit words. Repeat texture coordinates deliberately
  * wrap at the signed boundary as a span advances. */
@@ -637,12 +643,12 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
                     int tg = (int)((texel >> 8) & 0xFFu);
                     int tb = (int)(texel & 0xFFu);
                     int ta = (int)((texel >> 24) & 0xFFu);
-                    pa = GR_DIV255_EXACT(pa * ta + 127);
+                    pa = (pa * ta + pa) >> 8;
                     if (hasAlp && !(pa > alpRef))
                         goto fast_step;
-                    pr = GR_DIV255_EXACT(pr * tr + 127);
-                    pg = GR_DIV255_EXACT(pg * tg + 127);
-                    pb = GR_DIV255_EXACT(pb * tb + 127);
+                    pr = (pr * tr + pr) >> 8;
+                    pg = (pg * tg + pg) >> 8;
+                    pb = (pb * tb + pb) >> 8;
                 }
                 else if (hasAlp && !(pa > alpRef))
                 {
@@ -662,11 +668,12 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
 
                 if (hasFog)
                 {
+                    /* Bytecode +0x539 uses complementary weights totaling 256. */
                     int fog8 = gFog ? hgClamp32_0_x(fCur >> 16, 255) : fogDef;
-                    int invF = 255 - fog8;
-                    pr = GR_DIV255_EXACT(invF * pr + fog8 * fogR + 127);
-                    pg = GR_DIV255_EXACT(invF * pg + fog8 * fogG + 127);
-                    pb = GR_DIV255_EXACT(invF * pb + fog8 * fogB + 127);
+                    int invF = 256 - fog8;
+                    pr = (invF * pr + fog8 * fogR) >> 8;
+                    pg = (invF * pg + fog8 * fogG) >> 8;
+                    pb = (invF * pb + fog8 * fogB) >> 8;
                 }
 
                 if (hasBld)
@@ -774,7 +781,7 @@ fast_step:
                 for (c = 0; c < 3; ++c)
                 {
                     int fc = (int)((state->fogColor >> (8 * c)) & 0xFFu);
-                    rgba[c] = ((255 - fog8) * rgba[c] + fog8 * fc + 127) / 255;
+                    rgba[c] = ((256 - fog8) * rgba[c] + fog8 * fc) >> 8;
                 }
             }
 
@@ -917,7 +924,7 @@ void grExecutePixelPipeline(Gerbera_s *state)
      * (docs/libGLES_CM.dll.c:24774): the cdecl argument is
      * &renderStack[1830].whichPool == renderStack + 14644; the HCX86Backend
      * prologue pivots esp onto that stack area. */
-    pixelPipelineCode((char *)state->renderStack + 14644);
+    pixelPipelineCode((char *)state->renderStack + GR_RENDER_STACK_PIXEL_PIPELINE);
 #else
     if (state->pipelineCache != NULL)
     {

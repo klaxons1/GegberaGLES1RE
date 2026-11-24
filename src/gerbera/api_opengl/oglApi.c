@@ -1020,16 +1020,18 @@ GL_API void GL_APIENTRY glViewport(GLint x, GLint y, GLsizei width, GLsizei heig
     {
         if (width >= 0 && height >= 0)
         {
-            int w = (width > 2048) ? 2048 : width;
-            int h = (height > 2048) ? 2048 : height;
-            int x0 = x;
-            int x1 = hgMax32(x, w + x);
-            int y1 = context->drawSurfaceHeight - y;
-            int y0 = hgMin32(y1 - h, y1);
+            int x0, x1, y0, y1;
             int vp[4];
 
             grLockSurface(GR_SURFACE_DRAW);
             grReleaseSurface(GR_SURFACE_DRAW);
+            width = hgMin32(width, 2048);
+            height = hgMin32(height, 2048);
+            x0 = x;
+            /* Original coordinate arithmetic wraps before the signed clamps. */
+            x1 = hgMax32(x, (int)((unsigned int)width + (unsigned int)x));
+            y1 = (int)((unsigned int)context->drawSurfaceHeight - (unsigned int)y);
+            y0 = hgMin32((int)((unsigned int)y1 - (unsigned int)height), y1);
             grSetViewport(context->gerbera, x0, x1, y0, y1);
 
             vp[0] = x;
@@ -1053,9 +1055,9 @@ GL_API void GL_APIENTRY glScissor(GLint x, GLint y, GLsizei width, GLsizei heigh
         if (width >= 0 && height >= 0)
         {
             int x0 = hgClamp32(x, 0, context->drawSurfaceWidth);
-            int x1 = hgClamp32(width + x, 0, context->drawSurfaceWidth);
-            int y1 = context->drawSurfaceHeight - y;
-            int y0 = hgClamp32(y1 - height, 0, context->drawSurfaceHeight);
+            int x1 = hgClamp32((int)((unsigned int)width + (unsigned int)x), 0, context->drawSurfaceWidth);
+            int y1 = (int)((unsigned int)context->drawSurfaceHeight - (unsigned int)y);
+            int y0 = hgClamp32((int)((unsigned int)y1 - (unsigned int)height), 0, context->drawSurfaceHeight);
             int sc[4];
 
             y1 = hgClamp32(y1, 0, context->drawSurfaceHeight);
@@ -1081,11 +1083,18 @@ GL_API void GL_APIENTRY glFrontFace(GLenum mode)
     oglContext_s *context = oglGetContext();
     if (context != NULL)
     {
+#if GERBERA_ARM_REFERENCE
+        /* ARM validates the stored byte, including aliases of CW/CCW. */
+        unsigned char frontFace = (unsigned char)(mode - GL_CW);
+        if (frontFace <= 1)
+#else
+        unsigned int frontFace = mode - GL_CW;
         if (mode == GL_CW || mode == GL_CCW)
+#endif
         {
             unsigned int m = mode;
             int cullMask = grGetInteger(context->gerbera, GR_QUERY_CULL_MASK);
-            grSetCullMode(context->gerbera, (int)(mode - GL_CW), (unsigned int)cullMask);
+            grSetCullMode(context->gerbera, frontFace, (unsigned int)cullMask);
             oglSetGetterValueEnum(context, 0, GL_FRONT_FACE, &m);
         }
         else

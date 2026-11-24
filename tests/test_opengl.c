@@ -690,6 +690,17 @@ static void test_gl_strings_errors_and_state(void)
     CHECK(ival[0] == GL_CW);
     glGetIntegerv(GL_CULL_FACE_MODE, ival);
     CHECK(ival[0] == GL_FRONT);
+    glFrontFace(GL_CW + 0x100);
+#if GERBERA_ARM_REFERENCE
+    CHECK(glGetError() == GL_NO_ERROR);
+    glGetIntegerv(GL_FRONT_FACE, ival);
+    CHECK(ival[0] == GL_CW + 0x100);
+    CHECK(ctx->gerbera->frontFace == 0);
+#else
+    CHECK(glGetError() == GL_INVALID_ENUM);
+    glGetIntegerv(GL_FRONT_FACE, ival);
+    CHECK(ival[0] == GL_CW);
+#endif
     glFrontFace(GL_CCW);
     glCullFace(GL_BACK);
 
@@ -1582,6 +1593,55 @@ static void test_gl_buffer_storage_lifetime(void)
     oglDestroyContext(contexts[0]);
 }
 
+static void test_gl_viewport_resize(void)
+{
+    const EGLint attributes[] = { EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+                                 EGL_RED_SIZE, 5, EGL_GREEN_SIZE, 6, EGL_BLUE_SIZE, 5,
+                                 EGL_NONE };
+    const GLfloat quad[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+    eglNativeWindow_s window = { 4, 4, 0, EGL_SYMBIAN_ECOLOR64K, NULL, 0 };
+    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    EGLConfig config;
+    EGLint count;
+    EGLSurface surface;
+    EGLContext handle;
+    oglContext_s *context;
+    GLint viewport[4];
+    GLubyte pixel[4];
+
+    CHECK(eglInitialize(display, NULL, NULL) == EGL_TRUE);
+    CHECK(eglChooseConfig(display, attributes, &config, 1, &count) == EGL_TRUE && count == 1);
+    surface = eglCreateWindowSurface(display, config, &window, NULL);
+    handle = eglCreateContext(display, config, EGL_NO_CONTEXT, NULL);
+    CHECK(surface != EGL_NO_SURFACE && handle != EGL_NO_CONTEXT);
+    CHECK(eglMakeCurrent(display, surface, surface, handle) == EGL_TRUE);
+    context = egliGetState()->currentESContext;
+
+    /* The first viewport after a native resize must use the refreshed height. */
+    window.width = window.height = 8;
+    glViewport(0, 0, 8, 8);
+    CHECK(context->drawSurfaceHeight == 8);
+    CHECK(context->gerbera->viewportRectangle.y0 == 0 &&
+          context->gerbera->viewportRectangle.y1 == 8);
+    glDisable(GL_DITHER);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, quad);
+    glColor4ub(255, 0, 0, 255);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glReadPixels(3, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    CHECK(pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0);
+    glReadPixels(3, 7, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    CHECK(pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0);
+
+    glViewport(5, -7, 4096, 8192);
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    CHECK(viewport[0] == 5 && viewport[1] == -7 && viewport[2] == 2048 && viewport[3] == 2048);
+    CHECK(glGetError() == GL_NO_ERROR);
+    CHECK(eglTerminate(display) == EGL_TRUE);
+}
+
 int main(void)
 {
     test_error_and_descriptor();
@@ -1598,6 +1658,7 @@ int main(void)
     test_gl_rendering_pipeline();
     test_gl_textures_and_drawtex();
     test_gl_buffer_storage_lifetime();
+    test_gl_viewport_resize();
 
     printf("opengl tests: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

@@ -29,7 +29,7 @@ int grComputeGradientReference(int v0sx, int v0sy, int xAdd, int yAdd)
     HGint64 v4 = hgMul64(v0sx, xAdd);
     HGint64 v5 = hgMadd64(v4, v0sy, yAdd);
 
-    return -hgLsl64h_0_31(v5, 20);
+    return (int)(0u - (unsigned int)hgLsl64h_0_31(v5, 20));
 }
 
 /* --- grComputeDepthOffset (grSmall.c 165; DLL 25902-25940) ------------------
@@ -40,19 +40,19 @@ void grComputeDepthOffset(Gerbera_s *state)
 {
     _grPixelPipe *pixelPipeline = (_grPixelPipe *)state->pixelPipeline;
     int units = state->depthOffsetUnits;
-    int ref = units + pixelPipeline->reference[0];
+    unsigned int ref = (unsigned int)units + (unsigned int)pixelPipeline->reference[0];
     int factor = state->depthOffsetFactor;
 
     switch (((unsigned char *)&state->drawSurface)[10])   /* depthBytes */
     {
         case 1:
-            ref += units << 8;
+            ref += (unsigned int)units << 8;
             break;
         case 2:
-            ref += units;
+            ref += (unsigned int)units;
             break;
         case 4:
-            ref += units >> 16;
+            ref += (unsigned int)(units >> 16);
             break;
         default:
             break;
@@ -64,9 +64,9 @@ void grComputeDepthOffset(Gerbera_s *state)
         int v1 = hgMax32(xAdder, yAdder);
         HGint64 v2 = hgMul64(factor, v1);
 
-        ref += hgLsl64h(v2, 16);
+        ref += (unsigned int)hgLsl64h(v2, 16);
     }
-    pixelPipeline->reference[0] = ref;
+    pixelPipeline->reference[0] = (int)ref;
 }
 
 /* --- g_mutableParamsMask (data.fragments.c 33) -------------------------------

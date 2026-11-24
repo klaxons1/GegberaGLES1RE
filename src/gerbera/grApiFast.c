@@ -876,8 +876,7 @@ void grRenderArrays(Gerbera_s *state, int primitiveType, int vertexCount, int ba
 
 /* --- grrBeginRendering / grrEndRendering / grrUpdateState (via call sites) --
  * Tiny helpers reached by grSetupRendering/grCleanupRendering (DLL
- * 27362-27378). grLockSurface/grReleaseSurface are egl-module entry points
- * (stubs in grrStubs.c until the egl session). */
+ * 27362-27378). grLockSurface/grReleaseSurface are egl-module entry points. */
 
 void grrBeginRendering(Gerbera_s *state)
 {
@@ -988,7 +987,8 @@ LABEL_24:
             /* the decompile renders this as (char*)extraStack +
              * &renderStack[1830].whichPool; the +14644 offset is the pixel
              * pipe within the render stack allocation */
-            state->pixelPipeline = (char *)state->renderStack + 14644 + (long)extraStack;
+            state->pixelPipeline = (char *)state->renderStack +
+                                   GR_RENDER_STACK_PIXEL_PIPELINE + (long)extraStack;
             state->vertexCache = state->renderStack;
         }
         pixelPipe = (_grPixelPipe *)state->pixelPipeline;

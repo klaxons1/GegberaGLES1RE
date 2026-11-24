@@ -201,37 +201,39 @@ EGLAPI EGLBoolean EGLAPIENTRY eglInitialize(EGLDisplay dpy, EGLint *major, EGLin
     eglState_s *state = egliGetState();
 
     eglSetError(EGL_SUCCESS);
-    if (dpy != 1)
-    {
-        eglSetError(EGL_BAD_DISPLAY);
-        return EGL_FALSE;
-    }
-
     if (state == NULL)
     {
+#if !defined(__SYMBIAN32__)
         eglDisplay_s *display;
+#endif
 
         state = egliInitState();
         if (state == NULL)
-        {
-            eglSetError(EGL_NOT_INITIALIZED);
             return EGL_FALSE;
-        }
 
+#if !defined(__SYMBIAN32__)
         display = (eglDisplay_s *)eglAlloc(sizeof(eglDisplay_s));
         if (display == NULL)
         {
             egliDestroyState();
-            eglSetError(EGL_NOT_INITIALIZED);
             return EGL_FALSE;
         }
 
         hgMemSet(display, 0, sizeof(*display));
         eglInitRefCount(&display->refCount);
         state->windowDisplay = display;
+#endif
         EGL_ASSERT_AT("eglBase.inl", 336, "eglIsValidState(state)", eglIsValidState(state) != 0);
     }
 
+    /* The original creates state before validating the display and keeps it
+     * alive when the display is invalid. */
+    if (eglMapDisplay(dpy) == NULL)
+    {
+        eglSetError(EGL_BAD_DISPLAY);
+        return EGL_FALSE;
+    }
+    eglSetError(EGL_SUCCESS);
     if (major != NULL)
         *major = 1;
     if (minor != NULL)
@@ -242,6 +244,9 @@ EGLAPI EGLBoolean EGLAPIENTRY eglInitialize(EGLDisplay dpy, EGLint *major, EGLin
 EGLAPI EGLBoolean EGLAPIENTRY eglTerminate(EGLDisplay dpy)
 {
     eglState_s *state = egliGetState();
+
+    if (state == NULL)
+        return EGL_TRUE;
 
     eglSetError(EGL_SUCCESS);
     if (dpy != 1)
@@ -257,16 +262,9 @@ EGLAPI EGLBoolean EGLAPIENTRY eglTerminate(EGLDisplay dpy)
         eglSurface_s *surf;
 
         EGL_ASSERT_AT("eglBase.inl", 362, "eglIsValidState(state)", eglIsValidState(state) != 0);
+#if !defined(__SYMBIAN32__)
         eglMakeCurrent((EGLDisplay)1, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-
-        ctx = display->contextList;
-        while (ctx != NULL)
-        {
-            eglContext_s *nextCtx = ctx->next;
-            if (eglDestroyRef(&ctx->refCount) != 0)
-                eglFreeContext(ctx);
-            ctx = nextCtx;
-        }
+#endif
 
         surf = display->surfaceList;
         while (surf != NULL)
@@ -277,10 +275,22 @@ EGLAPI EGLBoolean EGLAPIENTRY eglTerminate(EGLDisplay dpy)
             surf = nextSurf;
         }
 
+        ctx = display->contextList;
+        while (ctx != NULL)
+        {
+            eglContext_s *nextCtx = ctx->next;
+            if (eglDestroyRef(&ctx->refCount) != 0)
+                eglFreeContext(ctx);
+            ctx = nextCtx;
+        }
+
+        eglDestroyRef(&display->refCount);
+#if !defined(__SYMBIAN32__)
         EGL_ASSERT_AT("eglBase.inl", 390, "!display->surfaceList && !display->contextList",
                       display->surfaceList == NULL && display->contextList == NULL);
         eglFree(display);
         state->windowDisplay = NULL;
+#endif
         egliDestroyState();
     }
 
@@ -877,18 +887,6 @@ EGLAPI EGLBoolean EGLAPIENTRY eglWaitGL(void)
     }
 
     eglSetError(EGL_SUCCESS);
-    if (state->currentContext != NULL)
-    {
-        EGL_ASSERT_AT("eglBase.inl", 914, "state->currentReadSurface && state->currentDrawSurface",
-                      state->currentReadSurface != NULL && state->currentDrawSurface != NULL);
-        if (eglCheckSurface(state->currentDrawSurface) == 0 ||
-            eglCheckSurface(state->currentReadSurface) == 0)
-        {
-            eglSetError(EGL_BAD_CURRENT_SURFACE);
-            return EGL_FALSE;
-        }
-        glFinish();
-    }
     return EGL_TRUE;
 }
 
@@ -909,17 +907,6 @@ EGLAPI EGLBoolean EGLAPIENTRY eglWaitNative(EGLint engine)
         return EGL_FALSE;
     }
 
-    if (state->currentContext != NULL)
-    {
-        EGL_ASSERT_AT("eglBase.inl", 943, "state->currentReadSurface && state->currentDrawSurface",
-                      state->currentReadSurface != NULL && state->currentDrawSurface != NULL);
-        if (eglCheckSurface(state->currentDrawSurface) == 0 ||
-            eglCheckSurface(state->currentReadSurface) == 0)
-        {
-            eglSetError(EGL_BAD_CURRENT_SURFACE);
-            return EGL_FALSE;
-        }
-    }
     return EGL_TRUE;
 }
 
@@ -1114,10 +1101,12 @@ EGLAPI EGLBoolean EGLAPIENTRY eglSwapInterval(EGLDisplay dpy, EGLint interval)
 
 EGLAPI EGLBoolean EGLAPIENTRY eglCopyBuffers(EGLDisplay dpy, EGLSurface surface, NativePixmapType target)
 {
+    eglState_s *state = egliGetState();
     eglDisplay_s *display;
     eglSurface_s *surf;
+    int width, height;
 
-    if (egliGetState() == NULL)
+    if (state == NULL)
     {
         eglSetError(EGL_NOT_INITIALIZED);
         return EGL_FALSE;
@@ -1131,7 +1120,7 @@ EGLAPI EGLBoolean EGLAPIENTRY eglCopyBuffers(EGLDisplay dpy, EGLSurface surface,
         eglSetError(EGL_BAD_DISPLAY);
         return EGL_FALSE;
     }
-    if (surf == NULL)
+    if (surf == NULL || (surf != state->currentDrawSurface && surf != state->currentReadSurface))
     {
         eglSetError(EGL_BAD_SURFACE);
         return EGL_FALSE;
@@ -1142,14 +1131,15 @@ EGLAPI EGLBoolean EGLAPIENTRY eglCopyBuffers(EGLDisplay dpy, EGLSurface surface,
         return EGL_FALSE;
     }
 
-    glFlush();
-    if (egliBlitToPixmap(surf, (eglNativePixmap_s *)target) == 0)
+    egliGetNativePixmapSize((eglNativePixmap_s *)target, &width, &height);
+    if (width != surf->width || height != surf->height)
     {
         eglSetError(EGL_BAD_MATCH);
         return EGL_FALSE;
     }
 
-    return EGL_TRUE;
+    glFlush();
+    return egliBlitToPixmap(surf, (eglNativePixmap_s *)target);
 }
 
 /* --- EGL 1.1 Current State Queries & eglGetProcAddress --------------------- */
@@ -1158,8 +1148,14 @@ EGLAPI EGLContext EGLAPIENTRY eglGetCurrentContext(void)
 {
     eglState_s *state = egliGetState();
 
+    if (state == NULL)
+    {
+        eglSetError(EGL_NOT_INITIALIZED);
+        return EGL_NO_CONTEXT;
+    }
+
     eglSetError(EGL_SUCCESS);
-    if (state != NULL && state->currentContext != NULL)
+    if (state->currentContext != NULL)
         return state->currentContext->id;
     return EGL_NO_CONTEXT;
 }
@@ -1170,7 +1166,7 @@ EGLAPI EGLSurface EGLAPIENTRY eglGetCurrentSurface(EGLint readdraw)
 
     if (state == NULL)
     {
-        eglSetError(EGL_SUCCESS);
+        eglSetError(EGL_NOT_INITIALIZED);
         return EGL_NO_SURFACE;
     }
 
@@ -1188,8 +1184,14 @@ EGLAPI EGLDisplay EGLAPIENTRY eglGetCurrentDisplay(void)
 {
     eglState_s *state = egliGetState();
 
+    if (state == NULL)
+    {
+        eglSetError(EGL_NOT_INITIALIZED);
+        return EGL_NO_DISPLAY;
+    }
+
     eglSetError(EGL_SUCCESS);
-    if (state != NULL && state->currentDisplay != NULL)
+    if (state->currentDisplay != NULL)
         return (EGLDisplay)1;
     return EGL_NO_DISPLAY;
 }

@@ -160,8 +160,8 @@ COMMON_FLAGS=(
     -fno-builtin-printf
     -fno-builtin-fprintf
     -fno-strict-aliasing
-    -fno-unwind-tables
     -fno-asynchronous-unwind-tables
+    -funwind-tables
     -fomit-frame-pointer
     -DNDEBUG
     -D__SYMBIAN32__
@@ -203,6 +203,7 @@ echo "[symbian] Compiling Gerbera Whole-Program Unity TU (-march=armv5t -mtune=a
 echo "[symbian] Linking Symbian EABI ELF..."
 DSOS=(
     "${BUILD_DIR}/implibs/euser{000a0000}.dso"
+    "${BUILD_DIR}/implibs/drtaeabi{000a0000}.dso"
     "${BUILD_DIR}/implibs/ws32{000a0000}.dso"
     "${BUILD_DIR}/implibs/fbscli{000a0000}.dso"
     "${BUILD_DIR}/implibs/cone{000a0000}.dso"
