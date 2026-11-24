@@ -1,6 +1,17 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (PixelFlinger M3G m3gcore11 compatibility)
+Last updated: 2026-11-22 (merged SOMETHINKWORKS, Gerbera rebuilt)
+
+## Merged SOMETHINKWORKS (70bbc43) and rebuilt Gerbera
+
+- Merged `SOMETHINKWORKS` with no conflicts. It changes `src/` (egl, pixel
+  pipeline, rasterizer, transform, imath, hg), the Makefile and `.gitignore`,
+  and adds geometry/Symbian-surface tests and the differential suite.
+- `make test`: all host checks pass (hg 333, imath 407, geometry 61,
+  core 51597, opengl 510, egl 849, symbian surface 83).
+- `make differential`: 0 mismatches (ARM 27613 comparisons, x86 48786).
+- Rebuilt `symbian/out/libgles_cm.dll` (230,480 bytes, 175 exports, data/bss 0,
+  same 6 ROM imports) and the SDK zip.
 
 ## PixelFlinger: M3G (m3gcore11) compatibility
 
