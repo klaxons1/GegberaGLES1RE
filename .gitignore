@@ -14,3 +14,9 @@ build/
 # Python
 __pycache__/
 *.pyc
+
+# Local Python test environment
+.venv/
+
+# Downloaded demo dependency sources
+/demo/tinygles/

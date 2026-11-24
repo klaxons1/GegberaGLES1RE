@@ -176,22 +176,43 @@ void vmul3(GLfixed* d, const GLfixed* m0, const GLfixed* m1) {
 
 void vnorm3(GLfixed* d, const GLfixed* a)
 {
-    // we must take care of overflows when normalizing a vector
-    GLfixed n;
-    int32_t x = a[0];   x = x>=0 ? x : -x;
-    int32_t y = a[1];   y = y>=0 ? y : -y;
-    int32_t z = a[2];   z = z>=0 ? z : -z;
-    if (ggl_likely(x<=0x6800 && y<=0x6800 && z<= 0x6800)) {
-        // in this case this will all fit on 32 bits
-        n = x*x + y*y + z*z;
-        n = gglSqrtRecipx(n);
-        n <<= 8;
-    } else {
-        // here norm^2 is at least 0x7EC00000 (>>32 == 0.495117)
-        n = vsquare3(x, y, z);
-        n = gglSqrtRecipx(n);
+    // The squared length of a full-range fixed-point vector needs up to
+    // 48 bits (and vsquare3()'s 16.16 rounding loses the top of that
+    // range), so compute it in 64-bit and scale the vector down -- a
+    // uniform scale does not change the direction -- until the
+    // reciprocal-square-root input fits in 32 bits. Everything is kept
+    // in signed/unsigned 64-bit arithmetic so no shift or multiply can
+    // invoke undefined behaviour anywhere in the GLfixed range.
+    int64_t s = int64_t(a[0]) * a[0] +
+                int64_t(a[1]) * a[1] +
+                int64_t(a[2]) * a[2];      // 2^32-scaled norm^2, <= 3*2^62
+    GLfixed x = a[0];
+    GLfixed y = a[1];
+    GLfixed z = a[2];
+    while ((s >> 16) > 0x7FFFFFFF) {       // 16.16 norm^2 must fit in int32
+        x >>= 1;
+        y >>= 1;
+        z >>= 1;
+        s = int64_t(x) * x +
+            int64_t(y) * y +
+            int64_t(z) * z;
     }
-    vscale3(d, a, n);
+    GLfixed r;
+    if (s <= 7) {
+        // zero (or effectively zero) vector stays zero
+        d[0] = d[1] = d[2] = 0;
+        return;
+    } else if (s < 0x80000) {
+        // shorter than sqrt(8) fixed-point units: gglSqrtRecipx() needs
+        // inputs >= 8, so use the 2^32-scaled length directly (this is
+        // the original small-vector formula, shifted up by 8 bits).
+        r = gglSqrtRecipx(GLfixed(s)) << 8;
+    } else {
+        r = gglSqrtRecipx(GLfixed(s >> 16));
+    }
+    d[0] = gglMulx(x, r);
+    d[1] = gglMulx(y, r);
+    d[2] = gglMulx(z, r);
 }
 
 // ----------------------------------------------------------------------------
@@ -241,6 +262,23 @@ static inline void validate_light_mvi(ogles_context_t* c)
 
 static inline void validate_light(ogles_context_t* c)
 {
+    // The constant-attenuation term does not depend on the material, so
+    // it must be computed whether or not color-material is enabled
+    // (otherwise positional lights use garbage attenuation with
+    // GL_COLOR_MATERIAL). gglRecipFast() has undefined shifts for
+    // inputs < 2; zero there matches the legacy ARM result.
+    {
+        uint32_t en = c->lighting.enabledLights;
+        while (en) {
+            const int i = 31 - gglClz(en);
+            en &= ~(1<<i);
+            light_t& l = c->lighting.lights[i];
+            l.rConstAttenuation = (l.attenuation[1] | l.attenuation[2])==0;
+            if (l.rConstAttenuation)
+                l.rConstAttenuation = (l.attenuation[0] >= 2)
+                        ? gglRecipFast(l.attenuation[0]) : 0;
+        }
+    }
     // if colorMaterial is enabled, we get the color from the vertex
     if (!c->lighting.colorMaterial.enable) {
         material_t& material = c->lighting.front;
@@ -252,21 +290,17 @@ static inline void validate_light(ogles_context_t* c)
             vmul3(l.implicitAmbient.v,  material.ambient.v,  l.ambient.v);
             vmul3(l.implicitDiffuse.v,  material.diffuse.v,  l.diffuse.v);
             vmul3(l.implicitSpecular.v, material.specular.v, l.specular.v);
-            
+
             // this is just a flag to tell if we have a specular component
             l.implicitSpecular.v[3] =
                     l.implicitSpecular.r |
                     l.implicitSpecular.g |
                     l.implicitSpecular.b;
-            
-            l.rConstAttenuation = (l.attenuation[1] | l.attenuation[2])==0;
-            if (l.rConstAttenuation)
-                l.rConstAttenuation = gglRecipFast(l.attenuation[0]);
         }
         // emission and ambient for the whole scene
         vmla3(  c->lighting.implicitSceneEmissionAndAmbient.v,
                 c->lighting.lightModel.ambient.v,
-                material.ambient.v, 
+                material.ambient.v,
                 material.emission.v);
         c->lighting.implicitSceneEmissionAndAmbient.a = material.diffuse.a;
     }
@@ -313,8 +347,25 @@ void lightVertexMaterial(ogles_context_t* c, vertex_t* v)
 
     // acquire the color-material from the vertex
     material_t& material = c->lighting.front;
-    material.ambient =
-    material.diffuse = v->color;
+    switch (c->lighting.colorMaterial.mode) {
+    case GL_AMBIENT:
+        material.ambient = v->color;
+        break;
+    case GL_DIFFUSE:
+        material.diffuse = v->color;
+        break;
+    case GL_SPECULAR:
+        material.specular = v->color;
+        break;
+    case GL_EMISSION:
+        material.emission = v->color;
+        break;
+    case GL_AMBIENT_AND_DIFFUSE:
+    default:
+        material.ambient =
+        material.diffuse = v->color;
+        break;
+    }
     // implicit arguments need to be computed per/vertex
     uint32_t en = c->lighting.enabledLights;
     while (en) {
@@ -360,37 +411,71 @@ void lightVertex(ogles_context_t* c, vertex_t* v)
         c->transforms.mvui.point3(&c->transforms.mvui, &n, &n);
 #endif
 
-        // TODO: right now we handle GL_RESCALE_NORMALS as if it were
-        // GL_NORMALIZE. We could optimize this by  scaling mvui 
-        // appropriately instead.
-        if (c->transforms.rescaleNormals)
+        // GL_NORMALIZE: normalize the transformed normal here.
+        // GL_RESCALE_NORMAL needs no fix-up: its scale factor is already
+        // baked into mvui by update_mvui().
+        if (c->transforms.normalize)
             vnorm3(n.v, n.v);
 
+        // OpenGL ES 1.1 2.12.1: with two-sided lighting the normal of a
+        // back-facing primitive is reversed before the lighting equation.
+        if (c->lighting.lightModel.twoSide && c->lighting.backFace) {
+            n.x = -n.x;
+            n.y = -n.y;
+            n.z = -n.z;
+        }
+
         const material_t& material = c->lighting.front;
-        const int twoSide = c->lighting.lightModel.twoSide;
 
         while (en) {
             const int i = 31 - gglClz(en);
             en &= ~(1<<i);
             const light_t& l = c->lighting.lights[i];
-            
+
             vec4_t d, t;
             GLfixed s;
-            GLfixed sqDist = 0x10000;
+            int64_t sqDist = 0;    // 16.16 squared distance (0: directional)
 
             // compute vertex-to-light vector
             if (ggl_unlikely(l.position.w)) {
                 // lightPos/1.0 - vertex/vertex.w == lightPos*vertex.w - vertex
 #if !OBJECT_SPACE_LIGHTING
                 vec4_t o;
-                const transform_t& mv = c->transforms.modelview.transform;
-                mv.point4(&mv, &o, &v->obj);
+                if (v->flags & vertex_t::EYE) {
+                    // eye coordinates were already computed; they live in
+                    // the same union as v->obj, which is no longer valid.
+                    o = v->eye;
+                } else {
+                    const transform_t& mv = c->transforms.modelview.transform;
+                    mv.point4(&mv, &o, &v->obj);
+                }
                 vss3(d.v, l.objPosition.v, o.w, o.v);
 #else
                 vss3(d.v, l.objPosition.v, v->obj.w, v->obj.v);
 #endif
-                sqDist = dot3(d.v, d.v);
-                vscale3(d.v, d.v, gglSqrtRecipx(sqDist));
+                // The squared distance overflows 32-bit fixed point for
+                // distances beyond ~181 units: keep it in 64-bit and
+                // scale the direction down for the reciprocal-sqrt
+                // (a uniform scale does not change the direction).
+                sqDist = (int64_t(d.x) * d.x +
+                          int64_t(d.y) * d.y +
+                          int64_t(d.z) * d.z) >> 16;
+                int64_t sn = sqDist;
+                GLfixed dx = d.x, dy = d.y, dz = d.z;
+                while (sn > 0x7FFFFFFF) {
+                    dx >>= 1; dy >>= 1; dz >>= 1;
+                    sn = (int64_t(dx) * dx +
+                          int64_t(dy) * dy +
+                          int64_t(dz) * dz) >> 16;
+                }
+                if (sn > 0) {
+                    const GLfixed rsn = gglSqrtRecipx(GLfixed(sn));
+                    d.x = gglMulx(dx, rsn);
+                    d.y = gglMulx(dy, rsn);
+                    d.z = gglMulx(dz, rsn);
+                } else {
+                    d.x = d.y = d.z = 0;
+                }
             } else {
                 // TODO: avoid copy here
                 d = l.normalizedObjPosition;
@@ -398,7 +483,7 @@ void lightVertex(ogles_context_t* c, vertex_t* v)
 
             // ambient & diffuse
             s = dot3(n.v, d.v);
-            s = (s<0) ? (twoSide?(-s):0) : s;
+            s = (s<0) ? 0 : s;
             vsa3(t.v, l.implicitDiffuse.v, s, l.implicitAmbient.v);
 
             // specular
@@ -409,7 +494,7 @@ void lightVertex(ogles_context_t* c, vertex_t* v)
                 h.z = d.z + objViewer.z;
                 vnorm3(h.v, h.v);
                 s = dot3(n.v, h.v);
-                s = (s<0) ? (twoSide?(-s):0) : s;
+                s = (s<0) ? 0 : s;
                 if (s > 0) {
                     s = gglPowx(s, material.shininess);
                     vsa3(t.v, l.implicitSpecular.v, s, t.v);
@@ -419,8 +504,11 @@ void lightVertex(ogles_context_t* c, vertex_t* v)
             // spot
             if (ggl_unlikely(l.spotCutoff != gglIntToFixed(180))) {
                 GLfixed spotAtt = -dot3(l.normalizedSpotDir.v, d.v);
-                if (spotAtt >= l.spotCutoffCosine) {
+                if (ggl_likely(spotAtt >= l.spotCutoffCosine)) {
                     vscale3(t.v, t.v, gglPowx(spotAtt, l.spotExp));
+                } else {
+                    // outside the cone: this light contributes nothing
+                    continue;
                 }
             }
 
@@ -429,10 +517,21 @@ void lightVertex(ogles_context_t* c, vertex_t* v)
                 if (l.rConstAttenuation) {
                     s = l.rConstAttenuation;
                 } else {
-                    s = gglMulAddx(sqDist, l.attenuation[2], l.attenuation[0]);
+                    // 64-bit: sqDist * quadratic attenuation overflows
+                    // 32-bit fixed point for distant lights. All
+                    // coefficients are validated >= 0, so att >= 0.
+                    const int64_t sqA =
+                            (sqDist > 0x7FFFFFFF) ? 0x7FFFFFFF : sqDist;
+                    int64_t att = l.attenuation[0];
+                    att += (sqA * l.attenuation[2]) >> 16;
                     if (l.attenuation[1])
-                        s = gglMulAddx(gglSqrtx(sqDist), l.attenuation[1], s);
-                    s = gglRecipFast(s);
+                        att += (int64_t(gglSqrtx(GLfixed(sqA))) *
+                                l.attenuation[1]) >> 16;
+                    // gglRecipFast() shifts by negative amounts for
+                    // inputs < 2; zero there matches the legacy ARM
+                    // result. Saturate anything past 32 bits to zero.
+                    s = (att >= 2 && att <= 0x7FFFFFFF)
+                            ? gglRecipFast(GLfixed(att)) : 0;
                 }
                 vscale3(t.v, t.v, s);
             }
@@ -467,17 +566,19 @@ static void lightx(GLenum i, GLenum pname, GLfixed param, ogles_context_t* c)
     }
 
     light_t& light = c->lighting.lights[i-GL_LIGHT0];
-    const GLfixed kDegToRad = GLfixed((M_PI * gglIntToFixed(1)) / 180.0f);
     switch (pname) {
     case GL_SPOT_EXPONENT:
-        if (GGLfixed(param) >= gglIntToFixed(128)) {
+        // must be in [0, 128]
+        if (param < 0 || param > gglIntToFixed(128)) {
             ogles_error(c, GL_INVALID_VALUE);
             return;
         }
         light.spotExp = param;
         break;
     case GL_SPOT_CUTOFF:
-        if (param!=gglIntToFixed(180) && GGLfixed(param)>=gglIntToFixed(90)) {
+        // must be in [0, 90] or exactly 180
+        if (param < 0 ||
+            (param > gglIntToFixed(90) && param != gglIntToFixed(180))) {
             ogles_error(c, GL_INVALID_VALUE);
             return;
         }
@@ -545,7 +646,18 @@ static void lightxv(GLenum i, GLenum pname, const GLfixed *params, ogles_context
         transform_t& mvui = c->transforms.mvui;
         mvui.point3(&mvui, &light.spotDir, reinterpret_cast<vec4_t const*>(params));
 #else
-        light.spotDir = *reinterpret_cast<vec4_t const*>(params);
+        // The spot direction is a direction, not a point: transform it
+        // with the upper 3x3 of the modelview (no translation) so it
+        // lives in the same eye space as the light position and the
+        // vertex-to-light vector used by the lighting equation.
+        ogles_validate_transform(c, transform_state_t::MODELVIEW);
+        transform_t& mv = c->transforms.modelview.transform;
+        const GLfixed* const m = mv.matrix.m;
+        const vec4_t* const p = reinterpret_cast<vec4_t const*>(params);
+        light.spotDir.x = mla3a(p->x, m[0], p->y, m[4], p->z, m[ 8], 0);
+        light.spotDir.y = mla3a(p->x, m[1], p->y, m[5], p->z, m[ 9], 0);
+        light.spotDir.z = mla3a(p->x, m[2], p->y, m[6], p->z, m[10], 0);
+        light.spotDir.w = 0;
 #endif
         vnorm3(light.normalizedSpotDir.v, light.spotDir.v);
         invalidate_lighting(c);
@@ -570,6 +682,11 @@ static void materialx(GLenum face, GLenum pname, GLfixed param, ogles_context_t*
     }
     if (ggl_unlikely(pname != GL_SHININESS)) {
         ogles_error(c, GL_INVALID_ENUM);
+        return;
+    }
+    // GL_SHININESS must be in [0, 128]
+    if (ggl_unlikely(param < 0 || param > gglIntToFixed(128))) {
+        ogles_error(c, GL_INVALID_VALUE);
         return;
     }
     c->lighting.front.shininess = param;
@@ -774,10 +891,17 @@ void glMaterialfv(
         what  = c->lighting.front.ambient.v;
         other = c->lighting.front.diffuse.v;
         break;
-    case GL_SHININESS:
-        c->lighting.front.shininess = gglFloatToFixed(params[0]);
+    case GL_SHININESS: {
+        // must be in [0, 128]
+        const GLfixed shininess = gglFloatToFixed(params[0]);
+        if (shininess < 0 || shininess > gglIntToFixed(128)) {
+            ogles_error(c, GL_INVALID_VALUE);
+            return;
+        }
+        c->lighting.front.shininess = shininess;
         invalidate_lighting(c);
         return;
+    }
     default:
         ogles_error(c, GL_INVALID_ENUM);
         return;
@@ -815,7 +939,14 @@ void glMaterialxv(
         other = c->lighting.front.diffuse.v;
         break;
     case GL_SHININESS:
-        c->lighting.front.shininess = gglFloatToFixed(params[0]);
+        // GLfixed input: use it directly (the old gglFloatToFixed()
+        // conversion re-scaled an already-fixed value) and validate
+        // that it is in [0, 128].
+        if (params[0] < 0 || params[0] > gglIntToFixed(128)) {
+            ogles_error(c, GL_INVALID_VALUE);
+            return;
+        }
+        c->lighting.front.shininess = params[0];
         invalidate_lighting(c);
         return;
     default:

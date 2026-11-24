@@ -27,6 +27,10 @@
 
 namespace android {
 
+// Symbian EGL revalidates the (possibly resized) window surface; a
+// no-op on other platforms. Defined in symbian/egl_symbian.cpp.
+extern "C" void pf_egl_sync_window_surface(void);
+
 // ----------------------------------------------------------------------------
 
 static void bindTextureTmu(
@@ -91,9 +95,14 @@ void validate_tmu(ogles_context_t* c, int i)
         c->rasterizer.procs.texParameteri(c, GGL_TEXTURE_2D,
                 GGL_TEXTURE_MAG_FILTER, u.texture->mag_filter);
 
-        // disable this texture unit if it's not complete
+        // disable this texture unit if it's not complete, restore it
+        // when the texture becomes complete again (the user's
+        // GL_TEXTURE_2D enable lives in u.enable and must survive
+        // temporary incompleteness)
         if (!u.texture->isComplete()) {
             c->rasterizer.procs.disable(c, GGL_TEXTURE_2D);
+        } else {
+            c->rasterizer.procs.enable(c, GGL_TEXTURE_2D);
         }
     }
 }
@@ -101,7 +110,11 @@ void validate_tmu(ogles_context_t* c, int i)
 void ogles_validate_texture(ogles_context_t* c)
 {
     for (int i=0 ; i<GGL_TEXTURE_UNIT_COUNT ; i++) {
-        if (c->rasterizer.state.texture[i].enable)
+        // driven by the user's (sticky) GL_TEXTURE_2D enable, not by
+        // the rasterizer's bit: validate_tmu() itself may have turned
+        // the latter off for an incomplete texture, and we must be
+        // able to turn it back on when that texture is completed
+        if (c->textures.tmu[i].enable)
             validate_tmu(c, i);
     }
     c->rasterizer.procs.activeTexture(c, c->textures.active);
@@ -383,6 +396,17 @@ int createTextureSurface(ogles_context_t* c,
     if (level > 0) {
         const int active = c->textures.active;
         EGLTextureObject* tex = c->textures.tmu[active].texture;
+        // ES 1.1: the level must fit the floor-halving mip chain of
+        // the base level (INVALID_OPERATION otherwise); without this,
+        // editMip() clamps an out-of-range level onto the last slot
+        // and silently corrupts it (and for a 1x1 base texture there
+        // is no slot at all, aliasing the base surface itself).
+        const int bw = tex->surface.width;
+        const int bh = tex->surface.height;
+        const int maxLevel = (bw > bh ? bw : bh) > 1 ?
+                31 - gglClz(bw > bh ? bw : bh) : 0;
+        if (level > maxLevel)
+            return GL_INVALID_OPERATION;
         status_t err = tex->reallocate(level,
                 width, height, stride, formatIdx, compressedFormat, bpr);
         if (err != NO_ERROR)
@@ -390,6 +414,11 @@ int createTextureSurface(ogles_context_t* c,
         GGLSurface& surface = tex->editMip(level);
         *outSurface = &surface;
         *outSize = size;
+        // Defining a mip can change completeness without replacing the
+        // base object. Revalidate every unit bound to that object.
+        for (int i = 0; i < GGL_TEXTURE_UNIT_COUNT; ++i)
+            if (c->textures.tmu[i].texture == tex)
+                invalidate_texture(c, i);
         return 0;
     }
 
@@ -598,10 +627,14 @@ void set_depth_and_fog(ogles_context_t* c, GGLfixed z)
     }
     if (enables & GGL_ENABLE_DEPTH_TEST) {
         // set up z-test if needed...
-        int32_t z = (Zw & ~(Zw>>31));
-        if (z >= 0x10000)
-            z = 0xFFFF;
-        iterators[0] = (z << 16) | z;
+        // the z iterators are 0.32 with the 16-bit depth in the top
+        // half; (z<<16)|z overflows for z >= 0x8000 and wraps the
+        // depth (the +0x8000 rounding in zGrad3xv finishes the job
+        // for z == 0xFFFF, pushing it to the far end of the buffer)
+        int32_t z16 = (Zw & ~(Zw>>31));
+        if (z16 >= 0x10000)
+            z16 = 0xFFFF;
+        iterators[0] = int32_t(uint32_t(z16) << 16);
         c->rasterizer.procs.zGrad3xv(c, iterators);
     }
 }
@@ -700,7 +733,9 @@ static void drawTexxOESImp(GLfixed x, GLfixed y, GLfixed z, GLfixed w, GLfixed h
 
     // set up all texture units
     for (int i=0 ; i<GGL_TEXTURE_UNIT_COUNT ; i++) {
-        if (!c->rasterizer.state.texture[i].enable)
+        // sticky GL_TEXTURE_2D enable (validate_tmu() below decides
+        // whether the rasterizer unit actually stays on)
+        if (!c->textures.tmu[i].enable)
             continue;
 
         int32_t texcoords[8];
@@ -762,6 +797,10 @@ static void drawTexxOES(GLfixed x, GLfixed y, GLfixed z, GLfixed w, GLfixed h,
     if ((w|h) <= 0)
         return;
 
+    // the window surface may have been resized behind our back (e.g.
+    // Symbian window server); revalidate before we touch any pixel
+    pf_egl_sync_window_surface();
+
     drawTexxOESImp(x, y, z, w, h, c);
 }
 
@@ -771,6 +810,10 @@ static void drawTexiOES(GLint x, GLint y, GLint z, GLint w, GLint h, ogles_conte
     // texture unit active and no scaling is required
     // THEN, we can use our special 1:1 mapping
     // which is a lot faster.
+
+    // the window surface may have been resized behind our back (e.g.
+    // Symbian window server); revalidate before we touch any pixel
+    pf_egl_sync_window_surface();
 
     if (ggl_likely(c->rasterizer.state.enabled_tmu == 1)) {
         const int tmu = 0;
@@ -973,6 +1016,12 @@ void glPixelStorei(GLenum pname, GLint param)
 void glTexEnvf(GLenum target, GLenum pname, GLfloat param)
 {
     ogles_context_t* c = ogles_context_t::get();
+    if (target == GL_POINT_SPRITE_OES && pname == GL_COORD_REPLACE_OES) {
+        if (param == 1.0f)          glTexEnvi(target, pname, GL_TRUE);
+        else if (param == 0.0f)     glTexEnvi(target, pname, GL_FALSE);
+        else                        ogles_error(c, GL_INVALID_ENUM);
+        return;
+    }
     c->rasterizer.procs.texEnvi(c, target, pname, GLint(param));
 }
 
@@ -980,6 +1029,10 @@ void glTexEnvfv(
         GLenum target, GLenum pname, const GLfloat *params)
 {
     ogles_context_t* c = ogles_context_t::get();
+    if (target == GL_POINT_SPRITE_OES && pname == GL_COORD_REPLACE_OES) {
+        glTexEnvf(target, pname, params[0]);
+        return;
+    }
     if (pname == GL_TEXTURE_ENV_MODE) {
         c->rasterizer.procs.texEnvi(c, target, pname, GLint(*params));
         return;
@@ -991,12 +1044,21 @@ void glTexEnvfv(
         c->rasterizer.procs.texEnvxv(c, target, pname, fixed);
         return;
     }
-    ogles_error(c, GL_INVALID_ENUM);
+    // COMBINE source/operand/scale pnames are scalar too.
+    glTexEnvf(target, pname, params[0]);
 }
 
 void glTexEnvx(GLenum target, GLenum pname, GLfixed param)
 {
     ogles_context_t* c = ogles_context_t::get();
+    if (target == GL_POINT_SPRITE_OES && pname == GL_COORD_REPLACE_OES) {
+        if (param == 0 || param == 1 || param == 0x10000) {
+            glTexEnvi(target, pname, param ? GL_TRUE : GL_FALSE);
+        } else {
+            ogles_error(c, GL_INVALID_ENUM);
+        }
+        return;
+    }
     c->rasterizer.procs.texEnvi(c, target, pname, param);
 }
 
@@ -1004,6 +1066,10 @@ void glTexEnvxv(
         GLenum target, GLenum pname, const GLfixed *params)
 {
     ogles_context_t* c = ogles_context_t::get();
+    if (target == GL_POINT_SPRITE_OES && pname == GL_COORD_REPLACE_OES) {
+        glTexEnvx(target, pname, params[0]);
+        return;
+    }
     c->rasterizer.procs.texEnvxv(c, target, pname, params);
 }
 

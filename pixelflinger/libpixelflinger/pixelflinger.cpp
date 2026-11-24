@@ -135,10 +135,11 @@ static void ggl_readBuffer(void* con, const GGLSurface* surface)
 static void ggl_depthBuffer(void* con, const GGLSurface* surface)
 {
     GGL_CONTEXT(c, con);
-    if (surface->format == GGL_PIXEL_FORMAT_Z_16) {
+    if (surface && surface->format == GGL_PIXEL_FORMAT_Z_16 && surface->data) {
         ggl_set_surface(c, &(c->state.buffers.depth), surface);
     } else {
         c->state.buffers.depth.format = GGL_PIXEL_FORMAT_NONE;
+        c->state.buffers.depth.data = 0;
         ggl_enable_depth_test(c, 0);
     }
 }
@@ -252,6 +253,10 @@ static void ggl_zGrad3xv(void* con, const GGLfixed32* grad)
     // z iterators are encoded as 0.32 fixed point and the z-buffer
     // holds 16 bits, the rounding value is 0x8000.
     const uint32_t round = 0x8000;
+    if (c->shade.wideDepth) {
+        c->shade.wideDepth = false;
+        ggl_state_changed(c, GGL_DEPTH_ITERATOR_STATE);
+    }
 	c->shade.z0   = grad[0] + round;
 	c->shade.dzdx = grad[1];
 	c->shade.dzdy = grad[2];
@@ -329,28 +334,145 @@ static void ggl_blendFuncSeparate(void* con,
 
 // ----------------------------------------------------------------------------
 
+static bool ggl_valid_combine_src(GGLint param)
+{
+    return param == GGL_TEXTURE || param == GGL_CONSTANT ||
+           param == GGL_PRIMARY_COLOR || param == GGL_PREVIOUS;
+}
+
 static void ggl_texEnvi(void* con,	GGLenum target,
 							GGLenum pname,
 							GGLint param)
 {
     GGL_CONTEXT(c, con);
-    if (target != GGL_TEXTURE_ENV || pname != GGL_TEXTURE_ENV_MODE) {
+    if (target != GGL_TEXTURE_ENV) {
         ggl_error(c, GGL_INVALID_ENUM);
         return;
     }
-    switch (param) {
-    case GGL_REPLACE:
-    case GGL_MODULATE:
-    case GGL_DECAL:
-    case GGL_BLEND:
-    case GGL_ADD:
-        if (c->activeTMU->env != param) {
-            c->activeTMU->env = param;
+    texture_combine_t& cb = c->activeTMU->combine;
+    switch (pname) {
+    case GGL_TEXTURE_ENV_MODE:
+        switch (param) {
+        case GGL_REPLACE:
+        case GGL_MODULATE:
+        case GGL_DECAL:
+        case GGL_BLEND:
+        case GGL_ADD:
+        case GGL_COMBINE:
+            if (c->activeTMU->env != param) {
+                c->activeTMU->env = param;
+                ggl_state_changed(c, GGL_TMU_STATE);
+            }
+            return;
+        default:
+            ggl_error(c, GGL_INVALID_ENUM);
+            return;
+        }
+    case GGL_COMBINE_RGB:
+        switch (param) {
+        case GGL_REPLACE:
+        case GGL_MODULATE:
+        case GGL_ADD:
+        case GGL_ADD_SIGNED:
+        case GGL_INTERPOLATE:
+        case GGL_SUBTRACT:
+        case GGL_DOT3_RGB:
+        case GGL_DOT3_RGBA:
+            if (cb.combine_rgb != param) {
+                cb.combine_rgb = param;
+                ggl_state_changed(c, GGL_TMU_STATE);
+            }
+            return;
+        default:
+            ggl_error(c, GGL_INVALID_ENUM);
+            return;
+        }
+    case GGL_COMBINE_ALPHA:
+        switch (param) {
+        case GGL_REPLACE:
+        case GGL_MODULATE:
+        case GGL_ADD:
+        case GGL_ADD_SIGNED:
+        case GGL_INTERPOLATE:
+        case GGL_SUBTRACT:
+            if (cb.combine_alpha != param) {
+                cb.combine_alpha = param;
+                ggl_state_changed(c, GGL_TMU_STATE);
+            }
+            return;
+        default:
+            ggl_error(c, GGL_INVALID_ENUM);
+            return;
+        }
+    case GGL_SRC0_RGB:
+    case GGL_SRC1_RGB:
+    case GGL_SRC2_RGB:
+        if (!ggl_valid_combine_src(param)) {
+            ggl_error(c, GGL_INVALID_ENUM);
+            return;
+        }
+        if (cb.src_rgb[pname - GGL_SRC0_RGB] != param) {
+            cb.src_rgb[pname - GGL_SRC0_RGB] = param;
             ggl_state_changed(c, GGL_TMU_STATE);
         }
-        break;
+        return;
+    case GGL_SRC0_ALPHA:
+    case GGL_SRC1_ALPHA:
+    case GGL_SRC2_ALPHA:
+        if (!ggl_valid_combine_src(param)) {
+            ggl_error(c, GGL_INVALID_ENUM);
+            return;
+        }
+        if (cb.src_alpha[pname - GGL_SRC0_ALPHA] != param) {
+            cb.src_alpha[pname - GGL_SRC0_ALPHA] = param;
+            ggl_state_changed(c, GGL_TMU_STATE);
+        }
+        return;
+    case GGL_OPERAND0_RGB:
+    case GGL_OPERAND1_RGB:
+    case GGL_OPERAND2_RGB:
+        if (param != GGL_SRC_COLOR && param != GGL_ONE_MINUS_SRC_COLOR &&
+            param != GGL_SRC_ALPHA && param != GGL_ONE_MINUS_SRC_ALPHA) {
+            ggl_error(c, GGL_INVALID_ENUM);
+            return;
+        }
+        if (cb.op_rgb[pname - GGL_OPERAND0_RGB] != param) {
+            cb.op_rgb[pname - GGL_OPERAND0_RGB] = param;
+            ggl_state_changed(c, GGL_TMU_STATE);
+        }
+        return;
+    case GGL_OPERAND0_ALPHA:
+    case GGL_OPERAND1_ALPHA:
+    case GGL_OPERAND2_ALPHA:
+        if (param != GGL_SRC_ALPHA && param != GGL_ONE_MINUS_SRC_ALPHA) {
+            ggl_error(c, GGL_INVALID_ENUM);
+            return;
+        }
+        if (cb.op_alpha[pname - GGL_OPERAND0_ALPHA] != param) {
+            cb.op_alpha[pname - GGL_OPERAND0_ALPHA] = param;
+            ggl_state_changed(c, GGL_TMU_STATE);
+        }
+        return;
+    case GGL_RGB_SCALE:
+    case GGL_ALPHA_SCALE: {
+        uint8_t sc = 0;
+        if (param == 1 || param == 0x10000)      sc = 1;
+        else if (param == 2 || param == 0x20000) sc = 2;
+        else if (param == 4 || param == 0x40000) sc = 4;
+        else {
+            ggl_error(c, GGL_INVALID_VALUE);
+            return;
+        }
+        uint8_t& dst = (pname == GGL_RGB_SCALE) ? cb.rgb_scale : cb.alpha_scale;
+        if (dst != sc) {
+            dst = sc;
+            ggl_state_changed(c, GGL_TMU_STATE);
+        }
+        return;
+    }
     default:
         ggl_error(c, GGL_INVALID_ENUM);
+        return;
     }
 }
 
@@ -364,6 +486,22 @@ static void ggl_texEnvxv(void* con, GGLenum target,
     }
     switch (pname) {
     case GGL_TEXTURE_ENV_MODE:
+    case GGL_COMBINE_RGB:
+    case GGL_COMBINE_ALPHA:
+    case GGL_SRC0_RGB:
+    case GGL_SRC1_RGB:
+    case GGL_SRC2_RGB:
+    case GGL_SRC0_ALPHA:
+    case GGL_SRC1_ALPHA:
+    case GGL_SRC2_ALPHA:
+    case GGL_OPERAND0_RGB:
+    case GGL_OPERAND1_RGB:
+    case GGL_OPERAND2_RGB:
+    case GGL_OPERAND0_ALPHA:
+    case GGL_OPERAND1_ALPHA:
+    case GGL_OPERAND2_ALPHA:
+    case GGL_RGB_SCALE:
+    case GGL_ALPHA_SCALE:
         ggl_texEnvi(con, target, pname, params[0]);
         break;
     case GGL_TEXTURE_ENV_COLOR: {
@@ -714,11 +852,15 @@ void ggl_enable_texture2d(context_t* c, int enable)
         const uint32_t tmu = c->activeTMUIndex;
         c->activeTMU->enable = enable;
         const uint32_t mask = 1UL << tmu;
+        const uint32_t oldEnables = c->state.enables;
         if (enable)                 c->state.enabled_tmu |= mask;
         else                        c->state.enabled_tmu &= ~mask;
         if (c->state.enabled_tmu)   c->state.enables |= GGL_ENABLE_TMUS;
         else                        c->state.enables &= ~GGL_ENABLE_TMUS;
-        ggl_state_changed(c, GGL_TMU_STATE);
+        int dirty = GGL_TMU_STATE;
+        if ((oldEnables ^ c->state.enables) & GGL_ENABLE_TMUS)
+            dirty |= GGL_PIXEL_PIPELINE_STATE;
+        ggl_state_changed(c, dirty);
     }
 }
 

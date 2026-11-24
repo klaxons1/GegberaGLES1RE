@@ -130,13 +130,41 @@ void ggl_pick(context_t* c)
     }
 
     if (c->dirty & GGL_TMU_STATE) {
-        int idx = 0;
         for (int i=0 ; i<GGL_TEXTURE_UNIT_COUNT ; ++i) {
             const texture_t& tx = c->state.texture[i];
             if (tx.enable) {
+                uint32_t env = tx.env;
+                if (env == GGL_COMBINE &&
+                    tx.combine.rgb_scale == 1 && tx.combine.alpha_scale == 1 &&
+                    tx.surface.format == GGL_PIXEL_FORMAT_RGBA_8888)
+                {
+                    const bool prevOk0 = (tx.combine.src_rgb[1] == GGL_PREVIOUS ||
+                        (i == 0 && tx.combine.src_rgb[1] == GGL_PRIMARY_COLOR));
+                    const bool prevOkA = (tx.combine.src_alpha[1] == GGL_PREVIOUS ||
+                        (i == 0 && tx.combine.src_alpha[1] == GGL_PRIMARY_COLOR));
+                    if (tx.combine.combine_rgb == GGL_MODULATE &&
+                        tx.combine.combine_alpha == GGL_MODULATE &&
+                        tx.combine.src_rgb[0] == GGL_TEXTURE && prevOk0 &&
+                        tx.combine.src_alpha[0] == GGL_TEXTURE && prevOkA &&
+                        tx.combine.op_rgb[0] == GGL_SRC_COLOR &&
+                        tx.combine.op_rgb[1] == GGL_SRC_COLOR &&
+                        tx.combine.op_alpha[0] == GGL_SRC_ALPHA &&
+                        tx.combine.op_alpha[1] == GGL_SRC_ALPHA)
+                    {
+                        env = GGL_MODULATE;
+                    } else if (tx.combine.combine_rgb == GGL_REPLACE &&
+                               tx.combine.combine_alpha == GGL_REPLACE &&
+                               tx.combine.src_rgb[0] == GGL_TEXTURE &&
+                               tx.combine.src_alpha[0] == GGL_TEXTURE &&
+                               tx.combine.op_rgb[0] == GGL_SRC_COLOR &&
+                               tx.combine.op_alpha[0] == GGL_SRC_ALPHA)
+                    {
+                        env = GGL_REPLACE;
+                    }
+                }
                 uint32_t t = 0;
                 t |= GGL_BUILD_NEEDS(tx.surface.format, T_FORMAT);
-                t |= GGL_BUILD_NEEDS(ggl_env_to_needs(tx.env), T_ENV);
+                t |= GGL_BUILD_NEEDS(ggl_env_to_needs(env), T_ENV);
                 t |= GGL_BUILD_NEEDS(0, T_POT);       // XXX: not used yet
                 if (tx.s_coord==GGL_ONE_TO_ONE && tx.t_coord==GGL_ONE_TO_ONE) {
                     // we encode 1-to-1 into the wrap mode
@@ -152,14 +180,14 @@ void ggl_pick(context_t* c)
                 if (tx.min_filter == GGL_LINEAR) {
                     t |= GGL_BUILD_NEEDS(1, T_LINEAR);
                 }
-                new_needs.t[idx++] = t;
+                new_needs.t[i] = t;
             } else {
                 new_needs.t[i] = 0;
             }
         }
     }
 
-    if (new_needs != c->state.needs) {
+    if (new_needs != c->state.needs || (c->dirty & GGL_DEPTH_ITERATOR_STATE)) {
         c->state.needs = new_needs;
         ggl_pick_texture(c);
         ggl_pick_cb(c);

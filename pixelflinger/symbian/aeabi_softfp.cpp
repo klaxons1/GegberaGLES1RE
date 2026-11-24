@@ -563,6 +563,55 @@ uint64_t PF_SOFTFP_NAME(dmul)(uint64_t a, uint64_t b)
     }
 }
 
+/* Double division is used by the inverse modelview (lighting) path. */
+uint64_t PF_SOFTFP_NAME(ddiv)(uint64_t a, uint64_t b)
+{
+    if (pf_d_isnan(a) || pf_d_isnan(b))
+        return 0x7FF8000000000000ULL;
+    const uint64_t sign = (a ^ b) & 0x8000000000000000ULL;
+    const uint64_t aa = a & 0x7FFFFFFFFFFFFFFFULL;
+    const uint64_t ab = b & 0x7FFFFFFFFFFFFFFFULL;
+    const uint64_t inf = 0x7FF0000000000000ULL;
+    if (aa == inf)
+        return ab == inf ? 0x7FF8000000000000ULL : (sign | inf);
+    if (ab == 0)
+        return aa == 0 ? 0x7FF8000000000000ULL : (sign | inf);
+    if (aa == 0 || ab == inf)
+        return sign;
+    int ea = int(aa >> 52), eb = int(ab >> 52);
+    uint64_t ma = aa & 0x000FFFFFFFFFFFFFULL;
+    uint64_t mb = ab & 0x000FFFFFFFFFFFFFULL;
+    if (!ea) {
+        const int sh = pf_clz64(ma) - 11;
+        ma <<= sh;
+        ea = 1 - sh;
+    } else {
+        ma |= 1ULL << 52;
+    }
+    if (!eb) {
+        const int sh = pf_clz64(mb) - 11;
+        mb <<= sh;
+        eb = 1 - sh;
+    } else {
+        mb |= 1ULL << 52;
+    }
+    int exp = ea - eb;
+    if (ma < mb) {
+        ma <<= 1;
+        --exp;
+    }
+    uint64_t rem = ma, q = 0;
+    for (int i = 55; i >= 0; --i) {
+        if (rem >= mb) {
+            rem -= mb;
+            q |= 1ULL << i;
+        }
+        rem <<= 1;
+    }
+    if (rem) q |= 1;
+    return pf_pack_f64(sign, exp, q);
+}
+
 int PF_SOFTFP_NAME(dcmplt)(uint64_t a, uint64_t b)
 {
     if (pf_d_isnan(a) || pf_d_isnan(b))
@@ -573,6 +622,11 @@ int PF_SOFTFP_NAME(dcmplt)(uint64_t a, uint64_t b)
     if (sa != sb)
         return sa ? 1 : 0;
     return sa ? ((a > b) ? 1 : 0) : ((a < b) ? 1 : 0);
+}
+
+int PF_SOFTFP_NAME(dcmpgt)(uint64_t a, uint64_t b)
+{
+    return PF_SOFTFP_NAME(dcmplt)(b, a);
 }
 
 #ifndef PF_SOFTFP_PREFIX

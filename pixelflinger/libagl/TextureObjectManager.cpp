@@ -192,6 +192,11 @@ status_t EGLTextureObject::reallocate(
             if (allocateMipmaps() != NO_ERROR)
                 return NO_MEMORY;
         }
+        if (!mMipmaps) {
+            // no room for any extra LOD (1x1 base texture): editMip()
+            // would alias the base surface and clobber it
+            return NO_INIT;
+        }
 
         ALOGW_IF(level-1 >= mNumExtraLod,
                 "specifying mipmap level %d, but # of level is %d",

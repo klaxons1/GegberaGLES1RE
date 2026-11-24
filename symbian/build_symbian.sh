@@ -31,42 +31,97 @@ asset_url = None
 for rel in releases:
     for a in rel.get("assets", []):
         if "linux" in a["name"].lower() and a["name"].endswith((".tar.gz", ".tgz", ".tar.xz")):
-            asset_url = a["browser_download_url"]
-            asset_name = a["name"]
+            asset_url, asset_name = a["browser_download_url"], a["name"]
             break
     if asset_url:
         break
-assert asset_url, "Could not find Linux gcc-symbian release asset"
-archive = os.path.join(tools_dir, asset_name)
-subprocess.check_call(["curl", "-L", "-o", archive, asset_url])
+if asset_url:
+    archive = os.path.join(tools_dir, asset_name)
+    subprocess.check_call(["curl", "--fail", "-L", "-o", archive, asset_url])
+else:
+    # gcc-symbian distributes its current packages in bin/, not Releases.
+    # Use the GitHub API so this also works with restricted build networks.
+    import hashlib
+    api = "https://api.github.com/repos/klaxons1/gcc-symbian/contents/bin"
+    headers = {"User-Agent": "gerbera-symbian-build"}
+    entries = json.loads(urllib.request.urlopen(urllib.request.Request(api, headers=headers)).read())
+    package = next(e for e in entries if "linux" in e["name"] and e["name"].endswith(".tar.xz"))
+    asset_name = package["name"]
+    def raw_entry(url):
+        return urllib.request.urlopen(urllib.request.Request(url, headers=dict(
+            headers, Accept="application/vnd.github.raw+json"))).read()
+    archive_data = raw_entry(package["url"])
+    checksums = raw_entry(api + "/SHA256SUMS").decode()
+    expected = next(line.split()[0] for line in checksums.splitlines() if line.split()[-1].lstrip("*") == asset_name)
+    assert hashlib.sha256(archive_data).hexdigest() == expected, "Toolchain checksum mismatch"
+    archive = os.path.join(tools_dir, asset_name)
+    with open(archive, "wb") as out:
+        out.write(archive_data)
 extract_dir = os.path.join(tools_dir, "gcc_extract")
 os.makedirs(extract_dir, exist_ok=True)
 with tarfile.open(archive) as tf:
     tf.extractall(extract_dir)
 entries = os.listdir(extract_dir)
-root = os.path.join(extract_dir, entries[0]) if len(entries) == 1 else extract_dir
+# Current archives contain gcc/ alongside gcc-fp-src/.
+root = os.path.join(extract_dir, "gcc")
+if not os.path.isdir(root):
+    root = os.path.join(extract_dir, entries[0]) if len(entries) == 1 else extract_dir
 os.rename(root, os.path.join(tools_dir, "gcc"))
 
-# Patch GLIBC_2.38 __isoc23_strtol/strtoul/sscanf symbols in binutils if host glibc < 2.38
+
+# Older Linux packages use C23 aliases unavailable on Debian 12.
+# Patch only imported aliases, preserving ELF sizes, and redirect their
+# version requirement to the existing GLIBC_2.2.5 version (including hash).
+import struct
 for sub in ("bin", "arm-none-symbianelf/bin"):
-    d = os.path.join(tools_dir, "gcc", sub)
-    if not os.path.isdir(d):
+    directory = os.path.join(tools_dir, "gcc", sub)
+    if not os.path.isdir(directory):
         continue
-    for fn in os.listdir(d):
-        p = os.path.join(d, fn)
-        if not os.path.isfile(p) or os.path.islink(p):
+    for fn in os.listdir(directory):
+        path = os.path.join(directory, fn)
+        if not os.path.isfile(path) or os.path.islink(path):
             continue
-        data = open(p, "rb").read()
-        if b"__isoc23_" in data:
-            for old, new in [
-                (b"__isoc23_strtoul", b"strtoul\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
-                (b"__isoc23_strtol",  b"strtol\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
-                (b"__isoc23_sscanf",  b"sscanf\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
-                (b"GLIBC_2.38",      b"GLIBC_2.34"),
-            ]:
-                data = data.replace(old, new)
-            with open(p, "wb") as out:
-                out.write(data)
+        data = bytearray(open(path, "rb").read())
+        if data[:5] != b"\x7fELF\x02" or b"GLIBC_2.38" not in data:
+            continue
+        for old, new in [(b"__isoc23_strtoul", b"strtoul"),
+                         (b"__isoc23_strtol", b"strtol"),
+                         (b"__isoc23_sscanf", b"sscanf")]:
+            data = data.replace(old, new.ljust(len(old), b"\0"))
+        shoff = struct.unpack_from("<Q", data, 40)[0]
+        shsize, shnum = struct.unpack_from("<HH", data, 58)
+        sections = [struct.unpack_from("<IIQQQQIIQQ", data, shoff + i*shsize) for i in range(shnum)]
+        for section in sections:
+            if section[1] != 0x6ffffffe:  # SHT_GNU_verneed
+                continue
+            strings = sections[section[6]]
+            string_base = strings[4]
+            old_name = b"GLIBC_2.38\0"
+            target_name = b"GLIBC_2.2.5\0"
+            target_off = data.index(target_name, string_base, string_base + strings[5]) - string_base
+            # ELF SysV hash of the replacement version name.
+            version_hash = 0
+            for ch in target_name[:-1]:
+                version_hash = (version_hash << 4) + ch
+                high = version_hash & 0xf0000000
+                version_hash ^= high >> 24
+                version_hash &= ~high
+            pos = section[4]
+            while True:
+                _, count, _, aux, nxt = struct.unpack_from("<HHIII", data, pos)
+                apos = pos + aux
+                for _ in range(count):
+                    name_off, anext = struct.unpack_from("<II", data, apos + 8)
+                    if data[string_base + name_off:string_base + name_off + len(old_name)] == old_name:
+                        struct.pack_into("<I", data, apos, version_hash)
+                        struct.pack_into("<I", data, apos + 8, target_off)
+                    apos += anext
+                if not nxt:
+                    break
+                pos += nxt
+        with open(path, "wb") as out:
+            out.write(data)
+
 PY
 fi
 

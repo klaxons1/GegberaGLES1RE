@@ -51,6 +51,22 @@ void ggl_init_texture(context_t* c)
         t.min_filter = GGL_NEAREST;
         t.mag_filter = GGL_NEAREST;
         t.env = GGL_MODULATE;
+        t.combine.combine_rgb   = GGL_MODULATE;
+        t.combine.combine_alpha = GGL_MODULATE;
+        t.combine.src_rgb[0]    = GGL_TEXTURE;
+        t.combine.src_rgb[1]    = GGL_PREVIOUS;
+        t.combine.src_rgb[2]    = GGL_CONSTANT;
+        t.combine.src_alpha[0]  = GGL_TEXTURE;
+        t.combine.src_alpha[1]  = GGL_PREVIOUS;
+        t.combine.src_alpha[2]  = GGL_CONSTANT;
+        t.combine.op_rgb[0]     = GGL_SRC_COLOR;
+        t.combine.op_rgb[1]     = GGL_SRC_COLOR;
+        t.combine.op_rgb[2]     = GGL_SRC_ALPHA;
+        t.combine.op_alpha[0]   = GGL_SRC_ALPHA;
+        t.combine.op_alpha[1]   = GGL_SRC_ALPHA;
+        t.combine.op_alpha[2]   = GGL_SRC_ALPHA;
+        t.combine.rgb_scale     = 1;
+        t.combine.alpha_scale   = 1;
     }
     c->activeTMU = &(c->state.texture[0]);
 }

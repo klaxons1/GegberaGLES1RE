@@ -45,7 +45,7 @@ static char const * const gExtensionsString =
     "GL_OES_matrix_get "                    // OK
     "GL_OES_query_matrix "                  // OK
     "GL_OES_point_size_array "              // OK
-    //        "GL_OES_point_sprite "                  // TODO
+    "GL_OES_point_sprite "                  // OK
     "GL_OES_EGL_image "                     // OK
     "GL_OES_EGL_sync "                      // OK
 #ifdef GL_OES_compressed_ETC1_RGB8_texture
@@ -150,6 +150,9 @@ static void enable_disable(ogles_context_t* c, GLenum cap, int enabled)
     case GL_POINT_SMOOTH:
         c->point.smooth = enabled;
         break;
+    case GL_POINT_SPRITE_OES:
+        c->point.sprite = enabled;
+        break;
     case GL_LINE_SMOOTH:
         c->line.smooth = enabled;
         break;
@@ -166,9 +169,12 @@ static void enable_disable(ogles_context_t* c, GLenum cap, int enabled)
         c->lighting.colorMaterial.enable = enabled;
         break;
     case GL_NORMALIZE:
+        c->transforms.normalize = enabled ? GL_TRUE : GL_FALSE;
+        c->transforms.dirty |= transform_state_t::MVUI;
+        break;
     case GL_RESCALE_NORMAL:
-        c->transforms.rescaleNormals = enabled ? cap : 0;
-        // XXX: invalidate mvit
+        c->transforms.rescaleNormals = enabled ? GL_RESCALE_NORMAL : 0;
+        c->transforms.dirty |= transform_state_t::MVUI;
         break;
 
     case GL_CLIP_PLANE0:
@@ -182,8 +188,12 @@ static void enable_disable(ogles_context_t* c, GLenum cap, int enabled)
         ogles_invalidate_perspective(c);
         break;
 
-    case GL_FOG:
     case GL_DEPTH_TEST:
+        c->depthTest = enabled ? 1 : 0;
+        ogles_invalidate_perspective(c);
+        c->rasterizer.procs.enableDisable(c, cap, enabled);
+        break;
+    case GL_FOG:
         ogles_invalidate_perspective(c);
         // fall-through...
     case GL_BLEND:
@@ -192,13 +202,17 @@ static void enable_disable(ogles_context_t* c, GLenum cap, int enabled)
     case GL_COLOR_LOGIC_OP:
     case GL_DITHER:
     case GL_STENCIL_TEST:
-    case GL_TEXTURE_2D:
         // these need to fall through into the rasterizer
         c->rasterizer.procs.enableDisable(c, cap, enabled);
         break;
-    case GL_TEXTURE_EXTERNAL_OES:
+    case GL_TEXTURE_2D:
+    case GL_TEXTURE_EXTERNAL_OES: {
+        texture_unit_t& u = c->textures.tmu[c->textures.active];
+        u.enable = enabled ? 1 : 0;
+        u.dirty = 0xFF;
         c->rasterizer.procs.enableDisable(c, GL_TEXTURE_2D, enabled);
         break;
+    }
 
     case GL_MULTISAMPLE:
     case GL_SAMPLE_ALPHA_TO_COVERAGE:
@@ -495,8 +509,8 @@ void glGetIntegerv(GLenum pname, GLint *params)
 void glPointSize(GLfloat size)
 {
     ogles_context_t* c = ogles_context_t::get();
-    if (size <= 0) {
-        ogles_error(c, GL_INVALID_ENUM);
+    if (!(size > 0.0f)) {
+        ogles_error(c, GL_INVALID_VALUE);
         return;
     }
     c->point.size = TRI_FROM_FIXED(gglFloatToFixed(size));
@@ -506,7 +520,7 @@ void glPointSizex(GLfixed size)
 {
     ogles_context_t* c = ogles_context_t::get();
     if (size <= 0) {
-        ogles_error(c, GL_INVALID_ENUM);
+        ogles_error(c, GL_INVALID_VALUE);
         return;
     }
     c->point.size = TRI_FROM_FIXED(size);
@@ -517,8 +531,8 @@ void glPointSizex(GLfixed size)
 void glLineWidth(GLfloat width)
 {
     ogles_context_t* c = ogles_context_t::get();
-    if (width <= 0) {
-        ogles_error(c, GL_INVALID_ENUM);
+    if (!(width > 0.0f)) {
+        ogles_error(c, GL_INVALID_VALUE);
         return;
     }
     c->line.width = TRI_FROM_FIXED(gglFloatToFixed(width));
@@ -528,7 +542,7 @@ void glLineWidthx(GLfixed width)
 {
     ogles_context_t* c = ogles_context_t::get();
     if (width <= 0) {
-        ogles_error(c, GL_INVALID_ENUM);
+        ogles_error(c, GL_INVALID_VALUE);
         return;
     }
     c->line.width = TRI_FROM_FIXED(width);

@@ -27,6 +27,10 @@
 #include "texture.h"
 #include "BufferObjectManager.h"
 
+// Symbian EGL revalidates the (possibly resized) window surface; a
+// no-op on other platforms. Defined in symbian/egl_symbian.cpp.
+extern "C" void pf_egl_sync_window_surface(void);
+
 // ----------------------------------------------------------------------------
 
 #define VC_CACHE_STATISTICS     0
@@ -163,6 +167,12 @@ static void fetch2x(ogles_context_t*, GLfixed* v, const GLfixed* p) {
 static void fetch2f(ogles_context_t*, GLfixed* v, const GLfloat* p) {
     v[0] = gglFloatToFixed(p[0]);
     v[1] = gglFloatToFixed(p[1]);
+}
+static void fetch1x(ogles_context_t*, GLfixed* v, const GLfixed* p) {
+    v[0] = p[0];
+}
+static void fetch1f(ogles_context_t*, GLfixed* v, const GLfloat* p) {
+    v[0] = gglFloatToFixed(p[0]);
 }
 static void fetch3b(ogles_context_t*, GLfixed* v, const GLbyte* p) {
     v[0] = gglIntToFixed(p[0]);
@@ -301,6 +311,12 @@ static const fn_t texture_fct[3][16] = { // size={2,3,4}, type={b,s,f,x}
       (fn_t)fetch4s, 0, 0, 0,
       (fn_t)fetch4f, 0, 0, 0, 0, 0,
       (fn_t)fetch4x }
+};
+
+static const fn_t pointSize_fct[16] = { // size=1, type={f,x}
+    (fn_t)fetch1x, 0, 0, 0, 0, 0,
+    (fn_t)fetch1f, 0, 0, 0, 0, 0,
+    0, 0, 0, 0
 };
 
 // ----------------------------------------------------------------------------
@@ -1084,6 +1100,22 @@ static void clipEye(ogles_context_t* c, vertex_t* nv,
 
 void validate_arrays(ogles_context_t* c, GLenum mode)
 {
+    // textures...
+    // (not gated on GGL_ENABLE_TMUS: that rasterizer bit is cleared
+    // for incomplete textures / all-units-off, but the sticky enables
+    // still need revalidation when a texture is completed)
+    {
+        bool anyTextureEnabled = false;
+        for (int i=0 ; i<GGL_TEXTURE_UNIT_COUNT ; i++) {
+            if (c->textures.tmu[i].enable) {
+                anyTextureEnabled = true;
+                break;
+            }
+        }
+        if (anyTextureEnabled)
+            ogles_validate_texture(c);
+    }
+
     uint32_t enables = c->rasterizer.state.enables;
 
     // Perspective correction is not need if Ortho transform, but
@@ -1130,10 +1162,6 @@ void validate_arrays(ogles_context_t* c, GLenum mode)
     }
     ogles_validate_transform(c, want);
 
-    // textures...
-    if (enables & GGL_ENABLE_TMUS)
-        ogles_validate_texture(c);
-
     // vertex compilers
     c->arrays.compileElement = compileElement__generic;
     c->arrays.compileElements = compileElements__generic;
@@ -1154,7 +1182,12 @@ void validate_arrays(ogles_context_t* c, GLenum mode)
     array_machine_t& am = c->arrays;
     am.vertex.fetch = fetchNop;
     am.normal.fetch = currentNormal;
-    am.color.fetch = currentColor;
+    // when lighting is off, vertex colors go straight to the
+    // rasterizer (e.g. through lightTriangleDark*) which cannot handle
+    // values outside of [0,1] -- clamp the current color too when no
+    // color array is bound (an enabled color array already picks
+    // color_clamp_fct below)
+    am.color.fetch = c->lighting.enable ? currentColor : currentColor_clamp;
 
     if (am.vertex.enable) {
         am.vertex.resolve();
@@ -1180,6 +1213,14 @@ void validate_arrays(ogles_context_t* c, GLenum mode)
             if (am.color.bo || am.color.pointer) {
                 am.color.fetch = color_clamp_fct[am.color.size-3][am.color.type & 0xF];
             }
+        }
+    }
+
+    if (am.pointSize.enable) {
+        am.pointSize.resolve();
+        if (am.pointSize.bo || am.pointSize.pointer) {
+            am.pointSize.fetch =
+                    pointSize_fct[am.pointSize.type & 0xF];
         }
     }
 
@@ -1366,9 +1407,16 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count)
 
     if (count == 0 || !c->arrays.vertex.enable)
         return;
-    if ((c->cull.enable) && (c->cull.cullFace == GL_FRONT_AND_BACK))
+    // GL_FRONT_AND_BACK culls triangles only: lines and points must
+    // still be drawn
+    if ((mode >= GL_TRIANGLES) &&
+            (c->cull.enable) && (c->cull.cullFace == GL_FRONT_AND_BACK))
         return; // all triangles are culled
 
+    // the window surface may have been resized behind our back (e.g.
+    // Symbian window server); revalidate the framebuffer bindings
+    // before we touch any pixel
+    pf_egl_sync_window_surface();
 
     validate_arrays(c, mode);
 
@@ -1419,8 +1467,16 @@ void glDrawElements(
     }
     if (count == 0 || !c->arrays.vertex.enable)
         return;
-    if ((c->cull.enable) && (c->cull.cullFace == GL_FRONT_AND_BACK))
+    // GL_FRONT_AND_BACK culls triangles only: lines and points must
+    // still be drawn
+    if ((mode >= GL_TRIANGLES) &&
+            (c->cull.enable) && (c->cull.cullFace == GL_FRONT_AND_BACK))
         return; // all triangles are culled
+
+    // the window surface may have been resized behind our back (e.g.
+    // Symbian window server); revalidate the framebuffer bindings
+    // before we touch any pixel
+    pf_egl_sync_window_surface();
 
     // clear the vertex-cache
     c->vc.clear();
@@ -1567,6 +1623,11 @@ void glDeleteBuffers(GLsizei n, const GLuint* buffers)
             if (c->arrays.color.bo) {
                 if (c->arrays.color.bo->name == name) {
                     c->arrays.color.bo = 0;
+                }
+            }
+            if (c->arrays.pointSize.bo) {
+                if (c->arrays.pointSize.bo->name == name) {
+                    c->arrays.pointSize.bo = 0;
                 }
             }
             for (int t=0 ; t<GGL_TEXTURE_UNIT_COUNT ; t++) {

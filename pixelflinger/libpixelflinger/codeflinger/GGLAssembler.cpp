@@ -734,7 +734,7 @@ void GGLAssembler::build_depth_test(
         case GGL_LESS:      ic = HI;    break;
         case GGL_EQUAL:     ic = EQ;    break;
         case GGL_LEQUAL:    ic = HS;    break;
-        case GGL_GREATER:   ic = LT;    break;
+        case GGL_GREATER:   ic = LO;    break;
         case GGL_NOTEQUAL:  ic = NE;    break;
         case GGL_GEQUAL:    ic = LS;    break;
         case GGL_NEVER:

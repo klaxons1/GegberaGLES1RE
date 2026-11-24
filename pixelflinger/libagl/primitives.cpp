@@ -21,6 +21,7 @@
 
 #include "context.h"
 #include "primitives.h"
+#include "trap.h"
 #include "light.h"
 #include "matrix.h"
 #include "vertex.h"
@@ -45,6 +46,9 @@ static void primitive_nop_triangle(ogles_context_t* c,
         vertex_t* v0, vertex_t* v1, vertex_t* v2);
 
 static inline bool cull_triangle(ogles_context_t* c,
+        vertex_t* v0, vertex_t* v1, vertex_t* v2);
+
+static inline void light_triangle(ogles_context_t* c,
         vertex_t* v0, vertex_t* v1, vertex_t* v2);
 
 static void lerp_triangle(ogles_context_t* c,
@@ -347,13 +351,33 @@ void compute_iterators_t::iterators1616(GGLfixed* it,
 void compute_iterators_t::iterators0032(int64_t* it,
         int32_t c0, int32_t c1, int32_t c2) const
 {
+    // The reciprocal-area shift must not be applied to the (17-bit)
+    // depth differences in 32-bit: m_area_scale - 16 can be negative
+    // or >= 32 for large/degenerate triangles, which is undefined
+    // behaviour for >>. Do the cross-products
+    //      dcdx = dc01*dy02 + dc02*dy10
+    //      dcdy = dc02*dx01 + dc01*dx20
+    // in 64-bit first, then shift.
     const int s = m_area_scale - 16;
-    int32_t dc01 = (c1 - c0)>>s;
-    int32_t dc02 = (c2 - c0)>>s;
-    // 16.16 x 16.16 == 32.32
-    int64_t dcdx = gglMulii(dc01, m_dy02) + gglMulii(dc02, m_dy10);
-    int64_t dcdy = gglMulii(dc02, m_dx01) + gglMulii(dc01, m_dx20);
-    it[ 0] = (c0<<16) - ((dcdx*m_x0 + dcdy*m_y0)>>4);
+    int64_t dc01 = int64_t(c1) - c0;
+    int64_t dc02 = int64_t(c2) - c0;
+    if (s >= 63) {
+        dc01 = dc02 = 0;
+    } else if (s >= 0) {
+        dc01 >>= s;
+        dc02 >>= s;
+    } else if (s > -62) {
+        dc01 *= int64_t(1) << -s;
+        dc02 *= int64_t(1) << -s;
+    }
+    const int64_t dcdx = dc01 * m_dy02 + dc02 * m_dy10;
+    const int64_t dcdy = dc02 * m_dx01 + dc01 * m_dx20;
+    // Keep the origin signed: it can be outside the depth range even
+    // when all three vertices are inside. Depth itself is unsigned
+    // 16-bit in the top half of a 32-bit word; shifting in 64-bit
+    // avoids sign extension before polygon-offset evaluation.
+    const int64_t origin = dcdx * int64_t(m_x0) + dcdy * int64_t(m_y0);
+    it[ 0] = (int64_t(uint32_t(c0)) << 16) - (origin >> 4);
     it[ 1] = dcdx;
     it[ 2] = dcdy;
 }
@@ -461,6 +485,10 @@ void primitive_point(ogles_context_t* c, vertex_t* v)
     // lighting & clamping...
     const uint32_t enables = c->rasterizer.state.enables;
 
+    // points have no facing: never let a stale two-sided back-face
+    // flag from a previous triangle reverse the normal here
+    c->lighting.backFace = GL_FALSE;
+
     if (ggl_unlikely(!(v->flags & vertex_t::LIT))) {
         if (c->lighting.enable) {
             c->lighting.lightVertex(c, v);
@@ -476,35 +504,133 @@ void primitive_point(ogles_context_t* c, vertex_t* v)
     }
 
     // XXX: we don't need to do that each-time
-    // if color array and lighting not enabled 
+    // if color array and lighting not enabled
     c->rasterizer.procs.color4xv(c, v->color.v);
 
-    // XXX: look into ES point-sprite extension
+    // resolve the point size: GL_POINT_SIZE_ARRAY_OES overrides
+    // glPointSize(), then GL_POINT_DISTANCE_ATTENUATION scales it by
+    // the eye distance and [GL_POINT_SIZE_MIN, GL_POINT_SIZE_MAX]
+    // clamps the result.
+    GGLfixed sizeF;
+    if (ggl_unlikely(c->arrays.pointSize.enable)) {
+        GLfixed sz[4] = { 0, 0, 0, 0 };
+        const GLvoid* sp = c->arrays.pointSize.element(
+                v->index & vertex_cache_t::INDEX_MASK);
+        c->arrays.pointSize.fetch(c, sz, sp);
+        sizeF = sz[0];
+    } else {
+        sizeF = GLfixed((int64_t(c->point.size) << 16) / TRI_ONE);
+    }
+    if (sizeF < 0)
+        sizeF = 0;
+
+    const GLfixed* const att = c->point.attenuation;
+    if (ggl_unlikely(att[0] != FIXED_ONE || att[1] || att[2])) {
+        // distance from the eye to the vertex
+        GGLfixed ez;
+        if (v->flags & vertex_t::EYE) {
+            ez = v->eye.z;
+        } else {
+            vec4_t o;
+            const transform_t& mv = c->transforms.modelview.transform;
+            mv.point4(&mv, &o, &v->obj);
+            ez = o.z;
+        }
+        GGLfixed d = (ez < 0) ? -ez : 0;
+        if (d > 0x7FFF) d = 0x7FFF;  // keeps d*d inside 32 bits
+        const GGLfixed d2 = gglMulx(d, d);
+        int64_t denom = uint32_t(att[0]);
+        denom += (int64_t(att[1]) * d) >> 16;
+        denom += (int64_t(att[2]) * d2) >> 16;
+        if (denom <= 0) {
+            sizeF = 0;
+        } else {
+            if (denom > 0x7FFFFFFF) denom = 0x7FFFFFFF;
+            int64_t ns = (int64_t(sizeF) << 16) / denom;
+            if (ns > 0x7FFFFFFF) ns = 0x7FFFFFFF;
+            sizeF = GGLfixed(ns);
+        }
+    }
+    if (sizeF < c->point.sizeMin) sizeF = c->point.sizeMin;
+    if (sizeF > c->point.sizeMax) sizeF = c->point.sizeMax;
+    const GGLcoord size = TRI_FROM_FIXED(sizeF);
+
     if (enables & GGL_ENABLE_TMUS) {
         fetch_texcoord(c, v,v,v);
+        // GL_OES_point_sprite + GL_COORD_REPLACE_OES: (s,t) run over
+        // [0,1] across the point quad (origin upper-left), replacing
+        // the vertex texture coordinates on that texture unit.
+        const bool sprite = c->point.sprite;
+        GGLcoord pl = 0, pt = 0, psx = 1, psy = 1;
+        if (ggl_unlikely(sprite)) {
+            // same positioning math as pointx()/recti()
+            GGLcoord halfSize = TRI_ROUND(size) >> 1;
+            if (halfSize == 0)
+                halfSize = TRI_HALF;
+            GGLcoord xc = v->window.x;
+            GGLcoord yc = v->window.y;
+            if (halfSize & TRI_HALF) {
+                xc = TRI_FLOOR(xc) + TRI_HALF;
+                yc = TRI_FLOOR(yc) + TRI_HALF;
+            } else {
+                xc = TRI_ROUND(xc);
+                yc = TRI_ROUND(yc);
+            }
+            pl = (xc - halfSize) >> TRI_FRACTION_BITS;
+            pt = (yc - halfSize) >> TRI_FRACTION_BITS;
+            const GGLcoord pr = (xc + halfSize) >> TRI_FRACTION_BITS;
+            const GGLcoord pb = (yc + halfSize) >> TRI_FRACTION_BITS;
+            psx = pr - pl;
+            psy = pb - pt;
+            if (psx < 1) psx = 1;
+            if (psy < 1) psy = 1;
+        }
         for (int i=0 ; i<GGL_TEXTURE_UNIT_COUNT ; i++) {
-            if (!c->rasterizer.state.texture[i].enable) 
+            if (!c->rasterizer.state.texture[i].enable)
                 continue;
+            const bool replace = sprite && c->textures.tmu[i].coordReplace;
+            const int width  = c->textures.tmu[i].texture->surface.width;
+            const int height = c->textures.tmu[i].texture->surface.height;
+            const bool clampS = c->rasterizer.state.texture[i].s_wrap == GGL_CLAMP;
+            const bool clampT = c->rasterizer.state.texture[i].t_wrap == GGL_CLAMP;
             int32_t itt[8];
             itt[1] = itt[2] = itt[4] = itt[5] = 0;
-            itt[6] = itt[7] = 16; // XXX: check that
-            if (c->rasterizer.state.texture[i].s_wrap == GGL_CLAMP) {
-                int width = c->textures.tmu[i].texture->surface.width;
-                itt[0] = v->texture[i].S * width;
-                itt[6] = 0;
-            }
-            if (c->rasterizer.state.texture[i].t_wrap == GGL_CLAMP) {
-                int height = c->textures.tmu[i].texture->surface.height;
-                itt[3] = v->texture[i].T * height;
-                itt[7] = 0;
+            itt[6] = itt[7] = 0;
+            if (ggl_unlikely(replace)) {
+                // s,t in [0,1] across the quad; CLAMP expects the
+                // coordinates premultiplied by the texture size
+                const int64_t dsx = clampS
+                        ? ((int64_t(width)  << 16) / psx)
+                        : ((int64_t)0x10000 / psx);
+                const int64_t dsy = clampT
+                        ? ((int64_t(height) << 16) / psy)
+                        : ((int64_t)0x10000 / psy);
+                itt[0] = int32_t(uint32_t(0u - uint32_t(int32_t(pl)) *
+                                           uint32_t(int32_t(dsx))));
+                itt[1] = int32_t(dsx);
+                itt[3] = int32_t(uint32_t(0u - uint32_t(int32_t(pt)) *
+                                           uint32_t(int32_t(dsy))));
+                itt[5] = int32_t(dsy);
+            } else {
+                itt[0] = v->texture[i].S;
+                itt[3] = v->texture[i].T;
+                if (clampS) {
+                    itt[0] = int32_t(uint32_t(itt[0]) * uint32_t(width));
+                }
+                if (clampT) {
+                    itt[3] = int32_t(uint32_t(itt[3]) * uint32_t(height));
+                }
             }
             c->rasterizer.procs.texCoordGradScale8xv(c, i, itt);
         }
     }
-    
+
     if (enables & GGL_ENABLE_DEPTH_TEST) {
         int32_t itz[3];
-        itz[0] = clampZ(v->window.z) * 0x00010001;
+        // z iterators are 0.32 (depth16 in the top half); multiplying
+        // by 0x00010001 overflows for z >= 0x8000 and wraps the
+        // near plane to the far end of the buffer.
+        itz[0] = int32_t(uint32_t(clampZ(v->window.z)) << 16);
         itz[1] = itz[2] = 0;
         c->rasterizer.procs.zGrad3xv(c, itz);
     }
@@ -517,7 +643,7 @@ void primitive_point(ogles_context_t* c, vertex_t* v)
     }
 
     // Render our point...
-    c->rasterizer.procs.pointx(c, v->window.v, c->point.size);
+    c->rasterizer.procs.pointx(c, v->window.v, size);
 }
 
 // ----------------------------------------------------------------------------
@@ -534,6 +660,10 @@ void primitive_line(ogles_context_t* c, vertex_t* v0, vertex_t* v1)
     // get texture coordinates
     fetch_texcoord(c, v0, v1, v1);
 
+    // lines have no facing and glPolygonOffset does not apply to them
+    c->lighting.backFace = GL_FALSE;
+    c->applyPolygonOffset = 0;
+
     // light/shade the vertices first (they're copied below)
     c->lighting.lightTriangle(c, v0, v1, v1);
 
@@ -548,7 +678,7 @@ void primitive_line(ogles_context_t* c, vertex_t* v0, vertex_t* v1)
     const uint32_t enables = c->rasterizer.state.enables;
     const uint32_t mask =   GGL_ENABLE_TMUS |
                             GGL_ENABLE_SMOOTH |
-                            GGL_ENABLE_W | 
+                            GGL_ENABLE_W |
                             GGL_ENABLE_FOG |
                             GGL_ENABLE_DEPTH_TEST;
 
@@ -589,7 +719,7 @@ void primitive_clip_triangle(ogles_context_t* c,
         fetch_texcoord(c, v0, v1, v2);
 
         // light (or shade) our triangle!
-        c->lighting.lightTriangle(c, v0, v1, v2);
+        light_triangle(c, v0, v1, v2);
 
         triangle(c, v0, v1, v2);
         return;
@@ -604,7 +734,7 @@ void primitive_clip_triangle(ogles_context_t* c,
     fetch_texcoord(c, v0, v1, v2);
 
     // light (or shade) our triangle!
-    c->lighting.lightTriangle(c, v0, v1, v2);
+    light_triangle(c, v0, v1, v2);
 
     clip_triangle(c, v0, v1, v2);
 }
@@ -614,11 +744,15 @@ void primitive_clip_triangle(ogles_context_t* c,
 void triangle(ogles_context_t* c,
         vertex_t* v0, vertex_t* v1, vertex_t* v2)
 {
+    // glPolygonOffset only applies to filled polygons, never to lines,
+    // points or glDrawTex rectangles.
+    c->applyPolygonOffset = c->polygonOffset.enable ? 1 : 0;
+
     // compute iterators...
     const uint32_t enables = c->rasterizer.state.enables;
     const uint32_t mask =   GGL_ENABLE_TMUS |
                             GGL_ENABLE_SMOOTH |
-                            GGL_ENABLE_W | 
+                            GGL_ENABLE_W |
                             GGL_ENABLE_FOG |
                             GGL_ENABLE_DEPTH_TEST;
 
@@ -661,26 +795,40 @@ void lerp_triangle(ogles_context_t* c,
         const int32_t v0z = clampZ(v0->window.z);
         const int32_t v1z = clampZ(v1->window.z);
         const int32_t v2z = clampZ(v2->window.z);
-        if (ggl_unlikely(c->polygonOffset.enable)) {
-            const int32_t units = (c->polygonOffset.units << 16);
-            const GLfixed factor = c->polygonOffset.factor;
-            if (factor) {
-                int64_t itz64[3];
-                lerp.iterators0032(itz64, v0z, v1z, v2z);
-                int64_t maxDepthSlope = max(itz64[1], itz64[2]);
-                itz[0] = uint32_t(itz64[0]) 
-                        + uint32_t((maxDepthSlope*factor)>>16) + units;
-                itz[1] = uint32_t(itz64[1]);
-                itz[2] = uint32_t(itz64[2]);
-            } else {
-                lerp.iterators0032(itz, v0z, v1z, v2z);
-                itz[0] += units; 
-            }
-        } else {
-            lerp.iterators0032(itz, v0z, v1z, v2z);
-        }
+        lerp.iterators0032(itz, v0z, v1z, v2z);
         c->rasterizer.procs.zGrad3xv(c, itz);
-    }    
+        if (ggl_unlikely(c->applyPolygonOffset)) {
+            int64_t plane[3];
+            lerp.iterators0032(plane, v0z, v1z, v2z);
+            const int64_t sx = plane[1] < 0 ? -plane[1] : plane[1];
+            const int64_t sy = plane[2] < 0 ? -plane[2] : plane[2];
+            const uint64_t slope = uint64_t(sx > sy ? sx : sy);
+            const GLfixed factor = c->polygonOffset.factor;
+            const uint32_t magnitude = factor < 0 ? uint32_t(-int64_t(factor)) : uint32_t(factor);
+            // Biases larger than the entire depth range have the same
+            // saturated result at every covered sample. Bound BEFORE
+            // multiplying, including for INT_MIN factors / steep slopes.
+            uint64_t biasMagnitude = 0;
+            if (magnitude) {
+                if (slope >= (uint64_t(1) << 48) / magnitude) {
+                    biasMagnitude = uint64_t(1) << 32;
+                } else {
+                    const uint64_t product = slope * magnitude;
+                    biasMagnitude = (product + (factor < 0 ? 0xFFFF : 0)) >> 16;
+                }
+            }
+            const int64_t bias = factor < 0 ? -int64_t(biasMagnitude) : int64_t(biasMagnitude);
+            // Units are already GLfixed, i.e. one 16-bit depth-buffer
+            // step is 0x10000 in the 0.32 iterator. Clamp at each fragment,
+            // NOT at the plane origin (which can lie outside the triangle).
+            shade_t& shade = c->rasterizer.shade;
+            shade.wideZ0 = plane[0] + bias + c->polygonOffset.units + 0x8000;
+            shade.wideDzdx = plane[1];
+            shade.wideDzdy = plane[2];
+            shade.wideDepth = true;
+            ggl_state_changed(&c->rasterizer, GGL_DEPTH_ITERATOR_STATE);
+        }
+    }
 
     if (ggl_unlikely(enables & GGL_ENABLE_FOG)) {
         GLfixed itf[3];
@@ -704,9 +852,17 @@ int compute_lod(ogles_context_t* c, int i,
     const int w = c->textures.tmu[i].texture->surface.width;
     const int h = c->textures.tmu[i].texture->surface.height;
     const int shift = 16 + (16 - TRI_FRACTION_BITS);
-    int32_t texelArea = abs( gglMulx(s1-s0, t2-t0, shift) -
-            gglMulx(s2-s0, t1-t0, shift) )*w*h;
-    int log2TArea = (32-TRI_FRACTION_BITS  -1) - gglClz(texelArea);
+    // the cross-product times w*h overflows 32 bits for large
+    // triangles/textures: keep the whole computation in 64-bit
+    const int64_t cross =
+            int64_t(gglMulx(s1-s0, t2-t0, shift)) -
+            int64_t(gglMulx(s2-s0, t1-t0, shift));
+    const uint64_t texelArea = uint64_t(cross < 0 ? -cross : cross) *
+                               uint32_t(w) * uint32_t(h);
+    // floor(log2(texelArea)) - TRI_FRACTION_BITS (same algebra as
+    // (32-TRI_FRACTION_BITS-1) - gglClz(), for 64-bit inputs)
+    const int log2TArea = (63 - (texelArea ? __builtin_clzll(texelArea)
+                                           : 64)) - TRI_FRACTION_BITS;
     int log2Area  = (32-TRI_FRACTION_BITS*2-1) - gglClz(area);
     int lod = (log2TArea - log2Area + 1) >> 1;
     return lod;
@@ -832,6 +988,37 @@ bool cull_triangle(ogles_context_t* c, vertex_t* /*v0*/, vertex_t* /*v1*/, verte
             return true; // culled!
     }
     return false;
+}
+
+// Same winding convention as cull_triangle()/initTriangle(). Points
+// are not lit through here, so this only ever sees polygons.
+static inline
+bool triangle_back_face(ogles_context_t* c,
+        vertex_t const* v0, vertex_t const* v1, vertex_t const* v2)
+{
+    const int32_t dx01 = v1->window.x - v0->window.x;
+    const int32_t dy10 = v0->window.y - v1->window.y;
+    const int32_t dx20 = v0->window.x - v2->window.x;
+    const int32_t dy02 = v2->window.y - v0->window.y;
+    const int32_t area = dx01 * dy02 + (-dy10) * dx20;
+    const GLenum winding = (area > 0) ? GL_CW : GL_CCW;
+    return winding != c->cull.frontFace;
+}
+
+// Two-sided lighting (GL_LIGHT_MODEL_TWO_SIDE): each triangle is lit
+// with its own facing, so a vertex shared with a triangle of the
+// other winding must be lit again with the reversed normal.
+static inline
+void light_triangle(ogles_context_t* c,
+        vertex_t* v0, vertex_t* v1, vertex_t* v2)
+{
+    c->lighting.backFace = triangle_back_face(c, v0, v1, v2);
+    if (ggl_unlikely(c->lighting.enable && c->lighting.lightModel.twoSide)) {
+        v0->flags &= ~vertex_t::LIT;
+        v1->flags &= ~vertex_t::LIT;
+        v2->flags &= ~vertex_t::LIT;
+    }
+    c->lighting.lightTriangle(c, v0, v1, v2);
 }
 
 static inline

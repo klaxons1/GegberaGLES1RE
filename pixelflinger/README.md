@@ -7,7 +7,7 @@ Drop-in Symbian OS v9.x / S60 3rd & 5th Edition / Symbian^3 (`EKA2`) OpenGL ES 1
 | Property | Value |
 |---|---|
 | Target filename | `sys\bin\libgles_cm.dll` (`libgles_cm{000a0000}.dll`) |
-| File / Code size | `221,296` bytes (`0x36070`) / `217,900` bytes (`0x3532C`) |
+| File / Code size | `229,536` bytes (`0x380A0`) / `226,084` bytes (`0x37324`) |
 | Symbian UIDs | `0x10000079` / `0x1000008d` / `0x101fcabd` (`SID = 0x101fcabd`) |
 | CPU / ISA | `ARMv5TE` (`-march=armv5te -mtune=arm1136jf-s -marm -mfloat-abi=soft`) |
 | Export table | **175 exact ordinals** matching Symbian ROM `libgles_cm.def` (29 EGL 1.1 + 146 OpenGL ES 1.1 & OES) |
@@ -34,14 +34,44 @@ Drop-in Symbian OS v9.x / S60 3rd & 5th Edition / Symbian^3 (`EKA2`) OpenGL ES 1
    - Renders into dedicated 8-byte-aligned RAM color/depth buffers inside a per-thread expandable `UserHeap::ChunkHeap` (up to 32 MB) — never holding `CFbsBitmap::LockHeap` across draw calls.
    - Enforces opaque `EColor16MU` / `EColor64K` `CWsBitmap` blits and synchronizes `RWindowBase::Size` before `glViewport`, `glScissor`, `glClear`, and `eglSwapBuffers`.
 
+## Lighting, depth, texture, and point-sprite corrections
+
+- Two-sided lighting reverses back-face normals and relights shared indexed
+  vertices; normalization and light attenuation use overflow-safe arithmetic.
+- Depth interpolation preserves unsigned Z16 endpoints. Polygon-offset planes
+  use signed 64-bit evaluation and per-fragment near/far saturation; only these
+  primitives use the C++ pipeline rather than wrapping ARM JIT iterators.
+- Texture COMBINE sources, operands, scale queries, and generic fragment
+  evaluation are wired through. Supported simple COMBINE configurations still
+  lower to the normal JIT paths; other configurations use the C++ fallback.
+- Incomplete textures retain the application's enable state and revalidate
+  when mip levels are defined. Odd/one-dimensional mipmap generation is bounded.
+  As in the upstream PixelFlinger sampler, mip chains are maintained but texture
+  sampling uses the base level; this is not a new mip-level selection engine.
+- Point sprites honor coordinate replacement, per-vertex point sizes, and
+  distance attenuation without overflowing the texture/depth iterators.
+
+Validation: **13/13 host AddressSanitizer tests**, **50,121 IEEE-754 double
+helper pairs**, and **8 ARM926EJ-S Unicorn runs** (JIT enabled/denied across
+RGB565, RGBA8888, RGBA4444 plus two 64 KB executable-cache stress runs).
+These are automated host/emulator results, not physical-phone validation.
+
 ## Building & Verification
 
 ```bash
 # 1. Build Symbian EKA2 ARMv5TE DLL, DSO import libraries, and SDK zip:
 ./pixelflinger/build_symbian.sh
 
-# 2. Run end-to-end ARM926EJ-S (ARMv5TE) Unicorn E32 verification (JIT ON vs JIT OFF + 64KB LRU stress):
+# 2. Install the ARM emulator (once; activate this venv before testing):
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install unicorn
+
+# Run end-to-end ARM926EJ-S (ARMv5TE) Unicorn E32 verification (JIT ON vs JIT OFF + 64KB LRU stress):
 python3 pixelflinger/tests/test_e32_armv5_unicorn.py
+
+# Check the freestanding double helpers used by inverse-modelview lighting:
+python3 pixelflinger/tests/test_softfp.py
 
 # 3. Run host C++ AddressSanitizer + ARMAssembler/CodeCache + 3D verification suite:
 g++ -std=gnu++14 -O2 -g -fsanitize=address -fno-strict-aliasing -fno-exceptions -fno-rtti \

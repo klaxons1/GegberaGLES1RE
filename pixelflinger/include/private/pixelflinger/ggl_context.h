@@ -132,6 +132,7 @@ const int GGL_TEXTURE_UNIT_COUNT    = 2;
 const int GGL_TMU_STATE             = 0x00000001;
 const int GGL_CB_STATE              = 0x00000002;
 const int GGL_PIXEL_PIPELINE_STATE  = 0x00000004;
+const int GGL_DEPTH_ITERATOR_STATE  = 0x00000008;
 
 // ----------------------------------------------------------------------------
 
@@ -203,14 +204,16 @@ inline uint32_t ggl_env_to_needs(uint32_t e) {
     case GGL_DECAL:     return 2;
     case GGL_BLEND:     return 3;
     case GGL_ADD:       return 4;
+    case GGL_COMBINE:   return 5;
     }
     return 0;
 }
 
 inline uint32_t ggl_needs_to_env(uint32_t n) {
     const uint32_t envs[] = { GGL_REPLACE, GGL_MODULATE, 
-            GGL_DECAL, GGL_BLEND, GGL_ADD };
-    return envs[n];
+            GGL_DECAL, GGL_BLEND, GGL_ADD, GGL_COMBINE,
+            GGL_REPLACE, GGL_REPLACE };
+    return envs[n & 7];
 
 }
 
@@ -406,6 +409,18 @@ struct texture_iterators_t {
     };
 };
 
+struct texture_combine_t {
+    uint16_t            combine_rgb;
+    uint16_t            combine_alpha;
+    uint16_t            src_rgb[3];
+    uint16_t            src_alpha[3];
+    uint16_t            op_rgb[3];
+    uint16_t            op_alpha[3];
+    uint8_t             rgb_scale;
+    uint8_t             alpha_scale;
+    uint8_t             pad[2];
+};
+
 struct texture_t {
 	surface_t			surface;
 	texture_iterators_t	iterators;
@@ -420,6 +435,7 @@ struct texture_t {
     uint8_t             env_color[4];
 	uint8_t				enable;
 	uint8_t				dirty;
+    texture_combine_t   combine;
 };
 
 struct raster_t {
@@ -473,6 +489,10 @@ struct shade_t {
 	uint32_t			f0;
     GGLfixed            dfdx;
     GGLfixed            dfdy;
+    // Polygon offset can move a depth plane outside unsigned 0.32.
+    // Retain it until fragment evaluation, then clamp (never wrap).
+    bool                wideDepth;
+    int64_t             wideZ0, wideDzdx, wideDzdy;
 };
 
 // these are used in the generated code

@@ -1,6 +1,30 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-22 (session 6 - reconstruction complete)
+Last updated: 2026-11-22 (PixelFlinger four-subsystem regression audit)
+
+## PixelFlinger audit: lights, depth/perspective, textures, sprites
+
+- Completed fixes in `pixelflinger/libagl/` and `libpixelflinger/`: two-sided
+  indexed-vertex relighting; robust normalization/attenuation; unsigned depth
+  endpoints; signed wide polygon-offset planes with fragment saturation;
+  COMBINE validation, queries and fragment execution; sticky texture enables
+  and mip-completeness invalidation; bounded mipmap generation; sprite
+  coordinates, point-size arrays and attenuation. Ordinary primitives retain
+  the ARMv5TE JIT; wide offset planes and complex COMBINE use C++ fallback.
+- Added the missing integer-only double division/comparison EABI helpers needed
+  by inverse-modelview lighting; 50,121 host IEEE-754 test pairs pass.
+- Repaired toolchain bootstrap for gcc-symbian's current `bin/` packages and
+  length-preserving ELF C23/version compatibility on Debian 12.
+- Verification: host ASan **13/13**; ARM926EJ-S Unicorn **8/8** configurations
+  including JIT denied, RGB565/RGBA8888/RGBA4444, and two 64 KB cache stresses.
+  Pixel asserts cover indexed two-sided lighting, large normal normalization,
+  far point/drawTex depth, polygon-offset saturation, COMBINE rendering/queries,
+  sprite quadrants, coordinate replacement and per-vertex point sizes.
+- Existing Gerbera `make test`: **4,422 checks, zero failures**.
+- Rebuilt `pixelflinger/out/libgles_cm.dll` and SDK ZIP: 175 exact ordinals,
+  E32 data/bss zero, ARMv5TE soft-float. No physical-device testing performed.
+- Upstream limitation retained: mip chains are generated/validated, but the
+  PixelFlinger sampler uses the base level rather than selecting mip LODs.
 
 ## Legend
 

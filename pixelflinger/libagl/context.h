@@ -163,6 +163,7 @@ struct vertex_t {
 struct point_size_t {
     GGLcoord    size;
     GLboolean   smooth;
+    GLboolean   sprite;
     GLfixed     sizeMin;
     GLfixed     sizeMax;
     GLfixed     fadeThreshold;
@@ -338,6 +339,7 @@ struct lighting_t {
     vec4_t              objViewer;
     uint32_t            enabledLights;
     GLboolean           enable;
+    GLboolean           backFace;
     GLenum              shadeModel;
     typedef void (*light_fct_t)(ogles_context_t*, vertex_t*);
     void (*lightVertex)(ogles_context_t* c, vertex_t* v);
@@ -359,6 +361,9 @@ struct texture_unit_t {
     GLuint              name;
     EGLTextureObject*   texture;
     uint8_t             dirty;
+    uint8_t             enable;
+    uint8_t             coordReplace;
+    uint8_t             pad;
 };
 
 struct texture_state_t
@@ -516,6 +521,7 @@ struct transform_state_t {
 
     GLenum              matrixMode;
     GLenum              rescaleNormals;
+    GLboolean           normalize;
     uint32_t            dirty;
     void invalidate();
     void update_mvp();
@@ -631,6 +637,8 @@ struct ogles_context_t {
     fog_t                   fog;
     uint32_t                perspective : 1;
     uint32_t                transformTextures : 1;
+    uint32_t                depthTest : 1;
+    uint32_t                applyPolygonOffset : 1;
     EGLSurfaceManager*      surfaceManager;
     EGLBufferObjectManager* bufferObjectManager;
 

@@ -35,7 +35,7 @@ status_t buildAPyramid(ogles_context_t* c, EGLTextureObject* tex)
 
     int w = base->width;
     int h = base->height;
-    if ((w&h) == 1)
+    if (w == 1 && h == 1)
         return NO_ERROR;
 
     w = (w>>1) ? : 1;
@@ -51,6 +51,12 @@ status_t buildAPyramid(ogles_context_t* c, EGLTextureObject* tex)
     
         int stride = w;
         int bs = base->stride;
+        // when the source is a single row/column the box filter has no
+        // second neighbour: clamp instead of reading past the buffer
+        const int wsrc = base->width;
+        const int hsrc = base->height;
+        const int dx = (wsrc > 1) ? 1 : 0;
+        const int dy = (hsrc > 1) ? 1 : 0;
         GGLSurface& cur = tex->editMip(level);
 
         if (base->format == GGL_PIXEL_FORMAT_RGB_565)
@@ -62,9 +68,9 @@ status_t buildAPyramid(ogles_context_t* c, EGLTextureObject* tex)
                 size_t offset = (y*2) * bs;
                 for (int x=0 ; x<w ; x++) {
                     uint32_t p00 = src[offset];
-                    uint32_t p10 = src[offset+1];
-                    uint32_t p01 = src[offset+bs];
-                    uint32_t p11 = src[offset+bs+1];
+                    uint32_t p10 = src[offset+dx];
+                    uint32_t p01 = src[offset+bs*dy];
+                    uint32_t p11 = src[offset+bs*dy+dx];
                     p00 = (p00 | (p00 << 16)) & mask;
                     p01 = (p01 | (p01 << 16)) & mask;
                     p10 = (p10 | (p10 << 16)) & mask;
@@ -84,9 +90,9 @@ status_t buildAPyramid(ogles_context_t* c, EGLTextureObject* tex)
                 size_t offset = (y*2) * bs;
                 for (int x=0 ; x<w ; x++) {
                     uint32_t p00 = src[offset];
-                    uint32_t p10 = src[offset+1];
-                    uint32_t p01 = src[offset+bs];
-                    uint32_t p11 = src[offset+bs+1];
+                    uint32_t p10 = src[offset+dx];
+                    uint32_t p01 = src[offset+bs*dy];
+                    uint32_t p11 = src[offset+bs*dy+dx];
                     uint32_t r = ((p00>>11)+(p10>>11)+(p01>>11)+(p11>>11)+2)>>2;
                     uint32_t g = (((p00>>6)+(p10>>6)+(p01>>6)+(p11>>6)+2)>>2)&0x3F;
                     uint32_t b = ((p00&0x3E)+(p10&0x3E)+(p01&0x3E)+(p11&0x3E)+4)>>3;
@@ -96,17 +102,20 @@ status_t buildAPyramid(ogles_context_t* c, EGLTextureObject* tex)
                 }
             }
         }
-        else if (base->format == GGL_PIXEL_FORMAT_RGBA_8888)
+        else if (base->format == GGL_PIXEL_FORMAT_RGBA_8888 ||
+                 base->format == GGL_PIXEL_FORMAT_RGBX_8888)
         {
+            // RGBX averages the same way; the x channel is ignored by
+            // the sampler anyway
             uint32_t const * src = (uint32_t const *)base->data;
             uint32_t* dst = (uint32_t*)cur.data;
             for (int y=0 ; y<h ; y++) {
                 size_t offset = (y*2) * bs;
                 for (int x=0 ; x<w ; x++) {
                     uint32_t p00 = src[offset];
-                    uint32_t p10 = src[offset+1];
-                    uint32_t p01 = src[offset+bs];
-                    uint32_t p11 = src[offset+bs+1];
+                    uint32_t p10 = src[offset+dx];
+                    uint32_t p01 = src[offset+bs*dy];
+                    uint32_t p11 = src[offset+bs*dy+dx];
                     uint32_t rb00 = p00 & 0x00FF00FF;
                     uint32_t rb01 = p01 & 0x00FF00FF;
                     uint32_t rb10 = p10 & 0x00FF00FF;
@@ -143,10 +152,10 @@ status_t buildAPyramid(ogles_context_t* c, EGLTextureObject* tex)
                 for (int x=0 ; x<w ; x++) {
                     for (int c=0 ; c<skip ; c++) {
                         uint32_t p00 = src[c+offset];
-                        uint32_t p10 = src[c+offset+skip];
-                        uint32_t p01 = src[c+offset+bs];
-                        uint32_t p11 = src[c+offset+bs+skip];
-                        dst[x + y*stride + c] = (p00 + p10 + p01 + p11) >> 2;
+                        uint32_t p10 = src[c+offset+skip*dx];
+                        uint32_t p01 = src[c+offset+bs*dy];
+                        uint32_t p11 = src[c+offset+bs*dy+skip*dx];
+                        dst[x*skip + y*stride + c] = (p00 + p10 + p01 + p11) >> 2;
                     }
                     offset += 2*skip;
                 }
@@ -160,9 +169,9 @@ status_t buildAPyramid(ogles_context_t* c, EGLTextureObject* tex)
                 size_t offset = (y*2) * bs;
                 for (int x=0 ; x<w ; x++) {
                     uint32_t p00 = src[offset];
-                    uint32_t p10 = src[offset+1];
-                    uint32_t p01 = src[offset+bs];
-                    uint32_t p11 = src[offset+bs+1];
+                    uint32_t p10 = src[offset+dx];
+                    uint32_t p01 = src[offset+bs*dy];
+                    uint32_t p11 = src[offset+bs*dy+dx];
                     p00 = ((p00 << 12) & 0x0F0F0000) | (p00 & 0x0F0F);
                     p10 = ((p10 << 12) & 0x0F0F0000) | (p10 & 0x0F0F);
                     p01 = ((p01 << 12) & 0x0F0F0000) | (p01 & 0x0F0F);
@@ -179,7 +188,9 @@ status_t buildAPyramid(ogles_context_t* c, EGLTextureObject* tex)
         }
 
         // exit condition: we just processed the 1x1 LODs
-        if ((w&h) == 1)
+        // (NOTE: NOT (w&h)==1 -- that is true for any odd/odd pair
+        // such as 3x5 and would stop the chain early)
+        if (w == 1 && h == 1)
             break;
 
         base = &cur;

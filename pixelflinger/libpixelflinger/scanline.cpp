@@ -83,6 +83,24 @@
 namespace android {
 // ----------------------------------------------------------------------------
 
+// Signed shift with defined behaviour across the whole 32-bit shift
+// range (replaces `v << s` / `v >> -s` where s = sscale + iwscale - 30
+// can be < 0 or >= 32 in scanline_perspective_single):
+//   s >= 0  left shift,  s >= 32 yields 0 (not representable in the
+//           32-bit iterator anyway);
+//   s < 0   arithmetic right shift, s <= -32 saturates at 0 / -1.
+static inline int32_t ggl_safe_scale_shift(int32_t v, int32_t s)
+{
+    if (s >= 0) {
+        if (s >= 32)
+            return 0;
+        return int32_t(uint32_t(v) << s);
+    }
+    if (s <= -32)
+        return v < 0 ? -1 : 0;
+    return v >> -s;
+}
+
 static void init_y(context_t*, int32_t);
 static void init_y_noop(context_t*, int32_t);
 static void init_y_packed(context_t*, int32_t);
@@ -380,6 +398,15 @@ static void pick_scanline(context_t* c)
     c->init_y = init_y;
     c->step_y = step_y__generic;
 
+    if ((GGL_READ_NEEDS(T_FORMAT, c->state.needs.t[0]) &&
+         GGL_READ_NEEDS(T_ENV, c->state.needs.t[0]) == 5) ||
+        (GGL_READ_NEEDS(T_FORMAT, c->state.needs.t[1]) &&
+         GGL_READ_NEEDS(T_ENV, c->state.needs.t[1]) == 5))
+    {
+        c->scanline = scanline;
+        return;
+    }
+
 #if ANDROID_ARM_CODEGEN
     // we're going to have to generate some code...
     // here, generate code for our pixel pipeline
@@ -440,7 +467,16 @@ static void pick_scanline(context_t* c)
 
 void ggl_pick_scanline(context_t* c)
 {
-    pick_scanline(c);
+    if (c->shade.wideDepth) {
+        // ARM generated pipelines use wrapping 32-bit depth iterators.
+        // Keep them for ordinary primitives, use the full C++ pipeline
+        // for offset planes requiring per-fragment saturation.
+        c->scanline = scanline;
+        c->init_y = init_y;
+        c->step_y = step_y__generic;
+    } else {
+        pick_scanline(c);
+    }
     if ((c->state.enables & GGL_ENABLE_W) &&
         (c->state.enables & GGL_ENABLE_TMUS))
     {
@@ -627,6 +663,139 @@ static GGLfixed wrapping(int32_t coord, uint32_t size, int tx_wrap)
     return d;
 }
 
+static inline uint8_t to_u8_chan(uint32_t c, uint8_t s, uint8_t emptyDefault)
+{
+    if (!s) return emptyDefault;
+    if (s == 8) return (c > 255) ? 255 : uint8_t(c);
+    if (s > 8) {
+        uint32_t v = c >> (s - 8);
+        return (v > 255) ? 255 : uint8_t(v);
+    }
+    uint32_t v = ggl_expand(c, s, 8);
+    return (v > 255) ? 255 : uint8_t(v);
+}
+
+static void apply_combine_tmu(const texture_t& tx, pixel_t& fragment,
+                              const pixel_t& texel, const uint8_t primary[4])
+{
+    uint8_t prev[4], tex8[4];
+    for (int c = 0; c < 4; ++c) {
+        prev[c] = to_u8_chan(fragment.c[c], fragment.s[c], (c == 0) ? 255 : 0);
+        tex8[c] = to_u8_chan(texel.c[c], texel.s[c], (c == 0) ? 255 : 0);
+    }
+
+    const texture_combine_t& cb = tx.combine;
+    auto evalSrc = [&](uint16_t srcEnum, uint8_t out[4]) {
+        switch (srcEnum) {
+        case GGL_TEXTURE:
+            out[0] = tex8[0]; out[1] = tex8[1]; out[2] = tex8[2]; out[3] = tex8[3];
+            break;
+        case GGL_CONSTANT:
+            out[0] = tx.env_color[0]; out[1] = tx.env_color[1];
+            out[2] = tx.env_color[2]; out[3] = tx.env_color[3];
+            break;
+        case GGL_PRIMARY_COLOR:
+            out[0] = primary[0]; out[1] = primary[1];
+            out[2] = primary[2]; out[3] = primary[3];
+            break;
+        case GGL_PREVIOUS:
+        default:
+            out[0] = prev[0]; out[1] = prev[1]; out[2] = prev[2]; out[3] = prev[3];
+            break;
+        }
+    };
+
+    uint8_t argRgb[3][4], argA[3];
+    for (int k = 0; k < 3; ++k) {
+        uint8_t s[4];
+        evalSrc(cb.src_rgb[k], s);
+        switch (cb.op_rgb[k]) {
+        case GGL_SRC_COLOR:
+            argRgb[k][1] = s[1]; argRgb[k][2] = s[2]; argRgb[k][3] = s[3];
+            break;
+        case GGL_ONE_MINUS_SRC_COLOR:
+            argRgb[k][1] = 255 - s[1]; argRgb[k][2] = 255 - s[2]; argRgb[k][3] = 255 - s[3];
+            break;
+        case GGL_SRC_ALPHA:
+            argRgb[k][1] = argRgb[k][2] = argRgb[k][3] = s[0];
+            break;
+        case GGL_ONE_MINUS_SRC_ALPHA:
+        default:
+            argRgb[k][1] = argRgb[k][2] = argRgb[k][3] = 255 - s[0];
+            break;
+        }
+
+        evalSrc(cb.src_alpha[k], s);
+        argA[k] = (cb.op_alpha[k] == GGL_ONE_MINUS_SRC_ALPHA) ? (255 - s[0]) : s[0];
+    }
+
+    int32_t outRgb[4] = { 0, 0, 0, 0 };
+    int32_t outA = 0;
+    const bool isDot3 = (cb.combine_rgb == GGL_DOT3_RGB || cb.combine_rgb == GGL_DOT3_RGBA);
+
+    if (isDot3) {
+        int32_t r0 = int32_t(argRgb[0][1]) * 2 - 255;
+        int32_t g0 = int32_t(argRgb[0][2]) * 2 - 255;
+        int32_t b0 = int32_t(argRgb[0][3]) * 2 - 255;
+        int32_t r1 = int32_t(argRgb[1][1]) * 2 - 255;
+        int32_t g1 = int32_t(argRgb[1][2]) * 2 - 255;
+        int32_t b1 = int32_t(argRgb[1][3]) * 2 - 255;
+        int32_t d = (r0 * r1 + g0 * g1 + b0 * b1) / 255;
+        outRgb[1] = outRgb[2] = outRgb[3] = d;
+    } else {
+        for (int j = 1; j <= 3; ++j) {
+            int32_t a0 = argRgb[0][j], a1 = argRgb[1][j], a2 = argRgb[2][j];
+            switch (cb.combine_rgb) {
+            case GGL_REPLACE:     outRgb[j] = a0; break;
+            case GGL_MODULATE:    outRgb[j] = (a0 * (a1 + (a1 >> 7))) >> 8; break;
+            case GGL_ADD:         outRgb[j] = a0 + a1; break;
+            case GGL_ADD_SIGNED:  outRgb[j] = a0 + a1 - 128; break;
+            case GGL_SUBTRACT:    outRgb[j] = a0 - a1; break;
+            case GGL_INTERPOLATE: {
+                int32_t f = a2 + (a2 >> 7);
+                outRgb[j] = (a0 * f + a1 * (256 - f)) >> 8;
+                break;
+            }
+            default:              outRgb[j] = a0; break;
+            }
+        }
+    }
+
+    if (cb.combine_rgb == GGL_DOT3_RGBA) {
+        outA = outRgb[1];
+    } else {
+        int32_t a0 = argA[0], a1 = argA[1], a2 = argA[2];
+        switch (cb.combine_alpha) {
+        case GGL_REPLACE:     outA = a0; break;
+        case GGL_MODULATE:    outA = (a0 * (a1 + (a1 >> 7))) >> 8; break;
+        case GGL_ADD:         outA = a0 + a1; break;
+        case GGL_ADD_SIGNED:  outA = a0 + a1 - 128; break;
+        case GGL_SUBTRACT:    outA = a0 - a1; break;
+        case GGL_INTERPOLATE: {
+            int32_t f = a2 + (a2 >> 7);
+            outA = (a0 * f + a1 * (256 - f)) >> 8;
+            break;
+        }
+        default:              outA = a0; break;
+        }
+    }
+
+    const int32_t rgbScale = cb.rgb_scale ? cb.rgb_scale : 1;
+    const int32_t aScale   = (cb.combine_rgb == GGL_DOT3_RGBA)
+                             ? rgbScale
+                             : (cb.alpha_scale ? cb.alpha_scale : 1);
+    for (int j = 1; j <= 3; ++j) {
+        int32_t v = outRgb[j] * rgbScale;
+        if (v < 0) v = 0; else if (v > 255) v = 255;
+        fragment.c[j] = uint32_t(v);
+        fragment.s[j] = 8;
+    }
+    int32_t va = outA * aScale;
+    if (va < 0) va = 0; else if (va > 255) va = 255;
+    fragment.c[0] = uint32_t(va);
+    fragment.s[0] = 8;
+}
+
 static inline
 GGLcolor ADJUST_COLOR_ITERATOR(GGLcolor v, GGLcolor dvdx, int len)
 {
@@ -666,8 +835,16 @@ void scanline(context_t* c)
         a = ci.ydady;
     }
 
-    // z iterators are 1.31
-    GGLfixed z = (xs * c->shade.dzdx) + ci.ydzdy;
+    // Ordinary iterators encode unsigned 0.32. Offset planes stay
+    // signed and wide until the fragment clamp, including across spans.
+    const bool wideDepth = c->shade.wideDepth;
+    const int64_t dzdx = wideDepth ? c->shade.wideDzdx : c->shade.dzdx;
+    int64_t z = wideDepth
+            ? c->shade.wideZ0 + int64_t(xs) * dzdx +
+              int64_t(ci.y) * c->shade.wideDzdy +
+              ((dzdx + c->shade.wideDzdy) >> 1)
+            : int64_t(uint32_t(uint32_t(xs) * uint32_t(c->shade.dzdx) +
+                               uint32_t(ci.ydzdy)));
     GGLfixed f = (xs * c->shade.dfdx) + ci.ydfdy;
 
     struct {
@@ -706,6 +883,12 @@ void scanline(context_t* c)
         fragment.c[2] = g >> (GGL_COLOR_BITS-8);
         fragment.c[3] = b >> (GGL_COLOR_BITS-8);
         fragment.c[0] = a >> (GGL_COLOR_BITS-8);
+        const uint8_t primary[4] = {
+            uint8_t(fragment.c[0]),
+            uint8_t(fragment.c[1]),
+            uint8_t(fragment.c[2]),
+            uint8_t(fragment.c[3])
+        };
 
 		// texturing
         if (enables & GGL_ENABLE_TMUS) {
@@ -797,7 +980,12 @@ void scanline(context_t* c)
                     }
                 }
 
-                // Texture environnement...
+                if (tx.env == GGL_COMBINE) {
+                    apply_combine_tmu(tx, fragment, texel, primary);
+                    continue;
+                }
+
+                // Texture environment...
                 for (int j=0 ; j<4 ; j++) {
                     uint32_t& Cf = fragment.c[j];
                     uint32_t& Ct = texel.c[j];
@@ -871,7 +1059,9 @@ void scanline(context_t* c)
             if (enables & GGL_ENABLE_DEPTH_TEST) {
                 surface_t* cb = &(c->state.buffers.depth);
                 uint16_t* p = (uint16_t*)(cb->data)+(x+(cb->stride*y));
-                uint16_t zz = uint32_t(z)>>(16);
+                uint16_t zz = wideDepth
+                        ? (z <= 0 ? 0 : (z >= 0xFFFFFFFFLL ? 0xFFFF : uint16_t(z >> 16)))
+                        : uint16_t(uint32_t(z) >> 16);
                 uint16_t depth = *p;
                 switch (c->state.depth_test.func) {
                 case GGL_NEVER:     goto discard;
@@ -932,7 +1122,7 @@ discard:
             b += c->shade.dbdx;
             a += c->shade.dadx;
         }
-        z += c->shade.dzdx;
+        z += dzdx;
         f += c->shade.dfdx;
 	}
 }
@@ -2032,7 +2222,7 @@ void scanline_perspective_single(context_t* c)
 
     if (premainder) {
         w += c->shade.dwdx   * premainder;
-        iw = gglRecipQ(w, 30);
+        iw = gglRecipQ((w > 4) ? w : 4, 30);
 no_perspective:        
         s += tmu.shade.idsdx * premainder;
         t += tmu.shade.idtdx * premainder;
@@ -2049,7 +2239,7 @@ no_perspective:
         w += c->shade.dwdx   << SPAN_BITS;
         s += tmu.shade.idsdx << SPAN_BITS;
         t += tmu.shade.idtdx << SPAN_BITS;
-        iw = gglRecipQ(w, 30);
+        iw = gglRecipQ((w > 4) ? w : 4, 30);
         sq = gglMulx(s, iw, iwscale);
         tq = gglMulx(t, iw, iwscale);
         dsdx = (sq - s0) >> SPAN_BITS;
@@ -2057,20 +2247,10 @@ no_perspective:
         c->iterators.xl = xl;
         c->iterators.xr = xl = xl + (1<<SPAN_BITS);
 finish:
-        if (sscale >= 0) {
-            ti.ydsdy = s0   << sscale;
-            ti.dsdx  = dsdx << sscale;
-        } else {
-            ti.ydsdy = s0   >>-sscale;
-            ti.dsdx  = dsdx >>-sscale;
-        }
-        if (tscale >= 0) {
-            ti.ydtdy = t0   << tscale;
-            ti.dtdx  = dtdx << tscale;
-        } else {
-            ti.ydtdy = t0   >>-tscale;
-            ti.dtdx  = dtdx >>-tscale;
-        }
+        ti.ydsdy = ggl_safe_scale_shift(s0, sscale);
+        ti.dsdx  = ggl_safe_scale_shift(dsdx, sscale);
+        ti.ydtdy = ggl_safe_scale_shift(t0, tscale);
+        ti.dtdx  = ggl_safe_scale_shift(dtdx, tscale);
         s0 = sq;
         t0 = tq;
         gen.dsdx = ti.dsdx;

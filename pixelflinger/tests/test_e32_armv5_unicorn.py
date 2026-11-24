@@ -261,8 +261,19 @@ def run_symbian_e32_scene(allow_jit: bool, config_rgb_bits=(5, 6, 5), max_exec_b
     mu.mem_write(RET_SENTINEL, struct.pack("<I", 0xE1A00000))
     sp_base = STACK_TOP - 0x1000
 
+    extension_procs = {}
+
     def call(fn_name, *args):
-        addr = exports[ord_by_name[fn_name]]
+        if fn_name in ord_by_name:
+            addr = exports[ord_by_name[fn_name]]
+        else:
+            if fn_name not in extension_procs:
+                encoded = fn_name.encode("ascii") + b"\0"
+                name_ptr = halloc(len(encoded))
+                mu.mem_write(name_ptr, encoded)
+                extension_procs[fn_name] = call("eglGetProcAddress", name_ptr)
+            addr = extension_procs[fn_name]
+            assert addr, f"Extension procedure missing: {fn_name}"
         sp = sp_base
         if len(args) > 4:
             extra = args[4:]
@@ -420,6 +431,172 @@ def run_symbian_e32_scene(allow_jit: bool, config_rgb_bits=(5, 6, 5), max_exec_b
     raw_bgra = bytes(mu.mem_read(bmp["data"], W * H * 4))
     for i in range(0, len(raw_bgra), 4):
         assert raw_bgra[i + 3] == 0xFF
+
+    # Run targeted pixel regressions after capturing the showcase, so its
+    # JIT/C++ comparison remains independent of these assert-based checks.
+    def floats(values):
+        addr = halloc(len(values) * 4)
+        mu.mem_write(addr, struct.pack(f"<{len(values)}f", *values))
+        return addr
+
+    pixel_mem = halloc(W * H * 4, True)
+
+    def pixel(x, y):
+        call("glReadPixels", x, y, 1, 1, 0x1908, 0x1401, pixel_mem)
+        return tuple(mu.mem_read(pixel_mem, 4))[:3]
+
+    def clear(r=0, g=0, b=0):
+        call("glClearColor", f32(r), f32(g), f32(b), f32(1))
+        call("glClear", 0x4100)
+
+    def color(r, g, b):
+        call("glColor4f", f32(r), f32(g), f32(b), f32(1))
+
+    def vertex(values):
+        call("glVertexPointer", 3, 0x1406, 0, floats(values))
+
+    for cap in (0x0B71, 0x0DE1, 0x0BE2, 0x0B60, 0x0BC0, 0x0B44, 0x0BF2):
+        call("glDisable", cap)
+    for array in (0x8076, 0x8078, 0x8075):
+        call("glDisableClientState", array)
+    for mode in (0x1701, 0x1700):
+        call("glMatrixMode", mode)
+        call("glLoadIdentity")
+    call("glDepthFunc", 0x0201)  # LESS, even after shader stress
+    call("glClearDepthx", 0x10000)
+
+    # Shared indexed vertices must be relit when winding switches.
+    call("glEnable", 0x0B50)  # LIGHTING
+    call("glEnable", 0x4000)  # LIGHT0
+    call("glLightfv", 0x4000, 0x1203, floats([0, 0, 1, 0]))
+    call("glLightfv", 0x4000, 0x1201, floats([1, 1, 1, 1]))
+    call("glLightfv", 0x4000, 0x1200, floats([0, 0, 0, 1]))
+    call("glMaterialfv", 0x0408, 0x1201, floats([1, 1, 1, 1]))
+    call("glMaterialfv", 0x0408, 0x1200, floats([1, 1, 1, 1]))
+    vertex([-0.7,-0.5,0, 0.7,-0.5,0, -0.7,0.5,0, 0.7,0.5,0])
+    call("glNormalPointer", 0x1406, 0, floats([0, 0, 1] * 4))
+    call("glEnableClientState", 0x8075)
+    indices = halloc(12)
+    mu.mem_write(indices, struct.pack("<6H", 0, 1, 2, 1, 2, 3))
+    call("glLightModelx", 0x0B52, 1)  # TWO_SIDE
+    clear()
+    call("glDrawElements", 4, 6, 0x1403, indices)
+    assert min(pixel(49, 40)) > 200, "front lighting"
+    assert max(pixel(79, 56)) < 70, "back-face relighting"
+    call("glLightModelx", 0x0B52, 0)
+    clear()
+    call("glDrawElements", 4, 6, 0x1403, indices)
+    assert min(pixel(79, 56)) > 200, "one-sided lighting"
+    call("glDisableClientState", 0x8075)
+    call("glEnable", 0x0BA1)  # NORMALIZE
+    call("glNormal3f", f32(100), f32(100), f32(100))
+    clear()
+    call("glDrawElements", 4, 6, 0x1403, indices)
+    assert 150 < pixel(49, 40)[0] < 240, "large normal normalization"
+    call("glDisable", 0x0BA1)
+    call("glDisable", 0x0B50)
+
+    # Far points and rectangles must not wrap back to near depth.
+    call("glEnable", 0x0B71)
+    clear(0, 1, 0)
+    color(1, 0, 0)
+    vertex([0, 0, 1])
+    call("glPointSize", f32(5))
+    call("glDrawArrays", 0, 0, 1)
+    assert pixel(W//2, H//2)[1] > 200, "far point wrapped"
+
+    flat = [-0.8,-0.6,0.5, 0.8,-0.6,0.5, -0.8,0.6,0.5, 0.8,0.6,0.5]
+    tilted = [-0.8,-0.6,0.4, 0.8,-0.6,0.6, -0.8,0.6,0.4, 0.8,0.6,0.6]
+    for factor, expected_channel in ((800, 0), (-800, 1)):
+        clear(0, 0, 1)
+        call("glDisable", 0x8037)  # POLYGON_OFFSET_FILL
+        color(1, 0, 0)
+        vertex(flat)
+        call("glDrawArrays", 5, 0, 4)
+        call("glEnable", 0x8037)
+        call("glPolygonOffsetx", factor * 65536, 0)
+        color(0, 1, 0)
+        vertex(tilted)
+        call("glDrawArrays", 5, 0, 4)
+        for x in (W//4, 3*W//4):
+            rgb = pixel(x, H//2)
+            assert rgb[expected_channel] > 200 and rgb[1-expected_channel] < 40, ("offset clamp", factor, x, rgb)
+    call("glDisable", 0x8037)
+
+    # A 1x1 white texture exercises drawTex z and COMBINE rendering.
+    call("glBindTexture", 0x0DE1, tid)
+    call("glTexParameteri", 0x0DE1, 0x2801, 0x2600)
+    call("glTexParameteri", 0x0DE1, 0x2800, 0x2600)
+    white = halloc(4); mu.mem_write(white, b"\xff" * 4)
+    call("glTexImage2D", 0x0DE1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, white)
+    crop = halloc(16); mu.mem_write(crop, struct.pack("<4i", 0, 0, 1, 1))
+    call("glTexParameteriv", 0x0DE1, 0x8B9D, crop)
+    call("glTexEnvi", 0x2300, 0x2200, 0x2100)  # MODULATE
+    call("glEnable", 0x0DE1)
+    color(1, 1, 1)
+    for z, white_expected in ((65536, False), (0, True)):
+        clear(0, 0, 1)
+        call("glDrawTexxOES", 10<<16, 10<<16, z, 20<<16, 20<<16)
+        rgb = pixel(20, 20)
+        assert (min(rgb) > 200) if white_expected else (rgb[0] < 40 and rgb[2] > 200), ("drawTex z", z, rgb)
+    call("glDisable", 0x0B71)
+    result = halloc(16, True)
+    for pname, value in ((0x2200, 0x8570), (0x8571, 0x1E01),
+                         (0x8580, 0x8578), (0x8590, 0x0300), (0x8573, 2)):
+        call("glTexEnvi", 0x2300, pname, value)
+        call("glGetTexEnviv", 0x2300, pname, result)
+        assert struct.unpack("<i", mu.mem_read(result, 4))[0] == value, ("COMBINE getter", pname)
+    call("glGetTexEnvxv", 0x2300, 0x8573, result)
+    assert struct.unpack("<i", mu.mem_read(result, 4))[0] == 2*65536
+    call("glGetTexEnvfv", 0x2300, 0x8573, result)
+    assert struct.unpack("<f", mu.mem_read(result, 4))[0] == 2.0
+    color(0.25, 0.125, 0.0)  # REPLACE previous, RGB scale 2
+    clear()
+    call("glDrawTexxOES", 10<<16, 10<<16, 0, 20<<16, 20<<16)
+    r, g, b = pixel(20, 20)
+    assert 105 < r < 150 and 45 < g < 85 and b < 20, ("COMBINE pixels", r, g, b)
+    call("glTexEnvi", 0x2300, 0x2200, 0x2100)
+
+    # Point sprites, coordinate replacement, and float point-size arrays.
+    sprite = halloc(16)
+    mu.mem_write(sprite, bytes([255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255]))
+    call("glTexImage2D", 0x0DE1, 0, 0x1908, 2, 2, 0, 0x1908, 0x1401, sprite)
+    call("glEnable", 0x8861)  # POINT_SPRITE_OES
+    call("glTexEnvi", 0x8861, 0x8862, 1)  # COORD_REPLACE
+    call("glGetTexEnviv", 0x8861, 0x8862, result)
+    assert struct.unpack("<i", mu.mem_read(result, 4))[0] == 1
+    color(1, 1, 1)
+    vertex([0, 0, 0])
+    call("glPointSize", f32(16))
+    clear()
+    call("glDrawArrays", 0, 0, 1)
+    r, g, b = pixel(W//2-4, H//2+4)
+    assert r > 150 and g < 90 and b < 90, ("sprite upper-left", r, g, b)
+    r, g, b = pixel(W//2+4, H//2-4)
+    assert r > 150 and g > 150 and b < 90, ("sprite lower-right", r, g, b)
+    call("glTexEnvi", 0x8861, 0x8862, 0)
+    call("glTexCoordPointer", 2, 0x1406, 0, floats([0.75, 0.75]))
+    call("glEnableClientState", 0x8078)
+    clear()
+    call("glDrawArrays", 0, 0, 1)
+    r, g, b = pixel(W//2, H//2)
+    assert r > 150 and g > 150 and b < 90, "coordReplace off"
+    call("glDisableClientState", 0x8078)
+    call("glTexEnvi", 0x8861, 0x8862, 1)
+    call("glEnableClientState", 0x8B9C)
+    call("glPointSizePointerOES", 0x1406, 0, floats([24, 4]))
+    vertex([0, -0.5, 0, 0, 0.5, 0])
+    clear()
+    call("glDrawArrays", 0, 0, 2)
+    call("glReadPixels", 0, 0, W, H, 0x1908, 0x1401, pixel_mem)
+    image = bytes(mu.mem_read(pixel_mem, W*H*4))
+    def lit_count(cy):
+        return sum(sum(image[(y*W+x)*4:(y*W+x)*4+3]) > 90
+                   for y in range(cy-14, cy+14) for x in range(W//2-14, W//2+14))
+    assert lit_count(H//4) >= 400 and lit_count(3*H//4) <= 30, "point size array"
+    call("glDisableClientState", 0x8B9C)
+    assert call("glGetError") == 0, "targeted regression GL error"
+    print("  lights / saturated depth / COMBINE / point-sprite pixel regressions passed")
 
     # Clean teardown via eglTerminate
     assert call("eglTerminate", dpy) == 1

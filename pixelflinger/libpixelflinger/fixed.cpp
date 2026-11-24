@@ -60,12 +60,21 @@ int32_t gglRecipQNormalized(int32_t x, int* exponent)
 int32_t gglRecipQ(GGLfixed x, int q)
 {
     int shift;
-    x = gglRecipQNormalized(x, &shift);
-    shift += 16-q;
-    if (shift > 0)
-        x += 1L << (shift-1);   // rounding
-    x >>= shift;
-    return x;
+    int64_t r = gglRecipQNormalized(x, &shift);
+    shift += 16 - q;
+    if (shift > 0) {
+        if (shift >= 32)
+            return (r < 0) ? -1 : 0;
+        r = (r + (1LL << (shift - 1))) >> shift;
+    } else if (shift < 0) {
+        const int lshift = -shift;
+        if (lshift >= 31)
+            return (r < 0) ? FIXED_MIN : FIXED_MAX;
+        r <<= lshift;
+        if (r > FIXED_MAX) return FIXED_MAX;
+        if (r < FIXED_MIN) return FIXED_MIN;
+    }
+    return int32_t(r);
 }    
 
 // ------------------------------------------------------------------------
@@ -88,7 +97,7 @@ static const GGLfixed ggl_sqrt_reciproc_approx_tab[8] = {
 
 GGLfixed gglSqrtRecipx(GGLfixed x)
 {
-    if (x == 0)         return FIXED_MAX;
+    if (x <= 0)         return FIXED_MAX;
     if (x == FIXED_ONE) return x;
     const GGLfixed a = x;
     const int32_t lz = gglClz(x);
@@ -137,7 +146,10 @@ static const GGLfixed ggl_alog_approx_tab[] = { // domain [0 - 1.0]
 
 GGLfixed gglPowx(GGLfixed x, GGLfixed y)
 {
-    // prerequisite: 0 <= x <= 1, and y >=0
+    // prerequisite: 0 <= x <= 1, and y >= 0
+    if (y <= 0)         return FIXED_ONE;
+    if (x <= 0)         return 0;
+    if (x >= FIXED_ONE) return FIXED_ONE;
 
     // pow(x,y) = 2^(y*log2(x))
     // =  2^(y*log2(x*(2^exp)*(2^-exp))))
@@ -152,7 +164,12 @@ GGLfixed gglPowx(GGLfixed x, GGLfixed y)
     GGLfixed p = gglMulAddx(
             ggl_log_approx_tab[f+1] - ggl_log_approx_tab[f], x,
             ggl_log_approx_tab[f]);
-    p = gglMulAddx(p, y, y*exp);
+    int64_t p64 = ((int64_t(p) * y) >> 16) + int64_t(y) * exp;
+    if (p64 <= 0)
+        return FIXED_ONE;
+    if (p64 >= (31LL << 16))
+        return 0;
+    p = GGLfixed(p64);
     exp = gglFixedToIntFloor(p);
     if (exp < 31) {
         p = gglFracx(p);
@@ -166,7 +183,6 @@ GGLfixed gglPowx(GGLfixed x, GGLfixed y)
         p = 0;
     }
     return p;
-        // ( powf((a*65536.0f), (b*65536.0f)) ) * 65536.0f;
 }
 
 // ------------------------------------------------------------------------

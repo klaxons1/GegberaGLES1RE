@@ -45,11 +45,12 @@ static GLboolean queryEnabled(ogles_context_t* c, GLenum cap, bool* valid)
     switch (cap) {
     case GL_POINT_SMOOTH:           return c->point.smooth ? GL_TRUE : GL_FALSE;
     case GL_LINE_SMOOTH:            return c->line.smooth ? GL_TRUE : GL_FALSE;
+    case GL_POINT_SPRITE_OES:       return c->point.sprite ? GL_TRUE : GL_FALSE;
     case GL_POLYGON_OFFSET_FILL:    return c->polygonOffset.enable ? GL_TRUE : GL_FALSE;
     case GL_CULL_FACE:              return c->cull.enable ? GL_TRUE : GL_FALSE;
     case GL_LIGHTING:               return c->lighting.enable ? GL_TRUE : GL_FALSE;
     case GL_COLOR_MATERIAL:         return c->lighting.colorMaterial.enable ? GL_TRUE : GL_FALSE;
-    case GL_NORMALIZE:              return (c->transforms.rescaleNormals == GL_NORMALIZE) ? GL_TRUE : GL_FALSE;
+    case GL_NORMALIZE:              return c->transforms.normalize ? GL_TRUE : GL_FALSE;
     case GL_RESCALE_NORMAL:         return (c->transforms.rescaleNormals == GL_RESCALE_NORMAL) ? GL_TRUE : GL_FALSE;
     case GL_FOG:                    return (enables & GGL_ENABLE_FOG) ? GL_TRUE : GL_FALSE;
     case GL_DEPTH_TEST:             return (enables & GGL_ENABLE_DEPTH_TEST) ? GL_TRUE : GL_FALSE;
@@ -59,7 +60,7 @@ static GLboolean queryEnabled(ogles_context_t* c, GLenum cap, bool* valid)
     case GL_COLOR_LOGIC_OP:         return (enables & GGL_ENABLE_LOGIC_OP) ? GL_TRUE : GL_FALSE;
     case GL_DITHER:                 return (enables & GGL_ENABLE_DITHER) ? GL_TRUE : GL_FALSE;
     case GL_STENCIL_TEST:           return (enables & GGL_ENABLE_STENCIL_TEST) ? GL_TRUE : GL_FALSE;
-    case GL_TEXTURE_2D:             return c->rasterizer.state.texture[activeTmu].enable ? GL_TRUE : GL_FALSE;
+    case GL_TEXTURE_2D:             return c->textures.tmu[activeTmu].enable ? GL_TRUE : GL_FALSE;
     case GL_VERTEX_ARRAY:           return c->arrays.vertex.enable ? GL_TRUE : GL_FALSE;
     case GL_NORMAL_ARRAY:           return c->arrays.normal.enable ? GL_TRUE : GL_FALSE;
     case GL_COLOR_ARRAY:            return c->arrays.color.enable ? GL_TRUE : GL_FALSE;
@@ -637,6 +638,11 @@ void glTexEnvi(GLenum target, GLenum pname, GLint param)
 {
     ogles_context_t* c = ogles_context_t::get();
     if (target == GL_POINT_SPRITE_OES && pname == GL_COORD_REPLACE_OES) {
+        if (param != GL_TRUE && param != GL_FALSE) {
+            ogles_error(c, GL_INVALID_ENUM);
+            return;
+        }
+        c->textures.tmu[c->textures.active].coordReplace = param ? 1 : 0;
         return;
     }
     c->rasterizer.procs.texEnvi(c, target, pname, param);
@@ -646,17 +652,17 @@ void glTexEnviv(GLenum target, GLenum pname, const GLint *params)
 {
     ogles_context_t* c = ogles_context_t::get();
     if (target == GL_POINT_SPRITE_OES && pname == GL_COORD_REPLACE_OES) {
-        return;
-    }
-    if (pname == GL_TEXTURE_ENV_MODE) {
-        c->rasterizer.procs.texEnvi(c, target, pname, params[0]);
+        glTexEnvi(target, pname, params[0]);
         return;
     }
     if (pname == GL_TEXTURE_ENV_COLOR) {
         c->rasterizer.procs.texEnvxv(c, target, pname, (const GGLfixed*)params);
         return;
     }
-    ogles_error(c, GL_INVALID_ENUM);
+    // TEXTURE_ENV_MODE and the GL_OES_combine_union integer pnames
+    // all take plain enums/ints; anything else falls through to the
+    // rasterizer which validates the enum
+    c->rasterizer.procs.texEnvi(c, target, pname, params[0]);
 }
 
 void glGetTexEnviv(GLenum env, GLenum pname, GLint *params)
@@ -664,7 +670,8 @@ void glGetTexEnviv(GLenum env, GLenum pname, GLint *params)
     ogles_context_t* c = ogles_context_t::get();
     const int activeTmu = c->textures.active;
     if (env == GL_POINT_SPRITE_OES && pname == GL_COORD_REPLACE_OES) {
-        params[0] = GL_FALSE;
+        params[0] = c->textures.tmu[activeTmu].coordReplace ?
+                GL_TRUE : GL_FALSE;
         return;
     }
     if (env != GL_TEXTURE_ENV) {
@@ -680,6 +687,38 @@ void glGetTexEnviv(GLenum env, GLenum pname, GLint *params)
         for (int i = 0; i < 4; i++)
             params[i] = ubToFixed(t.env_color[i]);
         break;
+    case GL_COMBINE_RGB:
+        params[0] = (GLint)t.combine.combine_rgb;
+        break;
+    case GL_COMBINE_ALPHA:
+        params[0] = (GLint)t.combine.combine_alpha;
+        break;
+    case GL_SRC0_RGB:
+    case GL_SRC1_RGB:
+    case GL_SRC2_RGB:
+        params[0] = (GLint)t.combine.src_rgb[pname - GL_SRC0_RGB];
+        break;
+    case GL_SRC0_ALPHA:
+    case GL_SRC1_ALPHA:
+    case GL_SRC2_ALPHA:
+        params[0] = (GLint)t.combine.src_alpha[pname - GL_SRC0_ALPHA];
+        break;
+    case GL_OPERAND0_RGB:
+    case GL_OPERAND1_RGB:
+    case GL_OPERAND2_RGB:
+        params[0] = (GLint)t.combine.op_rgb[pname - GL_OPERAND0_RGB];
+        break;
+    case GL_OPERAND0_ALPHA:
+    case GL_OPERAND1_ALPHA:
+    case GL_OPERAND2_ALPHA:
+        params[0] = (GLint)t.combine.op_alpha[pname - GL_OPERAND0_ALPHA];
+        break;
+    case GL_RGB_SCALE:
+        params[0] = (GLint)t.combine.rgb_scale;
+        break;
+    case GL_ALPHA_SCALE:
+        params[0] = (GLint)t.combine.alpha_scale;
+        break;
     default:
         ogles_error(c, GL_INVALID_ENUM);
         break;
@@ -689,32 +728,19 @@ void glGetTexEnviv(GLenum env, GLenum pname, GLint *params)
 void glGetTexEnvxv(GLenum env, GLenum pname, GLfixed *params)
 {
     glGetTexEnviv(env, pname, (GLint*)params);
+    if (env == GL_TEXTURE_ENV && (pname == GL_RGB_SCALE || pname == GL_ALPHA_SCALE))
+        params[0] *= 0x10000;
 }
 
 void glGetTexEnvfv(GLenum env, GLenum pname, GLfloat *params)
 {
-    ogles_context_t* c = ogles_context_t::get();
-    const int activeTmu = c->textures.active;
-    if (env == GL_POINT_SPRITE_OES && pname == GL_COORD_REPLACE_OES) {
-        params[0] = 0.0f;
-        return;
-    }
-    if (env != GL_TEXTURE_ENV) {
-        ogles_error(c, GL_INVALID_ENUM);
-        return;
-    }
-    const texture_t& t = c->rasterizer.state.texture[activeTmu];
-    switch (pname) {
-    case GL_TEXTURE_ENV_MODE:
-        params[0] = (GLfloat)t.env;
-        break;
-    case GL_TEXTURE_ENV_COLOR:
+    GLint iv[4] = { 0, 0, 0, 0 };
+    glGetTexEnviv(env, pname, iv);
+    if (env == GL_TEXTURE_ENV && pname == GL_TEXTURE_ENV_COLOR) {
         for (int i = 0; i < 4; i++)
-            params[i] = gglFixedToFloat(ubToFixed(t.env_color[i]));
-        break;
-    default:
-        ogles_error(c, GL_INVALID_ENUM);
-        break;
+            params[i] = gglFixedToFloat(iv[i]);
+    } else {
+        params[0] = (GLfloat)iv[0];
     }
 }
 

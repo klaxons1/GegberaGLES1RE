@@ -566,7 +566,11 @@ void invert(GLfloat* inverse, const GLfloat* src)
             }
         }
         
-        t = 1.0f / tmp[i][i];
+        if (fabs(tmp[i][i]) < 1e-30) {
+            memcpy(inverse, gIdentityf, sizeof(gIdentityf));
+            return;
+        }
+        t = 1.0 / tmp[i][i];
         for (k = 0; k < 4; k++) {
             tmp[i][k] *= t;
             inverse[i*4+k] *= t;
@@ -613,6 +617,37 @@ void transform_state_t::update_mvui()
     */
 
     invert(r, mv);
+
+    if (normalize) {
+        // Pre-normalize the upper 3x3 scale in float before converting to
+        // s15.16 GLfixed so extreme glScalef (e.g. 1/32768 on GL_SHORT meshes
+        // or 1000x world scale) never saturates or underflows mvui!
+        GLfloat maxAbs = 0.0f;
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                GLfloat a = fabsf(r[I(j, i)]);
+                if (a > maxAbs) maxAbs = a;
+            }
+        }
+        if (maxAbs > 1e-30f && (maxAbs < 0.125f || maxAbs > 16.0f)) {
+            const GLfloat invMax = 1.0f / maxAbs;
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    r[I(j, i)] *= invMax;
+        }
+    } else if (rescaleNormals) {
+        // OpenGL ES 1.1 sec 2.11.3: rescale factor from 3rd row of (MV^-1)^T
+        const GLfloat m02 = r[I(2, 0)];
+        const GLfloat m12 = r[I(2, 1)];
+        const GLfloat m22 = r[I(2, 2)];
+        const GLfloat len2 = m02 * m02 + m12 * m12 + m22 * m22;
+        if (len2 > 1e-30f) {
+            const GLfloat f = 1.0f / sqrtf(len2);
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    r[I(j, i)] *= f;
+        }
+    }
 
     GLfixed* const x = mvui.matrix.m;
 
