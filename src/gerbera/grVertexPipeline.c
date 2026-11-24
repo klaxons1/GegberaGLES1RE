@@ -106,7 +106,6 @@ int grUpdateLights(Gerbera_s *state)
     if (typeDirty != 0)
     {
         activeDirtyMask |= typeDirty;
-        directionalMask = 0;
         for (i = 0; i < 8; ++i)
         {
             if (((1 << i) & typeDirty) != 0)
@@ -789,8 +788,8 @@ void grTransformTexCoordINT8x2(Gerbera_s *state, unsigned char *vertexList, int 
         unsigned char *p = &ptr[stride * vertex->index];
         int st[2];
 
-        st[0] = (int)(signed char)p[0] << 16;
-        st[1] = (int)(signed char)p[1] << 16;
+        st[0] = (int)(signed char)p[0] * 65536;
+        st[1] = (int)(signed char)p[1] * 65536;
         ITCTransform_mulxv(&vertex->texCoord[texUnit].x,
                            &state->texCoordTransform[texUnit], st, 2);
         vertex = &vertexBuffer[*vertexLista];
@@ -816,11 +815,11 @@ void grTransformTexCoordINT8x4(Gerbera_s *state, unsigned char *vertexList, int 
         unsigned char *p = &ptr[stride * vertex->index];
         int strq[4];
 
-        strq[0] = (int)(signed char)p[0] << 16;
-        strq[1] = (int)(signed char)p[1] << 16;
-        strq[2] = (int)(signed char)p[2] << 16;
+        strq[0] = (int)(signed char)p[0] * 65536;
+        strq[1] = (int)(signed char)p[1] * 65536;
+        strq[2] = (int)(signed char)p[2] * 65536;
         if (size == 4)
-            strq[3] = (int)(signed char)p[3] << 16;
+            strq[3] = (int)(signed char)p[3] * 65536;
         ITCTransform_mulxv(&vertex->texCoord[texUnit].x,
                            &state->texCoordTransform[texUnit], strq, size);
         vertex = &vertexBuffer[*vertexLista];
@@ -845,8 +844,8 @@ void grTransformTexCoordINT16x2(Gerbera_s *state, unsigned char *vertexList, int
         unsigned char *p = &ptr[stride * vertex->index];
         int st[2];
 
-        st[0] = (int)*(short *)(p + 0) << 16;
-        st[1] = (int)*(short *)(p + 2) << 16;
+        st[0] = (int)*(short *)(p + 0) * 65536;
+        st[1] = (int)*(short *)(p + 2) * 65536;
         ITCTransform_mulxv(&vertex->texCoord[texUnit].x,
                            &state->texCoordTransform[texUnit], st, 2);
         vertex = &vertexBuffer[*vertexLista];
@@ -872,11 +871,11 @@ void grTransformTexCoordINT16x4(Gerbera_s *state, unsigned char *vertexList, int
         unsigned char *p = &ptr[stride * vertex->index];
         int strq[4];
 
-        strq[0] = (int)*(short *)(p + 0) << 16;
-        strq[1] = (int)*(short *)(p + 2) << 16;
-        strq[2] = (int)*(short *)(p + 4) << 16;
+        strq[0] = (int)*(short *)(p + 0) * 65536;
+        strq[1] = (int)*(short *)(p + 2) * 65536;
+        strq[2] = (int)*(short *)(p + 4) * 65536;
         if (size == 4)
-            strq[3] = (int)*(short *)(p + 6) << 16;
+            strq[3] = (int)*(short *)(p + 6) * 65536;
         ITCTransform_mulxv(&vertex->texCoord[texUnit].x,
                            &state->texCoordTransform[texUnit], strq, size);
         vertex = &vertexBuffer[*vertexLista];
@@ -1124,6 +1123,7 @@ void grUpdateVertexPipeline(Gerbera_s *state)
     /* normal fetch stage */
     if (grTestCapability(state, GR_CAPABILITY_LIGHTING) != 0)
     {
+        /* Both original binaries use a bound pointer even if NORMAL_ARRAY is disabled. */
         if (state->vertexArray[1].data != NULL)
         {
             switch (state->vertexArray[1].type)
@@ -1392,12 +1392,12 @@ void grTransformVertex(Gerbera_s *state, _grVertex *vertex)
         {
             if (grIsAligned(src, 2) == 0 && grAssert("grIsAligned(src, 2)", "grVertexPipeline.inl", 270) != 0)
                 grDie(0);
-            x = (int)*(short *)(src + 0) << 16;
-            y = (int)*(short *)(src + 2) << 16;
+            x = (int)*(short *)(src + 0) * 65536;
+            y = (int)*(short *)(src + 2) * 65536;
             if (size >= 3)
-                z = (int)*(short *)(src + 4) << 16;
+                z = (int)*(short *)(src + 4) * 65536;
             if (size > 3)
-                w = (int)*(short *)(src + 6) << 16;
+                w = (int)*(short *)(src + 6) * 65536;
         }
         else if (array->type != GR_DATATYPE_INT8)
         {
@@ -1414,12 +1414,12 @@ void grTransformVertex(Gerbera_s *state, _grVertex *vertex)
         }
         else
         {
-            x = (int)(signed char)src[0] << 16;
-            y = (int)(signed char)src[1] << 16;
+            x = (int)(signed char)src[0] * 65536;
+            y = (int)(signed char)src[1] * 65536;
             if (size >= 3)
-                z = (int)(signed char)src[2] << 16;
+                z = (int)(signed char)src[2] * 65536;
             if (size > 3)
-                w = (int)(signed char)src[3] << 16;
+                w = (int)(signed char)src[3] * 65536;
         }
         /* the fixed-point position is consumed as the int view {x,y,z,w}
          * (16.16): the float view's e slot holds x */
@@ -1661,9 +1661,9 @@ void grLightVertex(Gerbera_s *state, _grVertex *v)
     }
     else
     {
-        int rescale = grTestCapability(state, GR_CAPABILITY_RESCALE_NORMAL);
+        int normalize = grTestCapability(state, GR_CAPABILITY_NORMALIZE);
 
-        XNormalTransform_mulNormal(eyeNormal, &state->normalsToEyeTransform, eyeNormal, rescale);
+        XNormalTransform_mulNormal(eyeNormal, &state->normalsToEyeTransform, eyeNormal, normalize);
     }
     shininess = state->material.shininess;
     light(state->l_directional, shininess, NULL, eyeNormal, nSides, 1);

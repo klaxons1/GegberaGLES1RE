@@ -34,7 +34,7 @@ int hgInRange32(int a, int lo, int hi)
 {
     HG_ASSERT_AT("hgInt32.inl", 294, lo <= hi);
     /* unsigned trick: 0 <= a-lo <= hi-lo, valid whenever lo <= hi */
-    return (HGuint32)(a - lo) <= (HGuint32)(hi - lo);
+    return (HGuint32)a - (HGuint32)lo <= (HGuint32)hi - (HGuint32)lo;
 }
 
 int hgMin32(int a, int b)
@@ -59,7 +59,7 @@ HGuint32 hgMaxu32(HGuint32 a, HGuint32 b)
 
 int hgAbs32(int a)
 {
-    return a < 0 ? -a : a;
+    return a < 0 ? (int)(0u - (HGuint32)a) : a;
 }
 
 int hgSign32(int value)
@@ -104,7 +104,7 @@ int hgIsPowerOfTwo32(HGuint32 x)
 
 int hgDiff32(int a, int b)
 {
-    return hgAbs32(a - b);
+    return hgAbs32((int)((HGuint32)a - (HGuint32)b));
 }
 
 int hgRor32(int a, int sh)
@@ -124,7 +124,7 @@ int hgCopySign32(int d, int s)
 int hgBitMask32(int x, int i)
 {
     HG_ASSERT_AT("hgInt32.inl", 310, i >= 0 && i <= 31);
-    return x << (31 - i) >> 31;
+    return (int)((HGuint32)x << (31 - i)) >> 31;
 }
 
 int hgAdds32(int a, int b)
@@ -133,7 +133,7 @@ int hgAdds32(int a, int b)
      * against the sign of the 64 bit sum */
     HGint64 sum64 = hgAdd64(hgSet64s(a), hgSet64s(b));
     int high = hgGet64h(sum64);
-    int sum  = b + a;
+    int sum  = (int)((HGuint32)b + (HGuint32)a);
     if ((sum ^ high) < 0)
         return high ^ 0x7FFFFFFF;
     return sum;
@@ -232,8 +232,8 @@ HGint64 hgSetBit64(HGint64 x, int offset)
     return x | (HGint64)mask;
 }
 
-HGint64 hgAdd64(HGint64 a, HGint64 b) { return b + a; }
-HGint64 hgSub64(HGint64 a, HGint64 b) { return a - b; }
+HGint64 hgAdd64(HGint64 a, HGint64 b) { return (HGint64)((HGuint64)b + (HGuint64)a); }
+HGint64 hgSub64(HGint64 a, HGint64 b) { return (HGint64)((HGuint64)a - (HGuint64)b); }
 HGint64 hgOr64(HGint64 a, HGint64 b)  { return b | a; }
 
 int hgLessThan64(HGint64 a, HGint64 b)
@@ -273,7 +273,7 @@ HGint64 hgLsl64(HGint64 a, int sh)
 {
     HG_ASSERT_AT("hgInt64Native.inl", 1016, sh >= 0 && sh <= 63);
     if ((sh & 0x20) == 0)
-        return a << (sh & 31);
+        return (HGint64)((HGuint64)a << (sh & 31));
     /* shift by >= 32: low word vanishes, high word = low word << (sh & 31) */
     return hgSet64((int)((HGuint32)a << (sh & 31)), 0);
 }
@@ -283,13 +283,13 @@ int hgLsl64h(HGint64 a, int sh)
     HG_ASSERT_AT("hgInt64Native.inl", 1104, sh >= 0 && sh <= 63);
     if ((sh & 0x20) != 0)
         return (int)((HGuint32)a << (sh & 31));
-    return (int)((HGuint64)(a << sh) >> 32);
+    return (int)(((HGuint64)a << sh) >> 32);
 }
 
 int hgLsl64h_0_31(HGint64 a, int sh)
 {
     HG_ASSERT_AT("hgInt64Native.inl", 1163, sh >= 0 && sh <= 31);
-    return (int)((HGuint64)(a << sh) >> 32);
+    return (int)(((HGuint64)a << sh) >> 32);
 }
 
 HGint64 hgLsr64(HGint64 a, int sh)
@@ -316,7 +316,7 @@ HGint64 hgAsr64_0_31(HGint64 a, int sh)
 
 HGint64 hgNeg64(HGint64 a)
 {
-    return -a;
+    return (HGint64)(0ull - (HGuint64)a);
 }
 
 HGint64 hgNot64(HGint64 a)
@@ -326,7 +326,7 @@ HGint64 hgNot64(HGint64 a)
 
 HGint64 hgAbs64(HGint64 a)
 {
-    return a >= 0 ? a : -a;
+    return a >= 0 ? a : hgNeg64(a);
 }
 
 HGint64 hgMul64(int a, int b)
@@ -357,10 +357,10 @@ HGint64 hgMul64x32(HGint64 a, int b)
     HGuint32 low  = (HGuint32)hgGet64l(a);
     HGuint64 lowP = hgMulu64(low, (HGuint32)b);
     HGint64  res  = hgToSigned64(lowP);
-    int highP = b * hgGet64h(a);
-    int mid   = hgGet64h(res) + highP;
-    mid -= (b >> 31) & (HGuint32)hgGet64l(a);  /* sign correction */
-    return hgSet64(mid, hgGet64l(res));
+    HGuint32 highP = (HGuint32)b * (HGuint32)hgGet64h(a);
+    HGuint32 mid = (HGuint32)hgGet64h(res) + highP;
+    mid -= (HGuint32)(b >> 31) & low;  /* sign correction */
+    return hgSet64((int)mid, hgGet64l(res));
 }
 
 HGint64 hgMadd64(HGint64 a, int b, int c)

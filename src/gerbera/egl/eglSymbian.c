@@ -412,37 +412,16 @@ int egliSurfaceResized(eglSurface_s *surface)
 
     if (surface->type == EGL_SURFACE_WINDOW)
     {
-        eglWindowSurface *winSurf = (eglWindowSurface *)surface;
-        if (winSurf->backBufferBitmap != NULL)
-        {
-            SymTSize curSz;
-            SymTSize newSz;
-            int dispMode;
-
-            curSz.iWidth = 0;
-            curSz.iHeight = 0;
-            sym_CFbsBitmap_SizeInPixels(&curSz, winSurf->backBufferBitmap);
-            newSz.iWidth = surface->width;
-            newSz.iHeight = surface->height;
-            if (curSz.iWidth != newSz.iWidth || curSz.iHeight != newSz.iHeight)
-            {
-                if (sym_CFbsBitmap_Resize(winSurf->backBufferBitmap, &newSz) != 0)
-                    return 0;
-            }
-            dispMode = sym_CFbsBitmap_DisplayMode(winSurf->backBufferBitmap);
-            surface->colorBuffer = NULL;
-            surface->colorBufferStride = sym_CFbsBitmap_ScanLineLength(surface->width, dispMode);
-        }
+        /* Native ARM 0x8B1C updates dimensions only. The lock path acquires the
+         * address and stride first, retaining the old stride for one lock. */
+        egliGetNativeWindowSize((eglWindowSurface *)surface,
+                                &surface->width, &surface->height);
     }
     else if (surface->type == EGL_SURFACE_PIXMAP)
     {
         eglPixmapSurface *pixSurf = (eglPixmapSurface *)surface;
-        if (pixSurf->nativePixmap != NULL)
-        {
-            int dispMode = sym_CFbsBitmap_DisplayMode(pixSurf->nativePixmap);
-            surface->colorBuffer = NULL;
-            surface->colorBufferStride = sym_CFbsBitmap_ScanLineLength(surface->width, dispMode);
-        }
+        egliGetNativePixmapSize(pixSurf->nativePixmap,
+                                &surface->width, &surface->height);
     }
 
     return 1;
@@ -1281,14 +1260,10 @@ void egliFixConfig(eglConfig *config)
 
     EGL_ASSERT_AT("eglSymbian.inl", 1554, "config", config != NULL);
 
-#ifdef __SYMBIAN32__
-    /* Matches sub_83AC (VA 0x83AC) in docs/libgles_cm.dll.epoc:
-     * filter EGL_PIXMAP_BIT against supported CFbsBitmap color formats and
-     * filter EGL_WINDOW_BIT against the active WServ screen TDisplayMode. */
+    /* Match the native bitmap formats and the active screen display mode. */
     if (state != NULL)
     {
         int i;
-        config->nativeRenderable = EGL_FALSE;
         if ((config->surfaceType & EGL_PIXMAP_BIT) != 0)
         {
             config->surfaceType &= ~EGL_PIXMAP_BIT;
@@ -1323,33 +1298,6 @@ void egliFixConfig(eglConfig *config)
             }
         }
     }
-#else
-    if (config->alphaBits == 4)
-    {
-        config->colorBits -= 4;
-        config->alphaBits = 0;
-    }
-
-    if ((config->surfaceType & EGL_WINDOW_BIT) != 0 && state != NULL)
-    {
-        int mode = state->displayMode;
-        if (mode == EGL_SYMBIAN_ECOLOR16MA || mode == EGL_SYMBIAN_ECOLOR16MU)
-        {
-            if (config->colorBits < 24)
-                config->configCaveat = EGL_SLOW_CONFIG;
-        }
-        else if (mode == EGL_SYMBIAN_ECOLOR64K)
-        {
-            if (config->colorBits != 16)
-                config->configCaveat = EGL_SLOW_CONFIG;
-        }
-        else if (mode == EGL_SYMBIAN_ECOLOR4K)
-        {
-            if (config->colorBits != 12)
-                config->configCaveat = EGL_SLOW_CONFIG;
-        }
-    }
-#endif
 }
 
 void egliFixPixelOffsets(oglSurfaceDescriptor_s *desc, const eglSurface_s *surface)

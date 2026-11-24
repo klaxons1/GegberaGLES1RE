@@ -39,13 +39,6 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig 
         return EGL_NO_SURFACE;
     }
 
-    eglFillConfig(&cfg, config);
-    if ((cfg.surfaceType & EGL_PBUFFER_BIT) == 0)
-    {
-        eglSetError(EGL_BAD_MATCH);
-        return EGL_NO_SURFACE;
-    }
-
     if (attrib_list != NULL)
     {
         while (*attrib_list != EGL_NONE)
@@ -94,27 +87,11 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig 
                 mipmapTexture = (val != 0);
                 break;
             default:
-                eglSetError(EGL_BAD_ATTRIBUTE);
-                return EGL_NO_SURFACE;
+                /* Both originals ignore unknown pbuffer attributes. */
+                break;
             }
             attrib_list += 2;
         }
-    }
-
-    if ((cfg.bindToTextureRgb == 0 && textureFormat == EGL_TEXTURE_RGB) ||
-        (cfg.bindToTextureRgba == 0 && textureFormat == EGL_TEXTURE_RGBA) ||
-        ((textureFormat == EGL_NO_TEXTURE) != (textureTarget == EGL_NO_TEXTURE)))
-    {
-        eglSetError(EGL_BAD_MATCH);
-        return EGL_NO_SURFACE;
-    }
-
-    if (textureTarget == EGL_TEXTURE_2D &&
-        (hgIsPowerOfTwo32((unsigned int)width) == 0 ||
-         hgIsPowerOfTwo32((unsigned int)height) == 0))
-    {
-        eglSetError(EGL_BAD_MATCH);
-        return EGL_NO_SURFACE;
     }
 
     if (width > EGL_MAX_PBUFFER_DIM || height > EGL_MAX_PBUFFER_DIM)
@@ -130,6 +107,34 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig 
             height = EGL_MAX_PBUFFER_DIM;
     }
 
+    if ((textureFormat == EGL_NO_TEXTURE) != (textureTarget == EGL_NO_TEXTURE))
+    {
+        eglSetError(EGL_BAD_ATTRIBUTE);
+        return EGL_NO_SURFACE;
+    }
+    if (textureTarget == EGL_TEXTURE_2D)
+    {
+        if (largestPbuffer)
+        {
+            /* ARM 0x9F38 and x86 0x4043DF round down, capped at 1024.
+             * Zero would produce a negative C shift; keep it zero safely. */
+            width = width ? 1 << hgMin32(31 - hgClz32((unsigned int)width), 10) : 0;
+            height = height ? 1 << hgMin32(31 - hgClz32((unsigned int)height), 10) : 0;
+        }
+        else if (!hgIsPowerOfTwo32((unsigned int)width) ||
+                 !hgIsPowerOfTwo32((unsigned int)height))
+        {
+            eglSetError(EGL_BAD_ATTRIBUTE);
+            return EGL_NO_SURFACE;
+        }
+    }
+    eglFillConfig(&cfg, config);
+    if ((cfg.surfaceType & EGL_PBUFFER_BIT) == 0)
+    {
+        eglSetError(EGL_BAD_MATCH);
+        return EGL_NO_SURFACE;
+    }
+
     pbuffer = (eglPbufferSurface *)eglAlloc(sizeof(eglPbufferSurface));
     if (pbuffer == NULL)
     {
@@ -140,16 +145,7 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig 
     bytesPerPixel = egliNextPowerOfTwo((cfg.colorBits - 1) >> 3);
     if (width != 0 && height != 0)
     {
-        for (;;)
-        {
-            colorBuffer = eglAlloc((unsigned int)(bytesPerPixel * width * height));
-            if (colorBuffer != NULL || largestPbuffer == 0 || width <= 1 || height <= 1)
-                break;
-            if (width >= height)
-                width >>= 1;
-            else
-                height >>= 1;
-        }
+        colorBuffer = eglAlloc((unsigned int)(bytesPerPixel * width * height));
         if (colorBuffer == NULL)
         {
             eglFree(pbuffer);
@@ -160,13 +156,11 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig 
 
     hgMemSet(pbuffer, 0, sizeof(*pbuffer));
     eglInitRefCount(&pbuffer->surface.refCount);
-    pbuffer->surface.display = display;
     pbuffer->surface.configID = config;
     pbuffer->surface.colorBuffer = colorBuffer;
     pbuffer->surface.colorBufferStride = bytesPerPixel * width;
     pbuffer->surface.width = width;
     pbuffer->surface.height = height;
-    pbuffer->surface.id = ++display->surfaceCount;
     pbuffer->surface.type = EGL_SURFACE_PBUFFER;
     pbuffer->isLargestPbuffer = largestPbuffer;
     pbuffer->mipmapTexture = mipmapTexture;
@@ -174,19 +168,7 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig 
     pbuffer->textureTarget = textureTarget;
     pbuffer->mipmapLevel = 0;
 
-    if (eglUpdateSurfaceBuffers(&pbuffer->surface) == 0)
-    {
-        if (pbuffer->surface.colorBuffer != NULL)
-            eglFree(pbuffer->surface.colorBuffer);
-        if (pbuffer->surface.depthBuffer != NULL)
-            eglFree(pbuffer->surface.depthBuffer);
-        if (pbuffer->surface.stencilBuffer != NULL)
-            eglFree(pbuffer->surface.stencilBuffer);
-        eglFree(pbuffer);
-        eglSetError(EGL_BAD_ALLOC);
-        return EGL_NO_SURFACE;
-    }
-
+    /* Depth and stencil storage are allocated when the surface is bound. */
     eglDisplayAddSurface(display, &pbuffer->surface);
     return pbuffer->surface.id;
 }
@@ -258,10 +240,8 @@ EGLAPI EGLContext EGLAPIENTRY eglCreateContext(EGLDisplay dpy, EGLConfig config,
     }
 
     eglInitRefCount(&ctx->refCount);
-    ctx->display = display;
     ctx->esContext = esCtx;
     ctx->configID = config;
-    ctx->id = ++display->contextCount;
     ctx->hasBeenBound = 0;
 
     eglDisplayAddContext(display, ctx);
@@ -294,27 +274,7 @@ EGLAPI EGLBoolean EGLAPIENTRY eglDestroyContext(EGLDisplay dpy, EGLContext ctx)
     }
 
     if (eglDestroyRef(&context->refCount) != 0)
-    {
-        eglSurface_s *surf;
-        for (surf = display->surfaceList; surf != NULL; surf = surf->next)
-        {
-            if (surf->type == EGL_SURFACE_PBUFFER)
-            {
-                eglPbufferSurface *pbuf = (eglPbufferSurface *)surf;
-                if (pbuf->boundESContext == context->esContext)
-                {
-                    if (pbuf->textureName != 0 &&
-                        oglIsSurfaceTextureReleased(pbuf->boundESContext, pbuf->textureName) == 0)
-                    {
-                        oglReleaseSurfaceTexture(pbuf->boundESContext, pbuf->textureName, pbuf->mipmapLevel);
-                    }
-                    pbuf->boundESContext = NULL;
-                    pbuf->textureName = 0;
-                }
-            }
-        }
         eglFreeContext(context);
-    }
 
     return EGL_TRUE;
 }

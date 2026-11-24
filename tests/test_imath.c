@@ -85,6 +85,12 @@ static void test_accessors(void)
 
 static void test_fixed(void)
 {
+    /* The original SHL preserves signed word patterns before its overflow check. */
+    CHECK_EQ(imLsl32OF(-1, 31), 0x80000000u);
+    CHECK_EQ(imLsl32OF(-1, 0), 0xFFFFFFFFu);
+    CHECK_EQ(imLsl32OF(-2, 29), 0xC0000000u);
+    CHECK_EQ(imAdd32OF(-2147483647 - 1, 1), 0x80000001u);
+    CHECK_EQ(imSub32OF(-2147483647, 1), 0x80000000u);
     /* fixedToScalar(m, n) = scalar(m * 2^-n) */
     CHECK_EQ(IScalar_fixedToScalar(60, 4), FIN(3.75f));
     CHECK_EQ(IScalar_fixedToScalar(-16, 4), FIN(-1.0f));
@@ -270,6 +276,16 @@ static void test_xscalar(void)
     }
     /* exp2(0) = 1.0 (10.21) */
     CHECK_EQ(XScalar_exp2(0), 2097152);
+    CHECK_EQ(XScalar_exp2(0x1FFFFFFF), 0x7FFFFFFF);
+    CHECK_EQ(imLsl32s(-32769, 1), -65538);
+    CHECK_EQ(imLsl32s(-32769, 16), 0x80000000u);
+    CHECK_EQ(imLsl32s(32768, 16), 0x7FFFFFFF);
+    CHECK_EQ(imLsl32s(-1, 31), 0x80000000u);
+    CHECK_EQ(imLsl32us(0xFFFF7FFFu, 31), 0x7FFFFFFF);
+    CHECK_EQ(imLsl32us(0x3FFFFFFFu, 1), 0x7FFFFFFE);
+    CHECK_EQ(imLsl32us(0x40000000u, 1), 0x7FFFFFFF);
+    CHECK_EQ(IScalar_toFixedHO(0, 31), 0);
+    CHECK_EQ(IScalar_toFixedHO(FIN(1.0f), 31), 0x7FFFFF80);
     /* mul: (a*b)>>10 in 10.21 domain */
     CHECK_EQ(XScalar_mul(2 * 2097152, 3 * 2097152), 6 * 2097152);
     {
@@ -418,6 +434,20 @@ static void test_ifvector4(void)
     CHECK_EQ(IScalar_cmpne(IFVector4_getf(&f, 1), FIN(-2.5f)), 0);
     CHECK_EQ(IScalar_cmpne(IFVector4_getf(&f, 2), FIN(0.25f)), 0);
     CHECK_EQ(IScalar_cmpne(IFVector4_getf(&f, 3), FIN(1.0f)), 0);
+    {
+        _IVector3 divided;
+        int i;
+        IFVector4_set(&f, FIN(1.75f), FIN(1.75f), FIN(1.75f), FIN(0.75f));
+        CHECK_EQ(IFVector4_tov3(&divided, &f), 1);
+        CHECK_EQ(divided.e, 128);
+        for (i = 0; i < 3; ++i)
+            CHECK_EQ(divided.m[i], 0x25555530);
+        IFVector4_set(&f, FIN(-1.75f), FIN(-1.75f), FIN(-1.75f), FIN(0.75f));
+        CHECK_EQ(IFVector4_tov3(&divided, &f), 1);
+        CHECK_EQ(divided.e, 128);
+        for (i = 0; i < 3; ++i)
+            CHECK_EQ(divided.m[i], -0x25555530);
+    }
 
     /* setfv from float bits */
     {
@@ -457,6 +487,11 @@ static void test_ifvector4(void)
 static void test_inormal3(void)
 {
     int n[3], m[3];
+
+    XNormal3_sets(n, -32768, -1, 32767);
+    CHECK_EQ(n[0], -2097152);
+    CHECK_EQ(n[1], -64);
+    CHECK_EQ(n[2], 2097088);
 
     /* normalize (3,4,0) -> (0.6, 0.8, 0) in 10.21 */
     n[0] = 3 * 2097152; n[1] = 4 * 2097152; n[2] = 0;
@@ -561,6 +596,17 @@ static void test_imatrix(void)
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 3, 2)) + 1.0f) < 1e-5f);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 3, 3)) - 1.0f) < 1e-5f);
     }
+    /* Scaling across a mantissa boundary must renormalize both signs. */
+    {
+        int factors[3] = {FIN(1.5f), FIN(-1.5f), FIN(1.5f)};
+        IMatrix4x4_identity(&a);
+        IMatrix4x4_scale(&a, &a, factors);
+        factors[1] = FIN(1.5f);
+        IMatrix4x4_scale(&b, &a, factors);
+        for (i = 0; i < 3; ++i)
+            CHECK(fabsf(IScalar_stof(IMatrix4x4_getScalar(&b, i, i)) -
+                        (i == 1 ? -2.25f : 2.25f)) < 1e-6f);
+    }
     /* rotate 0 deg = identity; 180 about z = diag(-1,-1,1);
      * 90 about z: R[1][0]=1, R[0][1]=-1 (right-handed) */
     {
@@ -573,14 +619,20 @@ static void test_imatrix(void)
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 0, 0)) - 1.0f) < 1e-4f);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 2, 2)) - 1.0f) < 1e-4f);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 1, 0))) < 1e-4f);
+        for (i = 0; i < 4; ++i)
+            CHECK_EQ(IMatrix4x4_getScalar(&b, i, 3), i == 3 ? FIN(1.0f) : 0);
         IMatrix4x4_rotate(&b, &a, FIN(180.0f), &axis);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 0, 0)) + 1.0f) < 1e-4f);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 1, 1)) + 1.0f) < 1e-4f);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 2, 2)) - 1.0f) < 1e-4f);
+        for (i = 0; i < 4; ++i)
+            CHECK_EQ(IMatrix4x4_getScalar(&b, i, 3), i == 3 ? FIN(1.0f) : 0);
         IMatrix4x4_rotate(&b, &a, FIN(90.0f), &axis);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 0, 1)) - 1.0f) < 1e-4f);  /* R[1][0] */
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 1, 0)) + 1.0f) < 1e-4f);  /* R[0][1] */
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 2, 2)) - 1.0f) < 1e-4f);
+        for (i = 0; i < 4; ++i)
+            CHECK_EQ(IMatrix4x4_getScalar(&b, i, 3), i == 3 ? FIN(1.0f) : 0);
     }
     /* inverse of diag(2,2,2,1) with rescale = diag(0.5,0.5,0.5,1) */
     {
@@ -594,6 +646,60 @@ static void test_imatrix(void)
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 2, 2)) - 0.5f) < 1e-4f);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 3, 3)) - 1.0f) < 1e-4f);
         CHECK(fabs(IScalar_stof(IMatrix4x4_getScalar(&b, 1, 0))) < 1e-4f);
+    }
+    /* A shear has nonzero cofactors with alternating signs. Verify the
+     * complete inverse and the unscaled adjugate (the determinant is one). */
+    {
+        const float shear[16] = {
+            1, 2, 0, 0, 3, 7, 0, 0, 0, 0, 1, 0, 5, 11, 0, 1
+        };
+        const float inverse[16] = {
+            7, -2, 0, 0, -3, 1, 0, 0, 0, 0, 1, 0, -2, -1, 0, 1
+        };
+        int bits[16], scale;
+        for (i = 0; i < 16; ++i)
+            bits[i] = FIN(shear[i]);
+        IMatrix4x4_setfv(&a, bits);
+        for (scale = 0; scale <= 1; ++scale)
+        {
+            IMatrix4x4_inverse(&b, &a, scale);
+            IMatrix4x4_getfv((int *)fv, &b);
+            for (i = 0; i < 16; ++i)
+                CHECK(fabsf(fv[i] - inverse[i]) < 1e-5f);
+        }
+    }
+    /* Equal nonzero determinant terms cancel to scalar zero. */
+    {
+        int bits[16] = {0};
+        bits[0] = FIN(2.0f); bits[1] = FIN(3.0f);
+        bits[4] = FIN(4.0f); bits[5] = FIN(6.0f);
+        bits[10] = FIN(1.0f); bits[15] = FIN(1.0f);
+        IMatrix4x4_setfv(&a, bits);
+        CHECK_EQ(IMatrix4x4_det2h(&a, 0, 0, 1, 1), 0);
+    }
+    /* Destination may alias the right operand of a matrix product. Each
+     * output row must still use the original complete input column. */
+    {
+        const float left[16] = {
+            1, 2, 0, 0, 3, 4, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1
+        };
+        const float right[16] = {
+            5, 6, 0, 0, 7, 8, 0, 0, 0, 0, 1, 0, 9, 10, 0, 1
+        };
+        const float product[16] = {
+            23, 34, 0, 0, 31, 46, 0, 0, 0, 0, 1, 0, 39, 58, 0, 1
+        };
+        int bits[16];
+        for (i = 0; i < 16; ++i)
+            bits[i] = FIN(left[i]);
+        IMatrix4x4_setfv(&a, bits);
+        for (i = 0; i < 16; ++i)
+            bits[i] = FIN(right[i]);
+        IMatrix4x4_setfv(&b, bits);
+        IMatrix4x4_mul(&b, &a, &b);
+        IMatrix4x4_getfv((int *)fv, &b);
+        for (i = 0; i < 16; ++i)
+            CHECK(fabsf(fv[i] - product[i]) < 1e-5f);
     }
     /* inversetranspose of a rotation about z by 90 -> R^T, scale ~ 2^18 */
     {
@@ -610,6 +716,28 @@ static void test_imatrix(void)
         CHECK(abs(nt.m[1][0] + 0x7FFFFF80) <= 0x20000);
         CHECK(abs(nt.m[2][2] - 0x7FFFFF00) <= 0x20000);
         CHECK(nt.m[0][0] < 0x10000);
+    }
+    /* The fixed z-only path feeds fog. Exercise distinct packed shift bytes,
+     * non-unit homogeneous coordinates, and both signs of the accumulated Z. */
+    {
+        _IVertexTransform transform;
+        int bits[16] = {0};
+        int positions[4][4] = {
+            {0x8000, -0x4000, 0x20000, 0x10000},
+            {0x8000, -0x4000, 0x20000, 0x20000},
+            {-0x8000, 0x4000, 0x20000, -0x10000},
+            {0x40000, 0, 0, -0x10000}
+        };
+        const float expected[4] = {7.0f, 15.0f, -9.0f, 0.0f};
+        bits[0] = bits[5] = bits[15] = FIN(1.0f);
+        bits[2] = FIN(2.0f);
+        bits[6] = FIN(4.0f);
+        bits[10] = FIN(-0.5f);
+        bits[14] = FIN(8.0f);
+        IMatrix4x4_setfv(&a, bits);
+        IVertexTransform_copy(&transform, &a);
+        for (i = 0; i < 4; ++i)
+            CHECK_EQ(IVertexTransform_zmulxv4(&transform, positions[i]), FIN(expected[i]));
     }
     /* I64_tof: input scale is 2^50; inputs >= 2^51 hit the driver's own
      * "e <= 127" boundary assert, so stay below it */

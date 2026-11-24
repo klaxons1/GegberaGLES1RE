@@ -75,7 +75,7 @@ HGint32 IScalar_set(HGuint32 e, HGint32 m)
 HGint32 IScalar_setAndNormalize(HGuint32 e, HGint32 m)
 {
     HGint32 sh = hgClz32((HGuint32)hgAbs32(m)) - 1;
-    HGint32 ma = (sh >= 0) ? (m << sh) : (m >> 1);
+    HGint32 ma = (sh >= 0) ? (HGint32)((HGuint32)m << sh) : (m >> 1);
     HGint32 mb = ma >> 1;
     HGint32 ea = (HGint32)e - sh + 1;
     if (ea > 0)
@@ -142,7 +142,7 @@ HGint32 IScalar_fixedToScalar(HGint32 m, HGint32 n)
 {
     HGint32 sh = hgClz32((HGuint32)hgAbs32(m)) - 2;
     HGint32 e = 156 - (sh + n);
-    HGint32 ma = (sh >= 0) ? (m << sh) : (m >> (-(HGint8)(HGint8)sh));
+    HGint32 ma = (sh >= 0) ? (HGint32)((HGuint32)m << sh) : (m >> (-(HGint8)(HGint8)sh));
     if (ma == -1073741824)
     {
         ma = -536870912;
@@ -173,7 +173,8 @@ HGint32 IScalar_byteToScalar(HGuint8 b)
     HGuint32 pattern = (HGuint32)b | ((HGuint32)b << 8) | ((HGuint32)b << 16) | ((HGuint32)b << 24);
     HGint32 sh = hgClz32(pattern);
     HGuint32 e = (HGuint32)(126 - sh);
-    HGuint32 m = pattern << sh;
+    /* SHL masks the count when the zero byte gives clz(0) == 32. */
+    HGuint32 m = pattern << (sh & 31);
     HGuint32 r = m + 256;
     if (m + 256 < m)          /* overflow: renormalize */
     {
@@ -190,7 +191,7 @@ HGint32 IScalar_toFixedHO(HGint32 value, HGint32 bits)
 {
     if (hgInRange32(bits, 0, 31) == 0)
         imAssert("hgInRange32(bits, 0, 31)", "IScalar.c", 1205);
-    return IScalar_scalarToFixed(IScalar_mul(value, IScalar_intToScalar((1 << bits) - 1)), 0);
+    return IScalar_scalarToFixed(IScalar_mul(value, IScalar_intToScalar((int)((1u << bits) - 1u))), 0);
 }
 
 HGint32 IScalar_toXScalar(HGint32 v)
@@ -290,7 +291,7 @@ HGint32 XScalar_log2(HGint32 y)
     if (y <= 0)
         return (HGint32)0x80000000u;
     sh = hgClz32((HGuint32)y);
-    return (HGint32)((IScalar_log2_iterate((HGuint32)y << sh) >> 10) - ((sh - 10) << 21));
+    return (HGint32)((IScalar_log2_iterate((HGuint32)y << sh) >> 10) - ((HGuint32)(sh - 10) << 21));
 }
 
 /* ------------------------------------------------------------------ */

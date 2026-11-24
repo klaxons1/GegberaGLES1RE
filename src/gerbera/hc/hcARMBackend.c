@@ -1150,7 +1150,8 @@ static int HCARMBackend_codegen(void *mgrVoid, void **destination,
                 }
                 cur = cur->next;
             }
-            ctx.code[j] = hi | (((unsigned int)((byteDelta - 8) << 6)) >> 8);
+            /* ARM 0002542C..00025434 shifts the wrapped 32-bit displacement. */
+            ctx.code[j] = hi | ((((unsigned int)byteDelta - 8u) << 6) >> 8);
         }
     }
 

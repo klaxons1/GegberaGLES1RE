@@ -7,6 +7,12 @@
 
 static int checks = 0, failures = 0;
 
+/* Render-stack records contain both pointers and 64-bit cache masks. */
+#define TEST_RENDER_STACK(name) \
+    static union { HGint64 alignment; unsigned char bytes[GR_RENDER_STACK_SIZE]; } name##Storage; \
+    unsigned char *name = name##Storage.bytes
+#define TEST_PIXEL_PIPE_OFFSET (14644 + HC_extraStackSpace(grGetBackend()))
+
 #define CHECK(cond)                          \
     do                                       \
     {                                        \
@@ -148,6 +154,7 @@ static void test_hcdatastructs_and_emulator(void);
 static void test_hccompiler(void);
 static void test_gradients(void);
 static void test_grr_texture_and_blit(void);
+static void test_pixel_sampling(void);
 static void test_gerbera_lifecycle_and_api_small(void);
 
 int main(void)
@@ -195,6 +202,7 @@ int main(void)
     test_hcdatastructs_and_emulator();
     test_hccompiler();
     test_grr_texture_and_blit();
+    test_pixel_sampling();
     test_gerbera_lifecycle_and_api_small();
     printf("core tests: %d checks, %d failures\n", checks, failures);
     return failures != 0;
@@ -1662,7 +1670,7 @@ static void test_clear(void)
 static void test_clipper(void)
 {
     Gerbera_s st;
-    static unsigned char stack[23860];
+    TEST_RENDER_STACK(stack);
     _grVertex *vb;
     unsigned char fan[16];
     unsigned int indices;
@@ -1670,7 +1678,7 @@ static void test_clipper(void)
 
     memset(&st, 0, sizeof(st));
     st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
-    memset(stack, 0, sizeof(stack));
+    memset(stack, 0, sizeof(stackStorage.bytes));
     st.renderStack = stack;
 
     /* grClipFactorInit: vertex ndx gets ONE in its slot */
@@ -1748,7 +1756,7 @@ static void test_vertextcache(void)
     _grVertexCache *cache;
     _grVertex *vb;
     static float pos[66][3];
-    static unsigned char stack[GR_RENDER_STACK_SIZE];
+    TEST_RENDER_STACK(stack);
     int c, i;
 
     for (i = 0; i < 66; ++i)
@@ -1759,7 +1767,7 @@ static void test_vertextcache(void)
     }
     IMatrix4x4_identity(&id);
     memset(&st, 0, sizeof(st));
-    memset(stack, 0, sizeof(stack));
+    memset(stack, 0, sizeof(stackStorage.bytes));
     st.renderStack = stack;
     st.renderStackAllocated = 1;
     st.vertexCache = stack;                  /* grSetupRendering layout */
@@ -1848,7 +1856,7 @@ static void test_queueprimitive(void)
     _grVertex *vb;
     unsigned int *q;
     static float pos[66][3];
-    static unsigned char stack[GR_RENDER_STACK_SIZE];
+    TEST_RENDER_STACK(stack);
     int i, qidx;
 
     for (i = 0; i < 66; ++i)
@@ -1880,7 +1888,7 @@ static void test_queueprimitive(void)
     pos[55][0] = 0.0f;  pos[55][1] = 0.5f; pos[55][2] = 0.0f;
     IMatrix4x4_identity(&id);
     memset(&st, 0, sizeof(st));
-    memset(stack, 0, sizeof(stack));
+    memset(stack, 0, sizeof(stackStorage.bytes));
     st.renderStack = stack;
     st.renderStackAllocated = 1;
     st.vertexCache = stack;
@@ -2057,7 +2065,7 @@ static void test_fetchprimitives(void)
     _grVertexCache *cache;
     _grVertex *vb;
     _grPixelPipe pp;
-    static unsigned char stack[GR_RENDER_STACK_SIZE];
+    TEST_RENDER_STACK(stack);
     static unsigned char seen[256];
     unsigned char idx8[16];
     unsigned short idx16[8];
@@ -2075,7 +2083,7 @@ static void test_fetchprimitives(void)
 
     IMatrix4x4_identity(&id);
     memset(&st, 0, sizeof(st));
-    memset(stack, 0, sizeof(stack));
+    memset(stack, 0, sizeof(stackStorage.bytes));
     memset(&pp, 0, sizeof(pp));
     st.renderStack = stack;
     st.renderStackAllocated = 1;
@@ -2226,19 +2234,19 @@ static void test_gradients(void)
     _grVertex *vb;
     _grPixelPipe *pp;
     _grGradientInfo info;
-    static unsigned char stack[GR_RENDER_STACK_SIZE];
+    TEST_RENDER_STACK(stack);
     int i;
     HGint64 area;
     HGint64 rec;
 
     memset(&st, 0, sizeof(st));
-    memset(stack, 0, sizeof(stack));
+    memset(stack, 0, sizeof(stackStorage.bytes));
     st.renderStack = stack;
     st.renderStackAllocated = 1;
     st.vertexCache = stack;
-    st.pixelPipeline = stack + 14644; /* grExecutePixelPipeline's record */
+    st.pixelPipeline = stack + TEST_PIXEL_PIPE_OFFSET; /* grExecutePixelPipeline's record */
     st.primitiveType = GR_PRIMITIVETYPE_TRIANGLE;
-    pp = (_grPixelPipe *)(stack + 14644);
+    pp = (_grPixelPipe *)(stack + TEST_PIXEL_PIPE_OFFSET);
     vb = (_grVertex *)(stack + 1332);
 
     /* three well-separated screen positions in the real viewport-transform
@@ -2458,6 +2466,14 @@ static void test_gradients(void)
     CHECK(pp->xAdder[GR_GRADIENT_TEX1_T] == pp->xAdder[GR_GRADIENT_TEX1_S]);
     CHECK(pp->yAdder[GR_GRADIENT_TEX1_T] == pp->yAdder[GR_GRADIENT_TEX1_S]);
 
+    memset(&info, 0, sizeof(info));
+    info.pPP = pp;
+    info.v0sx = 4096;
+    info.v01syPerArea = 16384;
+    grSetupGradient(&info, GR_GRADIENT_TEX1_S, 0, 1, (int)0x80000000u);
+    CHECK(pp->xAdder[GR_GRADIENT_TEX1_S] == 1);
+    CHECK(pp->reference[GR_GRADIENT_TEX1_S] == 0x7FFFFFFF);
+
 #undef GRAD_VALUE
 }
 
@@ -2466,7 +2482,7 @@ static void test_gradients(void)
  * scissor {0,64,0,64}. Hand-derived scanline words (left | numPixels<<16). */
 static void test_scanconvert(void)
 {
-    static unsigned char stack[23860];
+    TEST_RENDER_STACK(stack);
     static unsigned char colorBuf[64 * 64 * 2];
     static unsigned char depthBuf[64 * 64 * 4];
     static unsigned char stencilBuf[64 * 64];
@@ -2489,7 +2505,7 @@ static void test_scanconvert(void)
     pairs[0].xStart[1] = 200 << 14;
     pairs[1].xStart[0] = 50 << 14;
     pairs[1].xStart[1] = 250 << 14;
-    memset(stack, 0, sizeof(stack));
+    memset(stack, 0, sizeof(stackStorage.bytes));
     grScanConvertWithoutXScissoring(pairs, (unsigned int *)stack, 3, 2);
     words = (unsigned int *)stack;
     CHECK(words[0] == (100u | (100u << 16)));
@@ -2509,10 +2525,10 @@ static void test_scanconvert(void)
      * exercised in the end-to-end case below. */
     st->renderStack = stack;
     st->renderStackAllocated = 1;
-    st->pixelPipeline = (_grPixelPipe *)(stack + 14644);
+    st->pixelPipeline = (_grPixelPipe *)(stack + TEST_PIXEL_PIPE_OFFSET);
     pp = st->pixelPipeline;
     vb = (_grVertex *)(stack + 1332);
-    memset(stack, 0xCC, sizeof(stack));
+    memset(stack, 0xCC, sizeof(stackStorage.bytes));
     memset(&vb[0], 0, sizeof(vb[0]));
     memset(&vb[1], 0, sizeof(vb[1]));
     memset(&vb[2], 0, sizeof(vb[2]));
@@ -2568,6 +2584,18 @@ static void test_scanconvert(void)
     CHECK(words[10] == (17u | (2u << 16)));
     CHECK(words[11] == (17u | (1u << 16)));
     grSetRectangle(&st->renderScissor, 0, 64, 0, 64);
+
+    /* A flat top above the scissor leaves the unused top edge poisoned;
+     * advancing it must not introduce signed-overflow UB. */
+    {
+        _grRasterPoint flat[3] = {
+            { 0, -2 * 4096 }, { 8 * 4096, -2 * 4096 }, { 4 * 4096, 2 * 4096 }
+        };
+        CHECK(grScanConvertTriangle(st, &flat[0], &flat[1], &flat[2], 8) == 2);
+        CHECK(pp->yStart == 0);
+        CHECK(pp->scanlineInfo[0] == (2u | (3u << 16)));
+        CHECK(pp->scanlineInfo[1] == (3u | (1u << 16)));
+    }
 
     /* end-to-end grDrawClippedTriangle through the y-sort: rows, row
      * pointers, gradient pre-advance and the mutable-parameter poison */
@@ -2626,7 +2654,7 @@ static void test_scanconvert(void)
  * fog, texcoords; then the trivial-copy cases and mask gating. */
 static void test_interpolate(void)
 {
-    static unsigned char stack[23860];
+    TEST_RENDER_STACK(stack);
     Gerbera_s stObj;
     Gerbera_s *st = &stObj;
     _grVertex *vb;
@@ -2636,7 +2664,7 @@ static void test_interpolate(void)
     memset(st, 0, sizeof(*st));
     st->renderStack = stack;
     st->renderStackAllocated = 1;
-    memset(stack, 0, sizeof(stack));
+    memset(stack, 0, sizeof(stackStorage.bytes));
     vb = (_grVertex *)(stack + 1332);
     memset(&vb[0], 0, 3 * sizeof(vb[0]));
     for (i = 0; i < 3; ++i)
@@ -2734,15 +2762,30 @@ static void test_interpolate(void)
     st->renderStackAllocated = 0;
 }
 
+/* Count rasterized fragments to catch cracks, overlaps, and skewed line ends. */
+static void lineCoveragePipeline(void *pipe)
+{
+    _grPixelPipe *pp = (_grPixelPipe *)pipe;
+    unsigned short *row = (unsigned short *)pp->colorRow;
+    int y;
+    for (y = 0; y < pp->numScanlines; ++y, row += 64)
+    {
+        unsigned int span = pp->scanlineInfo[y];
+        unsigned int x = span & 0xFFFFu;
+        unsigned int end = x + (span >> 16);
+        for (; x < end; ++x)
+            ++row[x];
+    }
+}
+
 /* --- test_linepoint: grDrawClippedLine + grDrawClippedPoint -------------------
- * Hand-worked quads. Line: (10,15)->(30,15) px, lineWidth 2px -> hw = 1px,
- * corners 64=(8.5,16) 65=(8.5,14) 66=(30.5,14) 67=(30.5,16); the second
- * triangle (66,67,64) scan-converts to 2 rows starting at y=14. Point:
+ * Original line quads use width only on the minor axis, and a half-pixel
+ * offset in the direction of the major axis. Point:
  * (20,20) px at size 3px -> odd snap, corners on the [18,21] box. */
 static void test_linepoint(void)
 {
-    static unsigned char stack[23860];
-    static unsigned char colorBuf[64 * 64 * 2];
+    TEST_RENDER_STACK(stack);
+    static unsigned short colorBuf[64 * 64];
     static unsigned char depthBuf[64 * 64 * 4];
     static unsigned char stencilBuf[64 * 64];
     Gerbera_s stObj;
@@ -2755,11 +2798,11 @@ static void test_linepoint(void)
     memset(st, 0, sizeof(*st));
     st->renderStack = stack;
     st->renderStackAllocated = 1;
-    st->pixelPipeline = (_grPixelPipe *)(stack + 14644);
+    st->pixelPipeline = (_grPixelPipe *)(stack + TEST_PIXEL_PIPE_OFFSET);
     st->pixelPipelineCode = noopPipeline;
     pp = st->pixelPipeline;
     vb = (_grVertex *)(stack + 1332);
-    memset(stack, 0xCC, sizeof(stack));
+    memset(stack, 0xCC, sizeof(stackStorage.bytes));
     memset(&vb[0], 0, 3 * sizeof(vb[0]));
     vb[0].color.final[0][0] = 11;
     vb[1].color.final[0][0] = 22;
@@ -2788,45 +2831,101 @@ static void test_linepoint(void)
     tri.area = 0;
     tri.side = 0;
     grDrawClippedLine(st, &tri, grSetIndices(0, 1, 1));
-    CHECK(vb[64].screenPosition[0] == 8 * 4096 + 2048);   /* 8.5 px */
-    CHECK(vb[64].screenPosition[1] == 16 << 12);
+    CHECK(vb[64].screenPosition[0] == 10 * 4096 + 2048);
+    CHECK(vb[64].screenPosition[1] == 14 << 12);
     CHECK(vb[65].screenPosition[0] == 10 * 4096 + 2048);  /* 10.5 px */
-    CHECK(vb[65].screenPosition[1] == 14 << 12);
+    CHECK(vb[65].screenPosition[1] == 16 << 12);
     CHECK(vb[66].screenPosition[0] == 30 * 4096 + 2048);  /* 30.5 px */
-    CHECK(vb[66].screenPosition[1] == 14 << 12);
-    CHECK(vb[67].screenPosition[0] == 28 * 4096 + 2048);  /* 28.5 px */
-    CHECK(vb[67].screenPosition[1] == 16 << 12);
+    CHECK(vb[66].screenPosition[1] == 16 << 12);
+    CHECK(vb[67].screenPosition[0] == 30 * 4096 + 2048);
+    CHECK(vb[67].screenPosition[1] == 14 << 12);
     CHECK(vb[64].stateMask == 0x2F);   /* 79 with INTERPOLATE cleared */
     CHECK(vb[64].color.final[0][0] == 11);   /* weights (1,0) -> orig rec 0 */
     CHECK(vb[66].color.final[0][0] == 22);   /* weights (0,1) -> orig rec 1 */
     CHECK(pp->yStart == 14);                 /* second triangle's scan */
-    CHECK(pp->numScanlines == 2);
+    CHECK(pp->numScanlines == 1);
     words = pp->scanlineInfo;
-    CHECK(words[0] == (19u | (10u << 16)));
-    CHECK(words[1] == (8u | (20u << 16)));
+    CHECK(words[0] == (20u | (10u << 16)));
 
-    /* vertical line: steep path, coverage [19,21] x [8.5,30.5] */
+    /* vertical line: steep path, coverage [19,21] x [10.5,30.5] */
     vb[0].screenPosition[0] = 20 << 12;
     vb[0].screenPosition[1] = 10 << 12;
     vb[1].screenPosition[0] = 20 << 12;
     vb[1].screenPosition[1] = 30 << 12;
     grDrawClippedLine(st, &tri, grSetIndices(0, 1, 1));
-    CHECK(vb[64].screenPosition[0] == 19 << 12);
-    CHECK(vb[64].screenPosition[1] == 8 * 4096 + 2048);
-    CHECK(vb[65].screenPosition[0] == 21 << 12);
+    CHECK(vb[64].screenPosition[0] == 21 << 12);
+    CHECK(vb[64].screenPosition[1] == 10 * 4096 + 2048);
+    CHECK(vb[65].screenPosition[0] == 19 << 12);
     CHECK(vb[65].screenPosition[1] == 10 * 4096 + 2048);
-    CHECK(vb[66].screenPosition[0] == 21 << 12);
+    CHECK(vb[66].screenPosition[0] == 19 << 12);
     CHECK(vb[66].screenPosition[1] == 30 * 4096 + 2048);
-    CHECK(vb[67].screenPosition[0] == 19 << 12);
-    CHECK(vb[67].screenPosition[1] == 28 * 4096 + 2048);
-    /* the scan trims the zero-width rows: 10 rows from y=19 (the fat
-     * middle; rows where both edges round to the same pixel draw nothing) */
-    CHECK(pp->yStart == 19);
-    CHECK(pp->numScanlines == 10);
+    CHECK(vb[67].screenPosition[0] == 21 << 12);
+    CHECK(vb[67].screenPosition[1] == 30 * 4096 + 2048);
+    /* The second triangle starts in the right column, then spans both. */
+    CHECK(pp->yStart == 10);
+    CHECK(pp->numScanlines == 20);
     words = pp->scanlineInfo;
-    CHECK(words[0] == (19u | (1u << 16)));
-    CHECK(words[8] == (19u | (1u << 16)));
-    CHECK(words[9] == (19u | (1u << 16)));
+    CHECK(words[0] == (20u | (1u << 16)));
+    CHECK(words[9] == (20u | (1u << 16)));
+    CHECK(words[10] == (19u | (2u << 16)));
+    CHECK(words[19] == (19u | (2u << 16)));
+
+    /* Check both triangles together, including the half-open endpoint rule
+     * in each direction. Every covered pixel must be emitted exactly once. */
+    {
+        int vertical, reverse, x, y;
+        st->pixelPipelineCode = lineCoveragePipeline;
+        for (vertical = 0; vertical < 2; ++vertical)
+        {
+            for (reverse = 0; reverse < 2; ++reverse)
+            {
+                int start = reverse ? 30 : 10;
+                int end = reverse ? 10 : 30;
+                int lo = reverse ? 9 : 10;
+                memset(colorBuf, 0, sizeof(colorBuf));
+                vb[0].screenPosition[0] = (vertical ? 20 : start) * 4096;
+                vb[0].screenPosition[1] = (vertical ? start : 15) * 4096;
+                vb[1].screenPosition[0] = (vertical ? 20 : end) * 4096;
+                vb[1].screenPosition[1] = (vertical ? end : 15) * 4096;
+                grDrawClippedLine(st, &tri, tri.indices);
+                for (y = 0; y < 64; ++y)
+                    for (x = 0; x < 64; ++x)
+                    {
+                        int covered = vertical
+                            ? (x >= 19 && x < 21 && y >= lo && y < lo + 20)
+                            : (x >= lo && x < lo + 20 && y >= 14 && y < 16);
+                        CHECK(colorBuf[y * 64 + x] == covered);
+                    }
+            }
+        }
+        /* Sloped quads in all eight octants retain the two-pixel width
+         * without cracks or overlap along their shared triangle edge. */
+        for (vertical = 0; vertical < 2; ++vertical)
+        {
+            int sx, sy;
+            for (sx = -1; sx <= 1; sx += 2)
+                for (sy = -1; sy <= 1; sy += 2)
+                {
+                    unsigned int covered = 0;
+                    memset(colorBuf, 0, sizeof(colorBuf));
+                    vb[0].screenPosition[0] = 24 * 4096;
+                    vb[0].screenPosition[1] = 24 * 4096;
+                    vb[1].screenPosition[0] = (24 + sx * (vertical ? 10 : 20)) * 4096;
+                    vb[1].screenPosition[1] = (24 + sy * (vertical ? 20 : 10)) * 4096;
+                    grDrawClippedLine(st, &tri, tri.indices);
+                    for (y = 0; y < 64; ++y)
+                        for (x = 0; x < 64; ++x)
+                        {
+                            covered += colorBuf[y * 64 + x];
+                            CHECK(colorBuf[y * 64 + x] <= 1);
+                        }
+                    CHECK(covered == 40);
+                    CHECK(vb[64].screenPosition[vertical] == vb[65].screenPosition[vertical]);
+                    CHECK(vb[66].screenPosition[vertical] == vb[67].screenPosition[vertical]);
+                }
+        }
+        st->pixelPipelineCode = noopPipeline;
+    }
 
     /* zero-length line draws nothing */
     vb[0].screenPosition[0] = 12 << 12;
@@ -2891,7 +2990,7 @@ static void test_linepoint(void)
  * probe run (the /2 in grFracDiv floors: ONE/2 - 1 for 1/2). */
 static void test_tessellate(void)
 {
-    static unsigned char stack[23860];
+    TEST_RENDER_STACK(stack);
     Gerbera_s stObj;
     Gerbera_s *st = &stObj;
     _grPixelPipe *pp;
@@ -2904,7 +3003,7 @@ static void test_tessellate(void)
     memset(st, 0, sizeof(*st));
     st->renderStack = stack;
     st->renderStackAllocated = 1;
-    st->pixelPipeline = (_grPixelPipe *)(stack + 14644);
+    st->pixelPipeline = (_grPixelPipe *)(stack + TEST_PIXEL_PIPE_OFFSET);
     st->pixelPipelineCode = noopPipeline;
     pp = st->pixelPipeline;
     vb = (_grVertex *)(stack + 1332);
@@ -2920,7 +3019,7 @@ static void test_tessellate(void)
     CHECK(grLerp(0, ONE, ONE) == ONE);
 
     /* classification */
-    memset(stack, 0, sizeof(stack));
+    memset(stack, 0, sizeof(stackStorage.bytes));
     vb[0].screenPosition[0] = 10 << 12; vb[0].screenPosition[1] = 10 << 12;
     vb[1].screenPosition[0] = 12 << 12; vb[1].screenPosition[1] = 11 << 12;
     vb[2].screenPosition[0] = 11 << 12; vb[2].screenPosition[1] = 13 << 12;
@@ -2964,7 +3063,7 @@ static void test_tessellate(void)
 
     /* end-to-end: perspective triangle (w variance 1:2) subdivides; the
      * pieces' union scans; 6 split records created */
-    memset(stack, 0xCC, sizeof(stack));
+    memset(stack, 0xCC, sizeof(stackStorage.bytes));
     memset(&vb[0], 0, sizeof(vb[0]));
     memset(&vb[1], 0, sizeof(vb[1]));
     memset(&vb[2], 0, sizeof(vb[2]));
@@ -3847,6 +3946,36 @@ static void test_hcx86backend(void)
     }
     HCMemory_release(&lowMem, mark);
     CHECK(arena.bottom == 0);
+#if UINTPTR_MAX > 0xFFFFFFFFu
+    {
+        void **lowPtr;
+        void **highPtr;
+        unsigned int *packed;
+        int packedStart;
+        HCArena_init(&arena, arenaBuf, (int)sizeof(arenaBuf));
+        HCArena_allocBottomAlign2(&arena, 2);
+        lowPtr = (void **)HCArena_allocBottom(&arena, sizeof(void *));
+        HCArena_allocTopAlign2(&arena, 2);
+        highPtr = (void **)HCArena_allocTop(&arena, sizeof(void *));
+        CHECK(((uintptr_t)lowPtr & (sizeof(void *) - 1u)) == 0);
+        CHECK(((uintptr_t)highPtr & (sizeof(void *) - 1u)) == 0);
+        *lowPtr = highPtr;
+        *highPtr = lowPtr;
+        CHECK(*lowPtr == highPtr && *highPtr == lowPtr);
+
+        /* HC appends packed four-byte fields within an aligned block. */
+        HCArena_allocBottomAlign2(&arena, 2);
+        packed = (unsigned int *)HCArena_current(&arena);
+        packedStart = arena.bottom;
+        CHECK(((uintptr_t)packed & (sizeof(void *) - 1u)) == 0);
+        HCArena_growCurrent(&arena, sizeof(unsigned int));
+        HCArena_growCurrent(&arena, sizeof(unsigned int));
+        CHECK(arena.bottom == packedStart + 2 * (int)sizeof(unsigned int));
+        packed[0] = 0x12345678u;
+        packed[1] = 0x9ABCDEF0u;
+        CHECK(packed[0] == 0x12345678u && packed[1] == 0x9ABCDEF0u);
+    }
+#endif
     HCArena_init(&arena, arenaBuf, (int)sizeof(arenaBuf));
 
     /* 3. HCX86Backend vtable verification */
@@ -5141,11 +5270,11 @@ static void test_grr_texture_and_blit(void)
 
     /* grSetupTextureUnit: verify LOD selection (level 0 vs level 2) & wrap mask */
     {
-        static unsigned char stack[GR_RENDER_STACK_SIZE];
-        _grPixelPipe *pp = (_grPixelPipe *)(stack + 14644);
+        TEST_RENDER_STACK(stack);
+        _grPixelPipe *pp = (_grPixelPipe *)(stack + TEST_PIXEL_PIPE_OFFSET);
         int pairs[2][2] = { { 0x80000, 0 }, { 0x80000, 0 } };
 
-        memset(stack, 0, sizeof(stack));
+        memset(stack, 0, sizeof(stackStorage.bytes));
         st->renderStack = stack;
         st->renderStackAllocated = 1;
         st->pixelPipeline = pp;
@@ -5263,6 +5392,268 @@ static void test_grr_texture_and_blit(void)
     free(workMem);
 }
 
+/* Exercise the host pixel pipeline with texture coordinates prepared by the
+ * recovered setup routine and code cached by the normal compiler path. */
+#if !defined(__SYMBIAN32__) && !(defined(__arm__) && UINTPTR_MAX == 0xFFFFFFFFu)
+static unsigned int sample_pixel(Gerbera_s *st, _grTexture *tex, int s, int t,
+                                 int linear, int wrap)
+{
+    _grPixelPipe pp;
+    unsigned int span = 1u << 16;
+    unsigned int pixel = 0;
+    int coords[2][2] = { { s, 0 }, { t, 0 } };
+
+    grSetTextureFilter(tex, GR_FILTERTYPE_MIN, linear);
+    grSetTextureFilter(tex, GR_FILTERTYPE_MAG, linear);
+    grSetTextureWrapMode(tex, 0, wrap);
+    grSetTextureWrapMode(tex, 1, wrap);
+    grUpdateTexture(tex);
+    grSetActiveTexture(st, 0, tex);
+    st->useTexUnit[0] = 1;
+    st->textureUnitEnabled[0] = 1;
+    grEnsureValidPixelPipeline(st);
+    CHECK(st->compilationFailed == 0 && st->pixelPipelineCode != NULL);
+
+    memset(&pp, 0, sizeof(pp));
+    st->pixelPipeline = &pp;
+    st->activeGradientMask = 0xC0;
+    grSetupTextureUnit(st, 0, coords, 4096, 4096);
+    CHECK(pp.textureUnit[0].linear == linear);
+    pp.colorRow = &pixel;
+    pp.numScanlines = 1;
+    pp.scanlineInfo = &span;
+    grExecutePixelPipeline(st);
+    st->pixelPipeline = NULL;
+    return pixel;
+}
+
+static void test_pixel_sampling(void)
+{
+    int workSize = grGetMinWorkMemorySize();
+    unsigned char *work = (unsigned char *)malloc((size_t)workSize);
+    Gerbera_s *st = grCreateGerbera(workSize, work, NULL, 0);
+    _grTexture tex;
+    _grSurfaceDescriptor desc;
+    int c;
+
+    CHECK(st != NULL);
+    if (st == NULL)
+    {
+        free(work);
+        return;
+    }
+    grrGetTextureFormatDescriptor((_grSurfaceDescriptor *)&st->drawSurface,
+                                  GR_TEXTUREFORMAT_RGBA8);
+    st->drawSurface.width = st->drawSurface.height = 1;
+    st->drawSurface.buffers[0].stride = 4;
+    for (c = 0; c < 4; ++c)
+        st->defaultColorRGBA[c] = 0xFF00;
+    grDisableCapability(st, GR_CAPABILITY_DITHER);
+    grSetTexEnvMode(st, 0, GR_TEXENVMODE_MODULATE);
+    grInitTexture(&tex);
+    grSetTextureTarget(&tex, GR_TEXTURETARGET_2D);
+    CHECK(grrSetupTextureLevel(&tex, 0, 2, 2, GR_TEXTUREFORMAT_RGBA8));
+    {
+        unsigned int *p = (unsigned int *)tex.mipmap[0].pixels;
+        p[0] = 0xFFFF0000u;
+        p[1] = 0xFF00FF00u;
+        p[2] = 0xFF0000FFu;
+        p[3] = 0xFFFFFFFFu;
+    }
+    /* RGBA8 MODULATE enters the optimized path when filtering is nearest. */
+    CHECK(sample_pixel(st, &tex, 0x100000, 0x100000, 0, GR_WRAPMODE_REPEAT) == 0xFFFFFFFFu);
+    CHECK(sample_pixel(st, &tex, 0x100000, 0x100000, 1, GR_WRAPMODE_REPEAT) == 0xFF7F7F7Fu);
+    CHECK(sample_pixel(st, &tex, 0x80000, 0x80000, 1, GR_WRAPMODE_REPEAT) == 0xFFFF0000u);
+    CHECK(sample_pixel(st, &tex, 0xC0000, 0x80000, 1, GR_WRAPMODE_REPEAT) == 0xFFBF3F00u);
+    CHECK(sample_pixel(st, &tex, 0, 0, 1, GR_WRAPMODE_REPEAT) == 0xFF7F7F7Fu);
+    CHECK(sample_pixel(st, &tex, 0, 0, 1, GR_WRAPMODE_CLAMP_TO_EDGE) == 0xFFFF0000u);
+    CHECK(sample_pixel(st, &tex, 0x200000, 0x200000, 1, GR_WRAPMODE_CLAMP_TO_EDGE) == 0xFFFFFFFFu);
+    CHECK(sample_pixel(st, &tex, 0x200000, 0x200000, 1, GR_WRAPMODE_MIRRORED_REPEAT) == 0xFFFFFFFFu);
+    CHECK(sample_pixel(st, &tex, 0x300000, 0x300000, 1, GR_WRAPMODE_MIRRORED_REPEAT) == 0xFF7F7F7Fu);
+    CHECK(sample_pixel(st, &tex, 0x280000, 0x80000, 0, GR_WRAPMODE_MIRRORED_REPEAT) == 0xFF00FF00u);
+    CHECK(sample_pixel(st, &tex, 0x480000, 0x80000, 0, GR_WRAPMODE_MIRRORED_REPEAT) == 0xFFFF0000u);
+    CHECK(sample_pixel(st, &tex, -0x80000, 0x80000, 0, GR_WRAPMODE_MIRRORED_REPEAT) == 0xFFFF0000u);
+    CHECK(sample_pixel(st, &tex, -0x180000, 0x80000, 0, GR_WRAPMODE_MIRRORED_REPEAT) == 0xFF00FF00u);
+    {
+        _grPixelPipe pp;
+        unsigned int pixels[10];
+        unsigned int spans[2] = { (2u << 16) | 3u, 5u << 16 };
+        int coords[2][2] = { { 0, 0 }, { 0, 0 } };
+        int env;
+
+        /* Repeated coordinates cross the signed boundary in both axes.
+         * MODULATE exercises the fast path, REPLACE the general path. */
+        grSetTextureWrapMode(&tex, 0, GR_WRAPMODE_REPEAT);
+        grSetTextureWrapMode(&tex, 1, GR_WRAPMODE_REPEAT);
+        grUpdateTexture(&tex);
+        st->drawSurface.width = 5;
+        st->drawSurface.height = 2;
+        st->drawSurface.buffers[0].stride = 5 * sizeof(unsigned int);
+        for (env = 0; env < 2; ++env)
+        {
+            grSetTexEnvMode(st, 0, env ? GR_TEXENVMODE_REPLACE : GR_TEXENVMODE_MODULATE);
+            grEnsureValidPixelPipeline(st);
+            CHECK(st->compilationFailed == 0 && st->pixelPipelineCode != NULL);
+            memset(&pp, 0, sizeof(pp));
+            memset(pp.reference, 0xAB, sizeof(pp.reference));
+            memset(pp.xAdder, 0xAB, sizeof(pp.xAdder));
+            memset(pp.yAdder, 0xAB, sizeof(pp.yAdder));
+            memset(pixels, 0, sizeof(pixels));
+            st->pixelPipeline = &pp;
+            st->activeGradientMask = 0xC0;
+            pp.xAdder[6] = pp.xAdder[7] = 0;
+            pp.yAdder[6] = pp.yAdder[7] = 0;
+            grSetupTextureUnit(st, 0, coords, 4096, 4096);
+            pp.reference[6] = pp.reference[7] = 0x40000000;
+            pp.xAdder[6] = (int)0x80000000u;
+            pp.yAdder[6] = pp.yAdder[7] = (int)0x80000000u;
+            pp.colorRow = pixels;
+            pp.numScanlines = 2;
+            pp.scanlineInfo = spans;
+            grExecutePixelPipeline(st);
+            CHECK(pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 0);
+            CHECK(pixels[3] == 0xFF00FF00u && pixels[4] == 0xFFFF0000u);
+            CHECK(pixels[5] == 0xFFFFFFFFu && pixels[6] == 0xFF0000FFu);
+            CHECK(pixels[7] == 0xFFFFFFFFu && pixels[8] == 0xFF0000FFu);
+            CHECK(pixels[9] == 0xFFFFFFFFu);
+        }
+        st->pixelPipeline = NULL;
+        st->drawSurface.width = st->drawSurface.height = 1;
+        st->drawSurface.buffers[0].stride = sizeof(unsigned int);
+        grSetTexEnvMode(st, 0, GR_TEXENVMODE_MODULATE);
+    }
+    {
+        TEST_RENDER_STACK(renderStack);
+        _grPixelPipe pp;
+        unsigned int pixels[8] = { 0 };
+        unsigned short depth[8] = { 0 };
+        unsigned char stencil[8] = { 0 };
+
+        /* Negative crop origins repeat the same texels. Starting at row two
+         * also exercises the wrapped texture-gradient yStart multiply. */
+        tex.cropRect.x0 = tex.cropRect.y0 = -2;
+        tex.cropRect.x1 = tex.cropRect.y1 = 0;
+        st->drawSurface.width = 2;
+        st->drawSurface.height = 4;
+        st->drawSurface.buffers[0].data = pixels;
+        st->drawSurface.buffers[0].stride = 2 * sizeof(unsigned int);
+        st->drawSurface.buffers[1].data = depth;
+        st->drawSurface.buffers[1].stride = 2 * sizeof(unsigned short);
+        st->drawSurface.buffers[2].data = stencil;
+        st->drawSurface.buffers[2].stride = 2;
+        grSetRectangle(&st->surfaceScissor, 0, 2, 0, 4);
+        grEnsureValidPixelPipeline(st);
+        memset(&pp, 0, sizeof(pp));
+        st->pixelPipeline = &pp;
+        st->renderStack = renderStack;
+        st->activeGradientMask = 0xC0;
+        st->numActiveGradients = 2;
+        st->activeGradientIndex[0] = 6;
+        st->activeGradientIndex[1] = 7;
+        grRenderTextureRect(st, IScalar_zero(), IScalar_zero(),
+                            IScalar_intToScalar(2), IScalar_intToScalar(2), IScalar_zero());
+        CHECK(pp.yStart == 2 && pp.numScanlines == 2);
+        CHECK(pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 0 && pixels[3] == 0);
+        CHECK(pixels[4] == 0xFF0000FFu && pixels[5] == 0xFFFFFFFFu);
+        CHECK(pixels[6] == 0xFFFF0000u && pixels[7] == 0xFF00FF00u);
+        st->pixelPipeline = NULL;
+        st->renderStack = NULL;
+        st->drawSurface.width = st->drawSurface.height = 1;
+        st->drawSurface.buffers[0].stride = sizeof(unsigned int);
+        st->drawSurface.buffers[0].data = NULL;
+        st->drawSurface.buffers[1].data = NULL;
+        st->drawSurface.buffers[2].data = NULL;
+    }
+    grrFreeTextureData(&tex);
+
+    /* One-texel axes have no coordinate shift or fractional bits. */
+    CHECK(grrSetupTextureLevel(&tex, 0, 2, 1, GR_TEXTUREFORMAT_RGB565));
+    ((unsigned short *)tex.mipmap[0].pixels)[0] = 0xF800;
+    ((unsigned short *)tex.mipmap[0].pixels)[1] = 0x001F;
+    CHECK(sample_pixel(st, &tex, 0x100000, -0x200000, 1, GR_WRAPMODE_REPEAT) == 0xFF7F007Fu);
+    grrFreeTextureData(&tex);
+    CHECK(grrSetupTextureLevel(&tex, 0, 1, 2, GR_TEXTUREFORMAT_LUMINANCE8_ALPHA8));
+    ((unsigned short *)tex.mipmap[0].pixels)[0] = 0xFF00;
+    ((unsigned short *)tex.mipmap[0].pixels)[1] = 0x00FF;
+    CHECK(sample_pixel(st, &tex, -0x200000, 0x100000, 1, GR_WRAPMODE_REPEAT) == 0x7F7F7F7Fu);
+    grrFreeTextureData(&tex);
+    CHECK(grrSetupTextureLevel(&tex, 0, 1, 1, GR_TEXTUREFORMAT_ALPHA8));
+    *(unsigned char *)tex.mipmap[0].pixels = 73;
+    CHECK(sample_pixel(st, &tex, -0x200000, 0x600000, 1, GR_WRAPMODE_REPEAT) == 0x49FFFFFFu);
+    grrFreeTextureData(&tex);
+
+    /* The original palette fetch shifts the even texel by four bits.
+     * Distinct indices catch pair reversal; filtering uses palette colors. */
+    {
+        unsigned char blob[16 * 4 + 1];
+        memset(blob, 0, sizeof(blob));
+        blob[4] = 255;
+        blob[7] = 255;
+        blob[10] = 255;
+        blob[11] = 255;
+        blob[64] = 0x12;
+        grrGetTextureFormatDescriptor(&desc, GR_TEXTUREFORMAT_PALETTE4_RGBA8);
+        CHECK(grrSetPalettedTexture(&tex, &desc, GR_TEXTUREFORMAT_PALETTE4_RGBA8,
+                                    2, 1, 1, blob));
+        CHECK(sample_pixel(st, &tex, 0x80000, 0, 0, GR_WRAPMODE_REPEAT) == 0xFFFF0000u);
+        CHECK(sample_pixel(st, &tex, 0x180000, 0, 0, GR_WRAPMODE_REPEAT) == 0xFF0000FFu);
+        CHECK(sample_pixel(st, &tex, 0x100000, 0, 1, GR_WRAPMODE_REPEAT) == 0xFF7F007Fu);
+    }
+    grrFreeTextureData(&tex);
+    /* Original ARM pixel programs truncate source and destination blend
+     * contributions separately. Exercise the optimized and general paths. */
+    {
+        _grPixelPipe pipe;
+        unsigned int span = 1u << 16;
+        unsigned int pixel;
+        unsigned char stencil = 0;
+        int general;
+        st->useTexUnit[0] = st->useTexUnit[1] = 0;
+        st->textureUnitEnabled[0] = st->textureUnitEnabled[1] = 0;
+        st->textureUnit[0].texture = st->textureUnit[2].texture = NULL;
+        st->activeGradientMask = 0x3C;
+        st->colorMask = 15;
+        st->drawSurface.stencilBytes = 1;
+        st->stencilFunc = GR_FUNC_ALWAYS;
+        st->stencilFail = st->stencilZFail = st->stencilZPass = GR_STENCILOP_KEEP;
+        grEnableCapability(st, GR_CAPABILITY_BLEND);
+        st->srcBlendFactor = GR_BLENDFACTOR_SRC_ALPHA;
+        st->dstBlendFactor = GR_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        for (general = 0; general < 2; ++general)
+        {
+            memset(&pipe, 0, sizeof(pipe));
+            pixel = 0x8F3A716Cu;
+            pipe.colorRow = &pixel;
+            pipe.stencilRow = &stencil;
+            pipe.numScanlines = 1;
+            pipe.scanlineInfo = &span;
+            pipe.reference[2] = 80 << 16;
+            pipe.reference[3] = 40 << 16;
+            pipe.reference[4] = 180 << 16;
+            pipe.reference[5] = 64 << 16;
+            st->pixelPipeline = &pipe;
+            grSetCapability(st, GR_CAPABILITY_STENCIL_TEST, general);
+            grExecutePixelPipeline(st);
+            CHECK(pixel == 0x7B3F5E7Eu);
+        }
+        pixel = 0x8F3A7172u;
+        pipe.reference[2] = 98 << 16;
+        pipe.reference[3] = 61 << 16;
+        pipe.reference[4] = 160 << 16;
+        pipe.reference[5] = 131 << 16;
+        st->srcBlendFactor = GR_BLENDFACTOR_SRC_ALPHA_SATURATE;
+        st->dstBlendFactor = GR_BLENDFACTOR_ONE;
+        grExecutePixelPipeline(st);
+        CHECK(pixel == 0xFF658CB8u);
+        st->pixelPipeline = NULL;
+    }
+    grDestroyGerbera(st);
+    free(work);
+}
+#else
+static void test_pixel_sampling(void) { }
+#endif
+
 static void test_gerbera_lifecycle_and_api_small(void)
 {
     int minWork = grGetMinWorkMemorySize();
@@ -5336,7 +5727,8 @@ static void test_gerbera_lifecycle_and_api_small(void)
     CHECK(st->pointFadeThreshold == IScalar_immediate(1.5f));
     CHECK(st->lineWidth == 0x20000);
 
-    XColor3_setf(&vcol, 0.25f, 0.5f, 0.75f);
+    XColor3_setf(&vcol, hgFloatBitPattern(0.25f), hgFloatBitPattern(0.5f),
+                hgFloatBitPattern(0.75f));
     grSetVertexColor(st, &vcol, 0x8000u);
     grSetVertexNormal(st, norm);
     grSetVertexTexCoord(st, 0, tc);

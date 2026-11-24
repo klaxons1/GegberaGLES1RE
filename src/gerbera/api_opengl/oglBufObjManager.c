@@ -63,8 +63,9 @@ int oglHashBufObjIndex2(unsigned int bufObjIndex)
 void oglBufObjHashInsert(oglBufObjManager_s *bufObjManager, unsigned int bufObjIndex, oglBufObj_s *object)
 {
     int capacity;
-    int idx;
-    int step;
+    /* The original 32-bit probe additions wrap for arbitrary GLuint names. */
+    unsigned int idx;
+    unsigned int step;
     oglBufObjContainer_s *c;
 
     OGL_ASSERT_AT("oglBufObjManager.inl", 121, "object", object != NULL);
@@ -95,8 +96,8 @@ void oglBufObjHashInsert(oglBufObjManager_s *bufObjManager, unsigned int bufObjI
 void oglBufObjHashRemove(oglBufObjManager_s *bufObjManager, unsigned int bufObjIndex)
 {
     int capacity;
-    int idx;
-    int step;
+    unsigned int idx;
+    unsigned int step;
     oglBufObjContainer_s *c;
 
     OGL_ASSERT_AT("oglBufObjManager.inl", 159,
@@ -131,8 +132,8 @@ oglBufObj_s *oglGetBufObj(oglBufObjManager_s *bufObjManager, unsigned int bufObj
     if (bufObjManager->numObjects > 0)
     {
         int capacity = bufObjManager->capacity;
-        int idx      = oglHashBufObjIndex(bufObjIndex);
-        int step     = oglHashBufObjIndex2(bufObjIndex);
+        unsigned int idx  = (unsigned int)oglHashBufObjIndex(bufObjIndex);
+        unsigned int step = (unsigned int)oglHashBufObjIndex2(bufObjIndex);
         int i;
 
         for (i = 0; i < capacity; ++i)

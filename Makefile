@@ -79,9 +79,15 @@ src/gerbera/grrTexture.c \
 
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 
-TEST_SRC := tests/test_hg.c tests/test_imath.c tests/test_core.c tests/test_opengl.c tests/test_egl.c
+TEST_SRC := tests/test_hg.c tests/test_imath.c tests/test_geometry.c tests/test_core.c tests/test_opengl.c tests/test_egl.c tests/test_symbian_surface.c
 
-.PHONY: all test win32 symbian clean
+ifeq ($(shell uname -s),Darwin)
+TEST_GC_LDFLAGS := -Wl,-dead_strip
+else
+TEST_GC_LDFLAGS := -Wl,--gc-sections
+endif
+
+.PHONY: all test check differential differential-build differential-coverage win32 symbian clean
 all: $(BUILD)/libgerbera.a
 
 win32:
@@ -90,9 +96,9 @@ win32:
 symbian:
 	./symbian/build_symbian.sh
 
-$(BUILD)/%.o: %.c
+$(BUILD)/%.o: %.c Makefile
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD)/libgerbera.a: $(LIB_OBJ)
 	$(AR) rcs $@ $^
@@ -104,6 +110,10 @@ $(BUILD)/test_hg: $(BUILD)/libgerbera.a tests/test_hg.c
 $(BUILD)/test_imath: $(BUILD)/libgerbera.a tests/test_imath.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) tests/test_imath.c $(BUILD)/libgerbera.a -lm -o $@
+
+$(BUILD)/test_geometry: $(BUILD)/libgerbera.a tests/test_geometry.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) tests/test_geometry.c $(BUILD)/libgerbera.a -lm -o $@
 
 $(BUILD)/test_core: $(BUILD)/libgerbera.a tests/test_core.c
 	@mkdir -p $(dir $@)
@@ -117,12 +127,53 @@ $(BUILD)/test_egl: $(BUILD)/libgerbera.a tests/test_egl.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) tests/test_egl.c $(BUILD)/libgerbera.a -lm -o $@
 
-test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_core $(BUILD)/test_opengl $(BUILD)/test_egl
+$(BUILD)/test_symbian_surface: tests/test_symbian_surface.c src/gerbera/egl/eglSymbian.c src/gerbera/egl/eglUtil.c src/hg/hgInt32.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DNDEBUG -ffunction-sections -fdata-sections -Wno-attributes -idirafter symbian/include tests/test_symbian_surface.c src/hg/hgInt32.c $(TEST_GC_LDFLAGS) -o $@
+
+test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_geometry $(BUILD)/test_core $(BUILD)/test_opengl $(BUILD)/test_egl $(BUILD)/test_symbian_surface
 	$(BUILD)/test_hg
 	$(BUILD)/test_imath
+	$(BUILD)/test_geometry
 	$(BUILD)/test_core
 	$(BUILD)/test_opengl
 	$(BUILD)/test_egl
+	$(BUILD)/test_symbian_surface
+
+# Optional original/source checks require Python with unicorn, capstone and pefile.
+PYTHON ?= python3
+DIFF_ARGS ?=
+DIFF_ADAPTERS := tests/differential_raster_adapter.c tests/differential_gl_adapter.c tests/differential_egl_adapter.c tests/differential_guard.c tests/differential_arm_coverage.c tests/differential_clipper_adapter.c tests/differential_texture_adapter.c tests/differential_vertex_adapter.c
+DIFF_OBJ := $(LIB_SRC:%.c=$(BUILD)/differential/%.o) $(DIFF_ADAPTERS:%.c=$(BUILD)/differential/%.o)
+
+$(BUILD)/differential/%.o: %.c Makefile
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
+
+$(BUILD)/differential/libgerbera_diff.so: $(DIFF_OBJ)
+	$(CC) -shared $(CFLAGS) $^ -lm -o $@
+
+differential-build: $(BUILD)/differential/libgerbera_diff.so
+
+differential: differential-build
+	$(PYTHON) tests/differential.py --library $(BUILD)/differential/libgerbera_diff.so $(DIFF_ARGS)
+
+check: test differential
+
+# Optional recovered-C coverage, measured during the same binary comparisons.
+COVERAGE_CC ?= clang
+LLVM_PROFDATA ?= $(shell command -v llvm-profdata 2>/dev/null || xcrun --find llvm-profdata 2>/dev/null)
+LLVM_COV ?= $(shell command -v llvm-cov 2>/dev/null || xcrun --find llvm-cov 2>/dev/null)
+COVERAGE_BUILD = $(BUILD)/differential-coverage
+COVERAGE_LIB = $(COVERAGE_BUILD)/differential/libgerbera_diff.so
+
+differential-coverage:
+	$(MAKE) BUILD=$(COVERAGE_BUILD) CC=$(COVERAGE_CC) CFLAGS='$(CFLAGS) -fprofile-instr-generate -fcoverage-mapping' differential-build
+	LLVM_PROFILE_FILE=$(COVERAGE_BUILD)/differential.profraw $(PYTHON) tests/differential.py --library $(COVERAGE_LIB) $(DIFF_ARGS)
+	$(LLVM_PROFDATA) merge -sparse $(COVERAGE_BUILD)/differential.profraw -o $(COVERAGE_BUILD)/differential.profdata
+	$(LLVM_COV) report $(COVERAGE_LIB) -instr-profile=$(COVERAGE_BUILD)/differential.profdata $(LIB_SRC)
+
+-include $(LIB_OBJ:.o=.d) $(DIFF_OBJ:.o=.d)
 
 clean:
 	rm -rf $(BUILD)

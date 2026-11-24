@@ -3,6 +3,7 @@ generated/
 
 # Build outputs
 build/
+analysis/
 *.o
 *.a
 *.so

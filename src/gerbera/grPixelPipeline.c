@@ -56,54 +56,17 @@ static unsigned char grApplyStencilOp64(int op, unsigned char cur, unsigned char
     }
 }
 
-static unsigned int grSampleTexel64(const _grTexture *texObj,
-                                    const _grPixelPipeTextureUnit *tu,
-                                    int sVal, int tVal,
-                                    const _grSurfaceDescriptor *desc)
+static unsigned int grReadTexel64(const _grPixelPipeTextureUnit *tu,
+                                  int s, int t,
+                                  const _grSurfaceDescriptor *desc)
 {
-    int coords[2];
-    int raw[2];
-    int masks[2];
-    int i;
-    int idx;
+    int idx = (t << tu->log2DimS) + s;
     unsigned int packed = 0;
-
-    raw[0] = sVal;
-    raw[1] = tVal;
-    masks[0] = tu->sMask;
-    masks[1] = tu->tMask;
-
-    for (i = 0; i < 2; ++i)
-    {
-        if (masks[i] <= 0)
-        {
-            coords[i] = 0;
-        }
-        else if (texObj->wrapMode[i] == GR_WRAPMODE_CLAMP_TO_EDGE)
-        {
-            coords[i] = hgClamp32_0_x(raw[i] >> tu->rShift[i], masks[i]);
-        }
-        else if (texObj->wrapMode[i] == GR_WRAPMODE_MIRRORED_REPEAT)
-        {
-            unsigned int v = (unsigned int)raw[i] >> tu->rShift[i];
-            if (raw[i] < 0)
-                v = ~v;
-            coords[i] = (int)(v & (unsigned int)masks[i]);
-        }
-        else
-        {
-            coords[i] = (int)(((unsigned int)raw[i] >> tu->rShift[i]) & (unsigned int)masks[i]);
-        }
-    }
-
-    idx = (coords[1] << tu->log2DimS) + coords[0];
     if (desc->paletteFormat == GR_PALETTEFORMAT_4BIT)
     {
         const unsigned char *bytes = (const unsigned char *)tu->pixels;
+        /* Original bytecode +0xA70: shift = ((index << 2) & 4) ^ 4. */
         int palIdx = (bytes[idx >> 1] >> ((idx & 1) ? 0 : 4)) & 0xF;
-        /* GL_OES_compressed_paletted_texture packs low nibble first or high?
-         * Check byte nibble order: in GLES1 OES paletted4, low nibble = first texel (even idx), high nibble = second texel (odd idx) */
-        palIdx = (bytes[idx >> 1] >> ((idx & 1) ? 4 : 0)) & 0xF;
         if (desc->colorBytes == 2)
             packed = ((const unsigned short *)tu->palette)[palIdx];
         else
@@ -127,6 +90,71 @@ static unsigned int grSampleTexel64(const _grTexture *texObj,
             packed = ((const unsigned int *)tu->pixels)[idx];
     }
     return grUnpackColor(packed, (_grSurfaceDescriptor *)desc);
+}
+
+static unsigned int grSampleTexel64(const _grTexture *texObj,
+                                    const _grPixelPipeTextureUnit *tu,
+                                    int sVal, int tVal,
+                                    const _grSurfaceDescriptor *desc)
+{
+    int raw[2] = { sVal, tVal };
+    int masks[2] = { tu->sMask, tu->tMask };
+    int coords[2], next[2], fraction[2];
+    unsigned int texels[4], result = 0;
+    int i, c;
+
+    for (i = 0; i < 2; ++i)
+    {
+        int shift = tu->rShift[i];
+        if (masks[i] == 0)
+        {
+            coords[i] = next[i] = fraction[i] = 0;
+            continue;
+        }
+        if (texObj->wrapMode[i] == GR_WRAPMODE_CLAMP_TO_EDGE)
+        {
+            int base = raw[i] >> shift;
+            coords[i] = hgClamp32_0_x(base, masks[i]);
+            next[i] = hgClamp32_0_x(base + 1, masks[i]);
+        }
+        else if (texObj->wrapMode[i] == GR_WRAPMODE_MIRRORED_REPEAT)
+        {
+            int base = raw[i] >> shift;
+            int neighbor = (int)((unsigned int)raw[i] + (1u << shift)) >> shift;
+            coords[i] = (base ^ (base >> 31)) & masks[i];
+            next[i] = (neighbor ^ (neighbor >> 31)) & masks[i];
+        }
+        else
+        {
+            coords[i] = (int)(((unsigned int)raw[i] >> shift) & (unsigned int)masks[i]);
+            next[i] = (coords[i] + 1) & masks[i];
+        }
+        /* Original bytecode +0x307 uses eight fractional bits per axis. */
+        fraction[i] = (int)((shift >= 8
+                      ? (unsigned int)raw[i] >> (shift - 8)
+                      : (unsigned int)raw[i] << (8 - shift)) & 255u);
+    }
+
+    texels[0] = grReadTexel64(tu, coords[0], coords[1], desc);
+    if (!tu->linear)
+        return texels[0];
+    texels[1] = grReadTexel64(tu, next[0], coords[1], desc);
+    texels[2] = grReadTexel64(tu, coords[0], next[1], desc);
+    texels[3] = grReadTexel64(tu, next[0], next[1], desc);
+    for (c = 0; c < 4; ++c)
+    {
+        int a = (int)((texels[0] >> (8 * c)) & 255u);
+        int b = (int)((texels[1] >> (8 * c)) & 255u);
+        int d = (int)((texels[2] >> (8 * c)) & 255u);
+        int e = (int)((texels[3] >> (8 * c)) & 255u);
+        /* Bytecode +0xABE interpolates horizontally, then vertically,
+         * with an arithmetic shift after each signed multiply. */
+        int top = a + (((b - a) * fraction[0]) >> 8);
+        int bottom = d + (((e - d) * fraction[0]) >> 8);
+        int value = top + (((bottom - top) * fraction[1]) >> 8);
+        result |= (unsigned int)value << (8 * c);
+    }
+    return result;
 }
 
 static void grApplyTexEnv64(const Gerbera_s *state, int unit,
@@ -418,6 +446,14 @@ static void grComputeBlendWeights64(int factor, const int src[4], const int dst[
     }
 }
 
+static int grBlendComponent64(int source, int destination, int sourceWeight, int destinationWeight)
+{
+    /* The generated pixel program truncates each scaled contribution before
+     * adding them; each eight-bit weight represents (weight + 1) / 256. */
+    return hgMin32(((source * (sourceWeight + 1)) >> 8) +
+                   ((destination * (destinationWeight + 1)) >> 8), 255);
+}
+
 static unsigned int grApplyLogicOp64(int op, unsigned int s, unsigned int d)
 {
     switch (op)
@@ -443,6 +479,13 @@ static unsigned int grApplyLogicOp64(int op, unsigned int s, unsigned int d)
 }
 
 #define GR_DIV255_EXACT(v) ((int)(((unsigned int)(v) * 257u + 257u) >> 16))
+
+/* HC ADD/MUL operate on 32-bit words. Repeat texture coordinates deliberately
+ * wrap at the signed boundary as a span advances. */
+static int grAdvanceGradient64(int value, int adder, int count)
+{
+    return (int)((unsigned int)value + (unsigned int)adder * (unsigned int)count);
+}
 
 static void grExecutePixelPipeline64(Gerbera_s *state)
 {
@@ -474,7 +517,7 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
         writeMask = grGetPackedColorWriteMask((_grSurfaceDescriptor *)surf, (unsigned char)state->colorMask);
 
     for (g = 0; g < GR_GRADIENT_MAX; ++g)
-        rowRef[g] = pp->reference[g];
+        rowRef[g] = (gradMask & (1 << g)) ? pp->reference[g] : 0;
 
     for (u = 0; u < 2; ++u)
     {
@@ -500,6 +543,7 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
         (!blendEnabled || (state->srcBlendFactor == GR_BLENDFACTOR_SRC_ALPHA &&
                            state->dstBlendFactor == GR_BLENDFACTOR_ONE_MINUS_SRC_ALPHA)) &&
         (!unitActive[0] || (texObj0->mipmap[0].texFormat == GR_TEXTUREFORMAT_RGBA8 &&
+                            !pp->textureUnit[0].linear &&
                             state->textureUnit[0].envMode == GR_TEXENVMODE_MODULATE &&
                             texObj0->wrapMode[0] != GR_WRAPMODE_MIRRORED_REPEAT &&
                             texObj0->wrapMode[1] != GR_WRAPMODE_MIRRORED_REPEAT &&
@@ -535,9 +579,14 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
         const int log2S   = hasTex ? pp->textureUnit[0].log2DimS : 0;
         const int clampS  = hasTex && (texObj0->wrapMode[0] == GR_WRAPMODE_CLAMP_TO_EDGE);
         const int clampT  = hasTex && (texObj0->wrapMode[1] == GR_WRAPMODE_CLAMP_TO_EDGE);
-        const int dzdx = pp->xAdder[0], dfdx = pp->xAdder[1];
-        const int drdx = pp->xAdder[2], dgdx = pp->xAdder[3], dbdx = pp->xAdder[4], dadx = pp->xAdder[5];
-        const int dudx = pp->xAdder[6], dvdx = pp->xAdder[7];
+        const int dzdx = (gradMask & 1) ? pp->xAdder[0] : 0;
+        const int dfdx = gFog ? pp->xAdder[1] : 0;
+        const int drdx = gColR ? pp->xAdder[2] : 0;
+        const int dgdx = gColG ? pp->xAdder[3] : 0;
+        const int dbdx = gColB ? pp->xAdder[4] : 0;
+        const int dadx = gColA ? pp->xAdder[5] : 0;
+        const int dudx = (gradMask & 64) ? pp->xAdder[6] : 0;
+        const int dvdx = (gradMask & 128) ? pp->xAdder[7] : 0;
 
         for (s = 0; s < pp->numScanlines; ++s)
         {
@@ -546,14 +595,14 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
             int xEnd   = xStart + (int)(spanWord >> 16);
             unsigned int *cRow32 = (unsigned int *)colorRow;
             unsigned short *dRow16 = (unsigned short *)depthRow;
-            int zCur = rowRef[0] + dzdx * xStart;
-            int fCur = rowRef[1] + dfdx * xStart;
-            int rCur = rowRef[2] + drdx * xStart;
-            int gCur = rowRef[3] + dgdx * xStart;
-            int bCur = rowRef[4] + dbdx * xStart;
-            int aCur = rowRef[5] + dadx * xStart;
-            int uCur = rowRef[6] + dudx * xStart;
-            int vCur = rowRef[7] + dvdx * xStart;
+            int zCur = grAdvanceGradient64(rowRef[0], dzdx, xStart);
+            int fCur = grAdvanceGradient64(rowRef[1], dfdx, xStart);
+            int rCur = grAdvanceGradient64(rowRef[2], drdx, xStart);
+            int gCur = grAdvanceGradient64(rowRef[3], dgdx, xStart);
+            int bCur = grAdvanceGradient64(rowRef[4], dbdx, xStart);
+            int aCur = grAdvanceGradient64(rowRef[5], dadx, xStart);
+            int uCur = grAdvanceGradient64(rowRef[6], dudx, xStart);
+            int vCur = grAdvanceGradient64(rowRef[7], dvdx, xStart);
             int x;
 
             for (x = xStart; x < xEnd; ++x)
@@ -628,10 +677,10 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
                     int db = (int)(dstP & 0xFFu);
                     int da = dstHasA ? (int)((dstP >> 24) & 0xFFu) : 255;
                     int invA = 255 - pa;
-                    pr = GR_DIV255_EXACT(pr * pa + dr * invA + 127);
-                    pg = GR_DIV255_EXACT(pg * pa + dg * invA + 127);
-                    pb = GR_DIV255_EXACT(pb * pa + db * invA + 127);
-                    pa = GR_DIV255_EXACT(pa * pa + da * invA + 127);
+                    pr = grBlendComponent64(pr, dr, pa, invA);
+                    pg = grBlendComponent64(pg, dg, pa, invA);
+                    pb = grBlendComponent64(pb, db, pa, invA);
+                    pa = grBlendComponent64(pa, da, pa, invA);
                 }
 
                 cRow32[x] = dstHasA
@@ -639,23 +688,22 @@ static void grExecutePixelPipeline64(Gerbera_s *state)
                           : (((unsigned int)pr << 16) | ((unsigned int)pg << 8) | (unsigned int)pb);
 
 fast_step:
-                zCur += dzdx;
-                if (hasFog && gFog) fCur += dfdx;
-                if (gColR) rCur += drdx;
-                if (gColG) gCur += dgdx;
-                if (gColB) bCur += dbdx;
-                if (gColA) aCur += dadx;
-                if (hasTex) { uCur += dudx; vCur += dvdx; }
+                if (hasZ) zCur = grAdvanceGradient64(zCur, dzdx, 1);
+                if (hasFog && gFog) fCur = grAdvanceGradient64(fCur, dfdx, 1);
+                if (gColR) rCur = grAdvanceGradient64(rCur, drdx, 1);
+                if (gColG) gCur = grAdvanceGradient64(gCur, dgdx, 1);
+                if (gColB) bCur = grAdvanceGradient64(bCur, dbdx, 1);
+                if (gColA) aCur = grAdvanceGradient64(aCur, dadx, 1);
+                if (hasTex)
+                {
+                    uCur = grAdvanceGradient64(uCur, dudx, 1);
+                    vCur = grAdvanceGradient64(vCur, dvdx, 1);
+                }
             }
 
-            rowRef[0] += pp->yAdder[0];
-            rowRef[1] += pp->yAdder[1];
-            rowRef[2] += pp->yAdder[2];
-            rowRef[3] += pp->yAdder[3];
-            rowRef[4] += pp->yAdder[4];
-            rowRef[5] += pp->yAdder[5];
-            rowRef[6] += pp->yAdder[6];
-            rowRef[7] += pp->yAdder[7];
+            for (g = 0; g < 8; ++g)
+                if (gradMask & (1 << g))
+                    rowRef[g] = grAdvanceGradient64(rowRef[g], pp->yAdder[g], 1);
             colorRow += surf->buffers[0].stride;
             if (depthRow != NULL) depthRow += surf->buffers[1].stride;
         }
@@ -672,7 +720,8 @@ fast_step:
         int x;
 
         for (g = 0; g < GR_GRADIENT_MAX; ++g)
-            cur[g] = rowRef[g] + pp->xAdder[g] * xStart;
+            cur[g] = (gradMask & (1 << g))
+                   ? grAdvanceGradient64(rowRef[g], pp->xAdder[g], xStart) : 0;
 
         for (x = xStart; x < xStart + count; ++x)
         {
@@ -806,7 +855,17 @@ fast_step:
                     grComputeBlendWeights64(state->srcBlendFactor, rgba, dstC, sw);
                     grComputeBlendWeights64(state->dstBlendFactor, rgba, dstC, dw);
                     for (c = 0; c < 4; ++c)
-                        rgba[c] = hgClamp32_0_x((rgba[c] * sw[c] + dstC[c] * dw[c] + 127) / 255, 255);
+                    {
+                        /* SRC_ALPHA_SATURATE's generated multiply adds its
+                         * minimum factor, rather than the color component. */
+                        int sourceBias = (c < 3 && state->srcBlendFactor == GR_BLENDFACTOR_SRC_ALPHA_SATURATE)
+                            ? sw[c] : rgba[c];
+                        int destinationBias = (c < 3 && state->dstBlendFactor == GR_BLENDFACTOR_SRC_ALPHA_SATURATE)
+                            ? dw[c] : dstC[c];
+                        int sourceTerm = (rgba[c] * sw[c] + sourceBias) >> 8;
+                        int destinationTerm = (dstC[c] * dw[c] + destinationBias) >> 8;
+                        rgba[c] = hgMin32(sourceTerm + destinationTerm, 255);
+                    }
                 }
 
                 outRGBA = grSetRGBA(rgba[0], rgba[1], rgba[2], rgba[3]);
@@ -827,11 +886,13 @@ fast_step:
 
 step_pixel:
             for (g = 0; g < GR_GRADIENT_MAX; ++g)
-                cur[g] += pp->xAdder[g];
+                if (gradMask & (1 << g))
+                    cur[g] = grAdvanceGradient64(cur[g], pp->xAdder[g], 1);
         }
 
         for (g = 0; g < GR_GRADIENT_MAX; ++g)
-            rowRef[g] += pp->yAdder[g];
+            if (gradMask & (1 << g))
+                rowRef[g] = grAdvanceGradient64(rowRef[g], pp->yAdder[g], 1);
         if (colorRow != NULL)   colorRow += surf->buffers[0].stride;
         if (depthRow != NULL)   depthRow += surf->buffers[1].stride;
         if (stencilRow != NULL) stencilRow += surf->buffers[2].stride;

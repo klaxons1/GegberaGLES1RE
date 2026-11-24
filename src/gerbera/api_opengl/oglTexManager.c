@@ -55,8 +55,9 @@ int oglIsValidTextureManager(oglTextureManager *texManager)
 void oglTexHashInsert(oglTextureManager *texManager, unsigned int texIndex, _grTexture *texture)
 {
     int capacity;
-    int ndx;
-    int step;
+    /* The original 32-bit probe additions wrap for arbitrary GLuint names. */
+    unsigned int ndx;
+    unsigned int step;
     oglTexContainer_s *c;
 
     OGL_ASSERT_AT("oglTexManager.inl", 106, "texture", texture != NULL);
@@ -87,8 +88,8 @@ void oglTexHashInsert(oglTextureManager *texManager, unsigned int texIndex, _grT
 void oglTexHashRemove(oglTextureManager *texManager, unsigned int texIndex)
 {
     int capacity;
-    int ndx;
-    int step;
+    unsigned int ndx;
+    unsigned int step;
     oglTexContainer_s *c;
 
     OGL_ASSERT_AT("oglTexManager.inl", 144,
@@ -123,8 +124,8 @@ _grTexture *oglGetTexture(oglTextureManager *texManager, unsigned int texIndex)
     if (texManager->numTextures > 0)
     {
         int capacity = texManager->capacity;
-        int ndx      = oglHashTexIndex(texIndex);
-        int step     = oglHashTexIndex2(texIndex);
+        unsigned int ndx  = (unsigned int)oglHashTexIndex(texIndex);
+        unsigned int step = (unsigned int)oglHashTexIndex2(texIndex);
         int i;
 
         for (i = 0; i < capacity; ++i)

@@ -9,6 +9,8 @@
 #include "hg/hgInt32.h"
 #include "hg/hgDefs.h"
 
+enum { F32_MAX_FINITE_BITS = 0x7F7FFFFF };
+
 /* ------------------------------------------------------------------ */
 /* validity                                                           */
 /* ------------------------------------------------------------------ */
@@ -167,7 +169,7 @@ HGuint32 buildFloat(HGuint32 signMask, int exponent, HGuint32 mantissa)
     HG_ASSERT_AT("hgFloat.c", 733, mantissa < (1u << 24));
     retValue = (mantissa & 0x7FFFFFu) | ((HGuint32)exponent << 23);
     if (exponent >= 255)
-        retValue = 2139095039u;   /* +Inf */
+        retValue = F32_MAX_FINITE_BITS;
     if (exponent <= 0)
         return 0;                 /* flush to zero */
     HG_ASSERT_AT("hgFloat.c", 749, F_ISVALID(signMask | retValue));
@@ -474,7 +476,8 @@ HGuint32 F_MUL(HGuint32 a, HGuint32 b)
     if (expA == 0)
         expA = -256;
     expB = (HGint32)((2u * b) >> 24);
-    exponent = (expB != 0) ? (expB + expA) : (expA - 256);
+    /* Both originals suppress all subnormals in a, but only signed zero in b. */
+    exponent = (2u * b != 0) ? (expB + expA) : (expA - 256);
     exponent = ((HGint32)(prodHigh >> 31)) + exponent - 127;
 
     /* normalize the product: bit 31 set -> shift 1, else shift 2 */
@@ -485,7 +488,7 @@ HGuint32 F_MUL(HGuint32 a, HGuint32 b)
     }
     mantissa = ((HGuint32)exponent << 23) | fraction;
     if (exponent >= 255)
-        mantissa = 2139095039u;         /* +Inf */
+        mantissa = F32_MAX_FINITE_BITS;
     {
         HGuint32 result = (sign & 0x80000000u) | mantissa;
         if (exponent <= 0)
@@ -506,7 +509,7 @@ HGuint32 F_SQR(HGuint32 a)
     HGuint32 mantissa;
 
     HG_ASSERT_AT("hgFloat.c", 1684, F_ISVALID(a));
-    exponent = ((HGint32)(v >> 31)) + (HGint32)(((2u * a) >> 23) & 0xFFFFFFFEu) - 127;
+    exponent = (HGint32)((HGuint32)v >> 31) + (HGint32)(((2u * a) >> 23) & 0xFFFFFFFEu) - 127;
     mantissa = ((HGuint32)v << ((v < 0) ? 1u : 2u)) >> 9;
     if (exponent <= 0)
     {
@@ -516,7 +519,7 @@ HGuint32 F_SQR(HGuint32 a)
     {
         HGuint32 result = ((HGuint32)exponent << 23) | mantissa;
         if (exponent >= 255)
-            result = 2139095039u;
+            result = F32_MAX_FINITE_BITS;
         HG_ASSERT_AT("hgFloat.c", 1706, F_ISVALID(result));
         return result;
     }
