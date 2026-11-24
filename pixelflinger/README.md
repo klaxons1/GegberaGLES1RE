@@ -7,7 +7,7 @@ Drop-in Symbian OS v9.x / S60 3rd & 5th Edition / Symbian^3 (`EKA2`) OpenGL ES 1
 | Property | Value |
 |---|---|
 | Target filename | `sys\bin\libgles_cm.dll` (`libgles_cm{000a0000}.dll`) |
-| File / Code size | `229,536` bytes (`0x380A0`) / `226,084` bytes (`0x37324`) |
+| File / Code size | `229,856` / `226,404` bytes (default); `229,860` / `226,416` bytes (16-bit) |
 | Symbian UIDs | `0x10000079` / `0x1000008d` / `0x101fcabd` (`SID = 0x101fcabd`) |
 | CPU / ISA | `ARMv5TE` (`-march=armv5te -mtune=arm1136jf-s -marm -mfloat-abi=soft`) |
 | Export table | **175 exact ordinals** matching Symbian ROM `libgles_cm.def` (29 EGL 1.1 + 146 OpenGL ES 1.1 & OES) |
@@ -34,6 +34,35 @@ Drop-in Symbian OS v9.x / S60 3rd & 5th Edition / Symbian^3 (`EKA2`) OpenGL ES 1
    - Renders into dedicated 8-byte-aligned RAM color/depth buffers inside a per-thread expandable `UserHeap::ChunkHeap` (up to 32 MB) — never holding `CFbsBitmap::LockHeap` across draw calls.
    - Enforces opaque `EColor16MU` / `EColor64K` `CWsBitmap` blits and synchronizes `RWindowBase::Size` before `glViewport`, `glScissor`, `glClear`, and `eglSwapBuffers`.
 
+## 16-bit framebuffer build
+
+`PF_FRAMEBUFFER_BPP=16 ./pixelflinger/build_symbian.sh` writes a separate
+variant to `pixelflinger/out/rgb565/`, including
+`Pixelflinger-GLES1-Symbian-EKA2-ARMv5-RGB565.zip`. It has the same DLL name,
+UIDs and 175-ordinal ABI as the default build; install only one of them.
+
+- Only three 16-bit configs are exposed: RGB565 + Z16 (ID 1), RGB565 without
+  depth (ID 2), and RGBA4444 + Z16 (ID 3).
+- Window surfaces always use an `EColor64K` `CWsBitmap`; RGB565 presentation
+  is a row `memcpy`, and Window Server converts it for deeper screens.
+- When an app asks for more than 5/6/5 color, more than 4 alpha bits, or more
+  than 16 buffer bits, `eglChooseConfig` returns the RGB565 config instead of
+  no config. `eglGetConfigAttrib` still reports the real sizes. Destination
+  alpha requested above 4 bits is therefore not preserved.
+- Pbuffers and `eglCopyBuffers` use the same 16-bit color buffers.
+
+The default build is unchanged: it still exposes 32-bit configs and detects
+the Window Server display mode.
+
+### Display-mode fix (both builds)
+
+The Symbian `TDisplayMode` numbers were wrong: `EColor64K` was 8 instead of 7,
+`EColor16M` was 9 instead of 8, and `EColor4K` was 7 instead of 10. On a
+16-bit screen, the old build could create the window bitmap in the wrong
+format. The values now match the Symbian SDK `displaymode.h`. Pixmap copies
+also convert RGB565/RGBA8888 to `EColor4K`, RGBA4444 to `EColor16M`, and
+reject display modes without a converter.
+
 ## Lighting, depth, texture, and point-sprite corrections
 
 - Two-sided lighting reverses back-face normals and relights shared indexed
@@ -52,8 +81,12 @@ Drop-in Symbian OS v9.x / S60 3rd & 5th Edition / Symbian^3 (`EKA2`) OpenGL ES 1
   distance attenuation without overflowing the texture/depth iterators.
 
 Validation: **13/13 host AddressSanitizer tests**, **50,121 IEEE-754 double
-helper pairs**, and **8 ARM926EJ-S Unicorn runs** (JIT enabled/denied across
-RGB565, RGBA8888, RGBA4444 plus two 64 KB executable-cache stress runs).
+helper pairs**, and **8 ARM926EJ-S Unicorn runs per build** (JIT enabled/denied
+across RGB565, RGBA8888 or its 16-bit fallback, and RGBA4444, plus two 64 KB
+executable-cache stress runs). The RGBA4444 runs now select that config by ID.
+Each run also copies the surface to `EColor64K`, `EColor16M`, `EColor4K` and
+`EColor16MU` pixmaps. The 16-bit runs check that every window bitmap is
+`EColor64K` and that RGB8 requests get RGB565.
 These are automated host/emulator results, not physical-phone validation.
 
 ## Building & Verification
@@ -69,6 +102,10 @@ python -m pip install unicorn
 
 # Run end-to-end ARM926EJ-S (ARMv5TE) Unicorn E32 verification (JIT ON vs JIT OFF + 64KB LRU stress):
 python3 pixelflinger/tests/test_e32_armv5_unicorn.py
+
+# Build and test the RGB565/RGBA4444-only variant:
+PF_FRAMEBUFFER_BPP=16 ./pixelflinger/build_symbian.sh
+PF_FRAMEBUFFER_BPP=16 python3 pixelflinger/tests/test_e32_armv5_unicorn.py
 
 # Check the freestanding double helpers used by inverse-modelview lighting:
 python3 pixelflinger/tests/test_softfp.py

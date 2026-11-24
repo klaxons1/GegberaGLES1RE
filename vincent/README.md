@@ -72,6 +72,9 @@ Gerbera tests also pass (4,422 checks).
   helpers, native entry stub, import generator and zero-WSD linker script.
   **No PixelFlinger renderer or legacy JIT is linked into this DLL.**
 
+Pixmap copies use the real Symbian `TDisplayMode` values: EColor64K = 7,
+EColor16M = 8, EColor4K = 10, EColor16MU/MA/MAP = 11/12/13.
+
 ## SDK use and deployment caution
 
 The ZIP contains `sys/bin/libgles_cm.dll`, SDK import libraries under

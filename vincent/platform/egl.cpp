@@ -318,7 +318,8 @@ EGLBoolean eglWaitNative(EGLint engine) {return engine==EGL_CORE_NATIVE_ENGINE?E
 static bool blit(Surface* p, void* bitmap) {
     SymTSize size={0,0};sym_CFbsBitmap_SizeInPixels(&size,bitmap);
     const int mode=sym_CFbsBitmap_DisplayMode(bitmap);
-    if(mode!=8 && mode!=11 && mode!=12 && mode!=13 && mode!=9 && mode!=7)return false;
+    // Symbian TDisplayMode: EColor64K=7, EColor16M=8, EColor4K=10, EColor16MU/MA/MAP=11/12/13.
+    if(mode!=7 && mode!=8 && mode!=10 && mode!=11 && mode!=12 && mode!=13)return false;
     const int stride=sym_CFbsBitmap_ScanLineLength(size.iWidth,mode);
     const int width=Min(int(p->GetWidth()),size.iWidth),height=Min(int(p->GetHeight()),size.iHeight);
     if(width<=0||height<=0||stride<=0)return false;
@@ -338,9 +339,9 @@ static bool blit(Surface* p, void* bitmap) {
             default:c=Color::FromRGBA(s32[x]);break;
             }
             U8* row=dst+y*stride;
-            if(mode==8)((U16*)row)[x]=c.ConvertTo565();
-            else if(mode==7)((U16*)row)[x]=U16((c.R()>>4)<<8 | (c.G()>>4)<<4 | (c.B()>>4));
-            else if(mode==9) {row[3*x]=c.B();row[3*x+1]=c.G();row[3*x+2]=c.R();}
+            if(mode==7)((U16*)row)[x]=c.ConvertTo565();
+            else if(mode==10)((U16*)row)[x]=U16((c.R()>>4)<<8 | (c.G()>>4)<<4 | (c.B()>>4));
+            else if(mode==8) {row[3*x]=c.B();row[3*x+1]=c.G();row[3*x+2]=c.R();}
             else ((U32*)row)[x]=0xff000000u|U32(c.R())<<16|U32(c.G())<<8|c.B();
         }
     }

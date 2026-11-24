@@ -37,9 +37,9 @@ using namespace android;
 using namespace android::gl;
 
 /* Symbian TDisplayMode constants */
-#define SYM_DISP_ECOLOR4K     7
-#define SYM_DISP_ECOLOR64K    8
-#define SYM_DISP_ECOLOR16M    9
+#define SYM_DISP_ECOLOR4K    10
+#define SYM_DISP_ECOLOR64K    7
+#define SYM_DISP_ECOLOR16M    8
 #define SYM_DISP_ECOLOR16MU  11
 #define SYM_DISP_ECOLOR16MA  12
 #define SYM_DISP_ECOLOR16MAP 13
@@ -77,6 +77,18 @@ struct PfConfigDesc {
 /* Use Pixelflinger's primary native formats (RGB_565, RGBA_8888, RGBX_8888,
  * RGBA_4444) supported across 100% of scanline.cpp, buffer.cpp, texture.cpp,
  * and mipmap.cpp. */
+#ifdef PF_FRAMEBUFFER_16BPP
+/* 16-bit framebuffer build: every surface is RGB565 or RGBA4444 and window
+ * surfaces present through an EColor64K CWsBitmap (direct RGB565 memcpy). */
+static const PfConfigDesc kConfigs[] = {
+    /* Config 1: RGB565 (EColor64K) + 16-bit Z-buffer */
+    { 1, 16, 5, 6, 5, 0, 16, GGL_PIXEL_FORMAT_RGB_565,   GGL_PIXEL_FORMAT_Z_16, 2, SYM_DISP_ECOLOR64K },
+    /* Config 2: RGB565 (EColor64K), no Z-buffer */
+    { 2, 16, 5, 6, 5, 0,  0, GGL_PIXEL_FORMAT_RGB_565,   GGL_PIXEL_FORMAT_NONE, 2, SYM_DISP_ECOLOR64K },
+    /* Config 3: RGBA4444 + 16-bit Z-buffer, presented as EColor64K */
+    { 3, 16, 4, 4, 4, 4, 16, GGL_PIXEL_FORMAT_RGBA_4444, GGL_PIXEL_FORMAT_Z_16, 2, SYM_DISP_ECOLOR64K },
+};
+#else
 static const PfConfigDesc kConfigs[] = {
     /* Config 1: RGB565 (EColor64K) + 16-bit Z-buffer */
     { 1, 16, 5, 6, 5, 0, 16, GGL_PIXEL_FORMAT_RGB_565,   GGL_PIXEL_FORMAT_Z_16, 2, SYM_DISP_ECOLOR64K  },
@@ -91,6 +103,8 @@ static const PfConfigDesc kConfigs[] = {
     /* Config 6: RGBA4444 (EColor4K) + 16-bit Z-buffer */
     { 6, 16, 4, 4, 4, 4, 16, GGL_PIXEL_FORMAT_RGBA_4444, GGL_PIXEL_FORMAT_Z_16, 2, SYM_DISP_ECOLOR4K   },
 };
+
+#endif
 
 static const int kNumConfigs = (int)(sizeof(kConfigs) / sizeof(kConfigs[0]));
 
@@ -307,6 +321,10 @@ static bool pfBlitSurfaceToBitmap(const PfSurface* s, void* dstBmp, bool forceOp
         return false;
 
     int dstMode = sym_CFbsBitmap_DisplayMode(dstBmp);
+    if (dstMode != SYM_DISP_ECOLOR4K && dstMode != SYM_DISP_ECOLOR64K &&
+        dstMode != SYM_DISP_ECOLOR16M && dstMode != SYM_DISP_ECOLOR16MU &&
+        dstMode != SYM_DISP_ECOLOR16MA && dstMode != SYM_DISP_ECOLOR16MAP)
+        return false;
     int dstByteStride = sym_CFbsBitmap_ScanLineLength(dstSz.iWidth, dstMode);
     int copyW = (s->width < dstSz.iWidth) ? s->width : dstSz.iWidth;
     int copyH = (s->height < dstSz.iHeight) ? s->height : dstSz.iHeight;
@@ -390,6 +408,25 @@ static bool pfBlitSurfaceToBitmap(const PfSurface* s, void* dstBmp, bool forceOp
                     dp[x * 3 + 2] = (uint8_t)(v      );
                 }
             }
+        } else if (dstMode == SYM_DISP_ECOLOR4K && srcFmt == GGL_PIXEL_FORMAT_RGB_565) {
+            for (int y = 0; y < copyH; ++y) {
+                const uint16_t* sp = (const uint16_t*)(srcBase + y * srcByteStride);
+                uint16_t* dp = (uint16_t*)(dstBase + y * dstByteStride);
+                for (int x = 0; x < copyW; ++x) {
+                    uint16_t v = sp[x]; /* RRRRRGGGGGGBBBBB -> 0000RRRRGGGGBBBB */
+                    dp[x] = (uint16_t)(((v >> 4) & 0x0F00u) | ((v >> 3) & 0x00F0u) | ((v >> 1) & 0x000Fu));
+                }
+            }
+        } else if (dstMode == SYM_DISP_ECOLOR4K &&
+                   (srcFmt == GGL_PIXEL_FORMAT_RGBA_8888 || srcFmt == GGL_PIXEL_FORMAT_RGBX_8888)) {
+            for (int y = 0; y < copyH; ++y) {
+                const uint32_t* sp = (const uint32_t*)(srcBase + y * srcByteStride);
+                uint16_t* dp = (uint16_t*)(dstBase + y * dstByteStride);
+                for (int x = 0; x < copyW; ++x) {
+                    uint32_t v = sp[x]; /* 0xAABBGGRR */
+                    dp[x] = (uint16_t)(((v << 4) & 0x0F00u) | ((v >> 8) & 0x00F0u) | ((v >> 20) & 0x000Fu));
+                }
+            }
         } else if (srcFmt == GGL_PIXEL_FORMAT_RGBA_4444) {
             for (int y = 0; y < copyH; ++y) {
                 const uint16_t* sp = (const uint16_t*)(srcBase + y * srcByteStride);
@@ -397,6 +434,14 @@ static bool pfBlitSurfaceToBitmap(const PfSurface* s, void* dstBmp, bool forceOp
                     uint16_t* dp = (uint16_t*)(dstBase + y * dstByteStride);
                     for (int x = 0; x < copyW; ++x)
                         dp[x] = (uint16_t)(sp[x] >> 4);
+                } else if (dstMode == SYM_DISP_ECOLOR16M) {
+                    uint8_t* dp = dstBase + y * dstByteStride;
+                    for (int x = 0; x < copyW; ++x) {
+                        uint16_t v = sp[x];
+                        dp[x * 3 + 0] = (uint8_t)(((v >>  4) & 0xFu) * 17u);
+                        dp[x * 3 + 1] = (uint8_t)(((v >>  8) & 0xFu) * 17u);
+                        dp[x * 3 + 2] = (uint8_t)(((v >> 12) & 0xFu) * 17u);
+                    }
                 } else if (dstMode == SYM_DISP_ECOLOR64K) {
                     uint16_t* dp = (uint16_t*)(dstBase + y * dstByteStride);
                     for (int x = 0; x < copyW; ++x) {
@@ -665,6 +710,10 @@ EGLAPI EGLBoolean EGLAPIENTRY eglInitialize(EGLDisplay dpy, EGLint *major, EGLin
                 mode == SYM_DISP_ECOLOR16M || mode == SYM_DISP_ECOLOR4K) {
                 st->wsDisplayMode = mode;
             }
+#ifdef PF_FRAMEBUFFER_16BPP
+            /* Window Server converts EColor64K for deeper screens. */
+            st->wsDisplayMode = SYM_DISP_ECOLOR64K;
+#endif
         }
     }
 #endif
@@ -908,6 +957,17 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
                                      reqSurf, reqBindRgb, reqBindRgba, configs, config_size);
     }
 
+#ifdef PF_FRAMEBUFFER_16BPP
+    /* Games commonly request R8G8B8(A8). This build deliberately has only
+     * 16-bit framebuffers, so relax color/alpha/buffer-size minimums and
+     * return the best 16-bit config (queries report the real 5/6/5 sizes). */
+    if (matched == 0 && reqId == EGL_DONT_CARE &&
+        (reqBuf > 16 || reqR > 5 || reqG > 6 || reqB > 5 || reqA > 4)) {
+        matched = matchConfigsHelper(reqId, 0, 0, 0, 0, 0,
+                                     (reqD > 16) ? 16 : reqD, 0,
+                                     reqSurf, reqBindRgb, EGL_DONT_CARE, configs, config_size);
+    }
+#endif
     *num_config = matched;
     return pfSetError(EGL_SUCCESS, EGL_TRUE);
 }

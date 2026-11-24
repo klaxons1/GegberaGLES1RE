@@ -22,7 +22,11 @@ from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM, UC_HOOK_CODE
 from unicorn.arm_const import *
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DLL_PATH  = os.path.join(REPO_ROOT, "pixelflinger", "out", "libgles_cm.dll")
+FB16      = os.environ.get("PF_FRAMEBUFFER_BPP", "32") == "16"
+DLL_PATH  = os.path.join(REPO_ROOT, "pixelflinger", "out", *(("rgb565",) if FB16 else ()), "libgles_cm.dll")
+# Real Symbian TDisplayMode values: EColor64K=7, EColor16M=8, EColor4K=10,
+# EColor16MU/MA/MAP=11/12/13.
+BPP_BY_MODE = {7: 2, 8: 3, 10: 2, 11: 4, 12: 4, 13: 4}
 DEF_PATH  = os.path.join(REPO_ROOT, "symbian", "libgles_cm.def")
 
 dll = open(DLL_PATH, "rb").read()
@@ -232,7 +236,7 @@ def run_symbian_e32_scene(allow_jit: bool, config_rgb_bits=(5, 6, 5), max_exec_b
             elif op == 363: uc.mem_write(r0, struct.pack("<I", cbase_vtbl)); uc.reg_write(UC_ARM_REG_R0, r0)
             elif op == 359:
                 w, h = struct.unpack("<ii", uc.mem_read(r1, 8))
-                bpp = 4 if r2 in (11, 12, 13) else 2
+                bpp = BPP_BY_MODE[r2]
                 bitmaps[r0] = {"w": w, "h": h, "mode": r2, "data": halloc(w * bpp * h, True), "stride": w * bpp, "locked": 0}
                 uc.reg_write(UC_ARM_REG_R0, 0)
             elif op == 387: uc.mem_write(r0, struct.pack("<ii", win_size[0], win_size[1]))
@@ -244,13 +248,13 @@ def run_symbian_e32_scene(allow_jit: bool, config_rgb_bits=(5, 6, 5), max_exec_b
                 b = bitmaps[r1]
                 uc.mem_write(r0, struct.pack("<ii", b["w"], b["h"]))
             elif op == 109: uc.reg_write(UC_ARM_REG_R0, b["mode"])
-            elif op == 14:  uc.reg_write(UC_ARM_REG_R0, r0 * (4 if r1 in (11, 12, 13) else 2))
+            elif op == 14:  uc.reg_write(UC_ARM_REG_R0, (r0 * BPP_BY_MODE[r1] + 3) & ~3)
             elif op == 133: b["locked"] += 1
             elif op == 107: b["locked"] -= 1
             elif op == 108: uc.reg_write(UC_ARM_REG_R0, b["data"])
             elif op == 27:
                 w, h = struct.unpack("<ii", uc.mem_read(r1, 8))
-                bpp = 4 if b["mode"] in (11, 12, 13) else 2
+                bpp = BPP_BY_MODE[b["mode"]]
                 b["w"], b["h"], b["stride"] = w, h, w * bpp
                 b["data"] = halloc(b["stride"] * h, True)
                 uc.reg_write(UC_ARM_REG_R0, 0)
@@ -297,11 +301,25 @@ def run_symbian_e32_scene(allow_jit: bool, config_rgb_bits=(5, 6, 5), max_exec_b
     rb, gb, bb = config_rgb_bits
     attr_mem = halloc(64, True)
     attrs = [0x3040, 1, 0x3024, rb, 0x3023, gb, 0x3022, bb, 0x3025, 16, 0x3026, 8, 0x3038]
+    if config_rgb_bits == (4, 4, 4):
+        # Select the RGBA4444 config explicitly; minimum-size matching would
+        # otherwise legitimately return the first RGB565 config.
+        attrs = [0x3028, 3 if FB16 else 6, 0x3038]
     mu.mem_write(attr_mem, struct.pack(f"<{len(attrs)}i", *attrs))
     cfg_out = halloc(8, True)
     num_out = halloc(8, True)
     assert call("eglChooseConfig", dpy, attr_mem, cfg_out, 1, num_out) == 1
     cfg = struct.unpack("<I", mu.mem_read(cfg_out, 4))[0]
+    assert struct.unpack("<i", mu.mem_read(num_out, 4))[0] >= 1
+    if FB16:
+        sizes = []
+        for attr in (0x3020, 0x3024, 0x3023, 0x3022):
+            assert call("eglGetConfigAttrib", dpy, cfg, attr, num_out) == 1
+            sizes.append(struct.unpack("<i", mu.mem_read(num_out, 4))[0])
+        expected = [16, 4, 4, 4] if config_rgb_bits == (4, 4, 4) else [16, 5, 6, 5]
+        assert sizes == expected, (config_rgb_bits, sizes)
+        assert call("eglGetConfigs", dpy, 0, 0, num_out) == 1
+        assert struct.unpack("<i", mu.mem_read(num_out, 4))[0] == 3
 
     surf = call("eglCreateWindowSurface", dpy, cfg, halloc(32, True), 0)
     ctx  = call("eglCreateContext", dpy, cfg, 0, 0)
@@ -427,10 +445,46 @@ def run_symbian_e32_scene(allow_jit: bool, config_rgb_bits=(5, 6, 5), max_exec_b
     assert call("eglSwapBuffers", dpy, surf) == 1
 
     bmp = bitmaps[last_bitblt_bmp[0]]
-    assert bmp["w"] == W and bmp["h"] == H and bmp["mode"] == 11
-    raw_bgra = bytes(mu.mem_read(bmp["data"], W * H * 4))
+    assert bmp["w"] == W and bmp["h"] == H and bmp["mode"] == (7 if FB16 else 11)
+    if FB16:
+        raw565 = struct.unpack(f"<{W*H}H", bytes(mu.mem_read(bmp["data"], W * H * 2)))
+        out = bytearray()
+        for v in raw565:
+            r, g, b = (v >> 11) & 31, (v >> 5) & 63, v & 31
+            out += bytes(((b << 3) | (b >> 2), (g << 2) | (g >> 4), (r << 3) | (r >> 2), 255))
+        raw_bgra = bytes(out)
+    else:
+        raw_bgra = bytes(mu.mem_read(bmp["data"], W * H * 4))
     for i in range(0, len(raw_bgra), 4):
         assert raw_bgra[i + 3] == 0xFF
+
+    # Native pixmap conversion uses the real TDisplayMode numbering.
+    def copy_to_pixmap(mode):
+        bpp = BPP_BY_MODE[mode]
+        stride = (W * bpp + 3) & ~3
+        handle = halloc(16, True)
+        bitmaps[handle] = {"w": W, "h": H, "mode": mode, "data": halloc(stride * H, True), "stride": stride, "locked": 0}
+        assert call("eglCopyBuffers", dpy, surf, handle) == 1
+        assert bitmaps[handle]["locked"] == 0
+        data = bytes(mu.mem_read(bitmaps[handle]["data"], stride * H))
+        out = []
+        for y in range(H):
+            for x in range(W):
+                o = y * stride + x * bpp
+                if mode == 7:
+                    v = data[o] | (data[o + 1] << 8)
+                    r, g, b = (v >> 11) & 31, (v >> 5) & 63, v & 31
+                    out.append(((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)))
+                elif mode == 10:
+                    v = data[o] | (data[o + 1] << 8)
+                    out.append((((v >> 8) & 15) * 17, ((v >> 4) & 15) * 17, (v & 15) * 17))
+                else:
+                    out.append((data[o + 2], data[o + 1], data[o]))
+        return out
+    for mode in (7, 8, 10, 11):
+        got = copy_to_pixmap(mode)
+        worst = max(abs(got[i][c] - raw_bgra[i * 4 + 2 - c]) for i in range(W * H) for c in range(3))
+        assert worst <= 18, (mode, worst)
 
     # Run targeted pixel regressions after capturing the showcase, so its
     # JIT/C++ comparison remains independent of these assert-based checks.
@@ -640,7 +694,7 @@ if __name__ == "__main__":
 
     save_quad_png("/tmp/armv5_jit_vs_cpp.png")
 
-    for label, f_a, f_b in [("RGB565", fb565_jit, fb565_cpp), ("RGBA8888", fb888_jit, fb888_cpp)]:
+    for label, f_a, f_b in [("RGB565", fb565_jit, fb565_cpp), ("RGB8 request->RGB565" if FB16 else "RGBA8888", fb888_jit, fb888_cpp)]:
         mean_d = sum(abs(f_a[i] - f_b[i]) for i in range(len(f_a))) / (W * H * 3)
         print(f"[Compare {label}] ARMv5TE JIT vs C++ fallback mean_channel_diff = {mean_d:.3f} / 255")
         assert mean_d < 5.0, f"{label} mean diff too high: {mean_d}"
@@ -650,11 +704,17 @@ if __name__ == "__main__":
     _, _, fb4444_cpp, _,       _        = run_symbian_e32_scene(False, (4, 4, 4))
     mean_4444 = sum(abs(fb4444_jit[i] - fb4444_cpp[i]) for i in range(len(fb4444_jit))) / (W * H * 3)
     print(f"[Compare RGBA4444] ARMv5TE JIT vs C++ fallback mean_channel_diff = {mean_4444:.3f} / 255")
-    assert imb4444 >= 2 and jins4444 > 50000 and mean_4444 < 6.0
+    # The config is now selected by ID, so this is genuinely RGBA4444. JIT and
+    # C++ dithering may differ by one or two 4-bit quantization steps (17/34;
+    # up to 41 after the 16-bit build's uneven RGBA4444->RGB565 presentation).
+    max_4444 = max(abs(fb4444_jit[i] - fb4444_cpp[i]) for i in range(len(fb4444_jit)) if i % 4 != 3)
+    assert imb4444 >= 2 and jins4444 > 50000 and mean_4444 < 9.0 and max_4444 <= (41 if FB16 else 34)
 
     _, _, _, imb_stress565, jins_stress565 = run_symbian_e32_scene(True, (5, 6, 5), max_exec_bytes=64*1024, stress_shaders=True)
     _, _, _, imb_stress888, jins_stress888 = run_symbian_e32_scene(True, (8, 8, 8), max_exec_bytes=64*1024, stress_shaders=True)
     print(f"[Stress 64KB ExecChunk + LRU Eviction] RGB565 IMB={imb_stress565}, RGBA8888 IMB={imb_stress888}")
     assert imb_stress565 >= 80 and imb_stress888 >= 80
 
+    if FB16:
+        print("[16-bit build] RGB8 requests use RGB565 configs; all window bitmaps are EColor64K")
     print("=== ALL ARMV5TE E32 UNICORN JIT + C++ FALLBACK + STRESS TESTS PASSED! ===")

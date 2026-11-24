@@ -2,6 +2,20 @@
 
 Last updated: 2026-11-22 (PixelFlinger four-subsystem regression audit)
 
+## PixelFlinger 16-bit framebuffer variant
+
+- `PF_FRAMEBUFFER_BPP=16 ./pixelflinger/build_symbian.sh` writes
+  `pixelflinger/out/rgb565/`. It exposes only RGB565+Z16, RGB565 and
+  RGBA4444+Z16, always presents through EColor64K, and gives RGB8/alpha8
+  requests the RGB565 config. ABI, UIDs and Data/BSS=0 match the default.
+- Fixed wrong TDisplayMode constants in PixelFlinger, and the equivalent pixmap
+  conversion in Vincent (EColor64K=7, 16M=8, 4K=10). PixelFlinger can now copy
+  to EColor4K and rejects modes without a converter.
+- Unicorn suites pass for the default and 16-bit builds, including EColor64K,
+  16M, 4K and 16MU pixmap copies. RGBA4444 is now selected by config ID; JIT
+  vs C++ dithering differs by at most two 4-bit steps. PixelFlinger host
+  ASan 13/13 and the Vincent native suite pass. No physical-device testing.
+
 ## Vincent alternative native port
 
 - Added `vincent/`, pinned to mcejp/vincent-es commit

@@ -9,8 +9,16 @@ REPO_ROOT="$(cd "${PF_ROOT}/.." && pwd)"
 TOOLS_DIR="${SYMBIAN_TOOLS_DIR:-/tmp/symbian_tools}"
 GCC_DIR="${TOOLS_DIR}/gcc"
 ELF2E32="${TOOLS_DIR}/elf2e32_bin"
-BUILD_DIR="/tmp/pixelflinger_symbian_build"
-OUT_DIR="${PF_ROOT}/out"
+# PF_FRAMEBUFFER_BPP=16 builds the RGB565/RGBA4444-only variant whose window
+# surfaces always present through EColor64K bitmaps.
+FB_BPP="${PF_FRAMEBUFFER_BPP:-32}"
+case "${FB_BPP}" in
+    32) BUILD_DIR="/tmp/pixelflinger_symbian_build"; OUT_DIR="${PF_ROOT}/out"
+        ZIP_NAME="Pixelflinger-GLES1-Symbian-EKA2-ARMv5.zip"; FB_DEFINES=() ;;
+    16) BUILD_DIR="/tmp/pixelflinger_symbian_build_16bpp"; OUT_DIR="${PF_ROOT}/out/rgb565"
+        ZIP_NAME="Pixelflinger-GLES1-Symbian-EKA2-ARMv5-RGB565.zip"; FB_DEFINES=(-DPF_FRAMEBUFFER_16BPP) ;;
+    *) echo "PF_FRAMEBUFFER_BPP must be 16 or 32" >&2; exit 2 ;;
+esac
 
 # Bootstrap toolchain if /tmp/symbian_tools is missing
 if [[ ! -x "${GCC_DIR}/bin/arm-none-symbianelf-g++" || ! -x "${ELF2E32}" ]]; then
@@ -86,6 +94,7 @@ CXX_FLAGS=(
     -DPF_SYMBIAN_DLL_BUILD
     -DGL_GLEXT_PROTOTYPES
     -DEGL_EGLEXT_PROTOTYPES
+    "${FB_DEFINES[@]}"
 )
 
 echo "[pixelflinger-symbian] Assembling ARMv5TE startup, scanline & fixed-point kernels..."
@@ -208,10 +217,10 @@ echo "[pixelflinger-symbian] Running elf2e32 -> libgles_cm.dll & libgles_cm.dso.
 
 cp -f "${OUT_DIR}/libgles_cm{000a0000}.dso" "${OUT_DIR}/libgles_cm.dso"
 
-python3 - "${OUT_DIR}" "${PF_ROOT}" <<'PY'
+python3 - "${OUT_DIR}" "${PF_ROOT}" "${ZIP_NAME}" <<'PY'
 import os, sys, zipfile
-out_dir, pf_root = sys.argv[1], sys.argv[2]
-zip_path = os.path.join(out_dir, "Pixelflinger-GLES1-Symbian-EKA2-ARMv5.zip")
+out_dir, pf_root, zip_name = sys.argv[1], sys.argv[2], sys.argv[3]
+zip_path = os.path.join(out_dir, zip_name)
 with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
     zf.write(os.path.join(pf_root, "README.md"), "README.md")
     zf.write(os.path.join(out_dir, "libgles_cm.dll"), "sys/bin/libgles_cm.dll")
@@ -226,5 +235,5 @@ with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
     zf.write(os.path.join(pf_root, "include/KHR/khrplatform.h"), "epoc32/include/KHR/khrplatform.h")
 PY
 
-echo "[pixelflinger-symbian] Build complete:"
-ls -lh "${OUT_DIR}/libgles_cm.dll" "${OUT_DIR}/libgles_cm.dso" "${OUT_DIR}/Pixelflinger-GLES1-Symbian-EKA2-ARMv5.zip"
+echo "[pixelflinger-symbian] Build complete (${FB_BPP}-bit framebuffer configuration):"
+ls -lh "${OUT_DIR}/libgles_cm.dll" "${OUT_DIR}/libgles_cm.dso" "${OUT_DIR}/${ZIP_NAME}"
