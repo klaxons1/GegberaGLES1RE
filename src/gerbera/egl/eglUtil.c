@@ -425,7 +425,7 @@ int eglUpdateSurfaceBuffers(eglSurface_s *surface)
     return 1;
 }
 
-void eglSetSurfaceDescriptor(oglSurfaceDescriptor_s *desc, const eglSurface_s *surface, const eglConfig *config)
+void eglSetSurfaceDescriptor(oglSurfaceDescriptor *desc, const eglSurface_s *surface, const eglConfig *config)
 {
     EGL_ASSERT_AT("eglUtil.inl", 483, "desc && surface && config",
                   desc != NULL && surface != NULL && config != NULL);
@@ -456,8 +456,8 @@ void eglSetSurfaceDescriptor(oglSurfaceDescriptor_s *desc, const eglSurface_s *s
 
 int eglUpdateSurfaces(oglContext_s *esContext, eglSurface_s *drawSurface, eglSurface_s *readSurface)
 {
-    oglSurfaceDescriptor_s drawDesc;
-    oglSurfaceDescriptor_s readDesc;
+    oglSurfaceDescriptor drawDesc;
+    oglSurfaceDescriptor readDesc;
     eglConfig config;
 
     EGL_ASSERT_AT("eglUtil.inl", 1076, "drawSurface && readSurface",

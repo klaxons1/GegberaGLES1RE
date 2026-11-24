@@ -221,14 +221,17 @@ HCInstr_s emulator_substitute(HCInstr_s *instr, int cReg, int cVal)
                 int val = emulator_evalALUOp(op, (unsigned int)cVal, imm);
                 return HC_genOp2Imm(HCOP_MOV, dst, val);
             }
-            if (hasImm == 0 && s0 == cReg && cReg == HC_getOpcodeSrc1(instr))
+            /* The original also compares the low 11 bits of an immediate
+             * against cReg here (ARM sub_2CABC, PE 0x45DA50).
+             * The remaining three-operand cases do not test hasImm. */
+            if (s0 == cReg && cReg == HC_getOpcodeSrc1(instr))
             {
                 int val = emulator_evalALUOp(op, (unsigned int)cVal, (unsigned int)cVal);
                 return HC_genOp2Imm(HCOP_MOV, dst, val);
             }
-            if (hasImm == 0 && cReg == HC_getOpcodeSrc1(instr))
+            if (cReg == HC_getOpcodeSrc1(instr))
                 return HC_genOp3Imm(op, dst, s0, cVal);
-            if (hasImm == 0 && s0 == cReg)
+            if (s0 == cReg)
             {
                 int s1 = HC_getOpcodeSrc1(instr);
                 if (HC_opcodeIsCommutative(instr) != 0)
@@ -273,7 +276,8 @@ HCInstr_s emulator_substitute(HCInstr_s *instr, int cReg, int cVal)
                     if (s1 == cReg)
                     {
                         return HC_genOp3Imm((HCOP_e)(nonComm[i] >> 8),
-                                            dst, s0, idxSize * cVal);
+                                            dst, s0, (int)((unsigned int)idxSize
+                                                          * (unsigned int)cVal));
                     }
                     isNonComm = 1;
                 }
@@ -299,10 +303,9 @@ HCInstr_s emulator_substitute(HCInstr_s *instr, int cReg, int cVal)
 
         for (i = 0; i < 12; ++i)
         {
-            /* Both reference binaries (x86 0x45DD95 `cmp [ebp-0x38], eax` and
-             * ARM sub_2CABC `word_37082[0]`) compiled a variable-shadowing bug
-             * in the original C source (`int op = ops[i] & 0xff; if (op == op)`),
-             * matching iteration i = 0 unconditionally when `s0 == cReg`. */
+            /* Both references use the first table entry whenever s0 == cReg,
+             * regardless of the opcode (x86 0x45DD95, ARM 0x2CABC).
+             * This is likely a missing opcode comparison in the original. */
             int tblOp = ops[i] & 0xFF;
             (void)tblOp;
             if (s0 == cReg)

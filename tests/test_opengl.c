@@ -9,19 +9,7 @@
 #include "gerbera/grRGBA.h"
 #include "gerbera/api_opengl/oglContext.h"
 
-static int g_checks = 0;
-static int g_fails  = 0;
-
-#define CHECK(cond)                                                     \
-    do                                                                  \
-    {                                                                   \
-        ++g_checks;                                                     \
-        if (!(cond))                                                    \
-        {                                                               \
-            ++g_fails;                                                  \
-            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-        }                                                               \
-    } while (0)
+#include "test_support.h"
 
 #define NEAR_F(a, b, eps) (fabsf((float)(a) - (float)(b)) <= (eps))
 
@@ -493,7 +481,7 @@ static void test_ogl_context(void)
 {
     oglContext_s *ctx1;
     oglContext_s *ctx2;
-    oglSurfaceDescriptor_s surfDesc;
+    oglSurfaceDescriptor surfDesc;
     static unsigned short colorBuf[32 * 32];
     static unsigned int   depthBuf[32 * 32];
     static unsigned char  stencilBuf[32 * 32];
@@ -595,43 +583,52 @@ static void test_ogl_context(void)
     oglDestroyContext(ctx1);
 }
 
-/* Helper: initialize an RGBA8888 (R at byte 0, G at 1, B at 2, A at 3 on LE)
- * + 32-bit depth + 8-bit stencil surface descriptor. */
-static void init_rgba8_surface(oglSurfaceDescriptor_s *desc,
-                               int w, int h,
-                               unsigned int *colorBuf,
-                               unsigned int *depthBuf,
-                               unsigned char *stencilBuf)
+typedef struct RGBA8SurfaceFixture {
+    oglSurfaceDescriptor descriptor;
+    unsigned int color[16 * 16], depth[16 * 16];
+    unsigned char stencil[16 * 16];
+} RGBA8SurfaceFixture;
+
+/* R, G, B, A bytes, 32-bit depth and 8-bit stencil; at most 16x16 pixels. */
+static void init_rgba8_surface(RGBA8SurfaceFixture *surface, int w, int h)
 {
+    oglSurfaceDescriptor *desc = &surface->descriptor;
     memset(desc, 0, sizeof(*desc));
-    desc->width               = w;
-    desc->height              = h;
-    desc->colorBuffer         = colorBuf;
-    desc->depthBuffer         = depthBuf;
-    desc->stencilBuffer       = stencilBuf;
-    desc->colorBufferStride   = w * 4;
-    desc->depthBufferStride   = w * 4;
+    desc->width = w;
+    desc->height = h;
+    desc->colorBuffer = surface->color;
+    desc->depthBuffer = surface->depth;
+    desc->stencilBuffer = surface->stencil;
+    desc->colorBufferStride = w * 4;
+    desc->depthBufferStride = w * 4;
     desc->stencilBufferStride = w;
-    desc->colorBytes          = 4;
-    desc->depthBytes          = 4;
-    desc->stencilBytes        = 1;
-    desc->redBits             = 8;
-    desc->redOffset           = 0;
-    desc->greenBits           = 8;
-    desc->greenOffset         = 8;
-    desc->blueBits            = 8;
-    desc->blueOffset          = 16;
-    desc->alphaBits           = 8;
-    desc->alphaOffset         = 24;
+    desc->colorBytes = desc->depthBytes = 4;
+    desc->stencilBytes = 1;
+    desc->redBits = desc->greenBits = desc->blueBits = desc->alphaBits = 8;
+    desc->redOffset = 0;
+    desc->greenOffset = 8;
+    desc->blueOffset = 16;
+    desc->alphaOffset = 24;
 }
+
+static void bind_rgba8_surface(oglContext_s *context, RGBA8SurfaceFixture *surface,
+                               int w, int h)
+{
+    init_rgba8_surface(surface, w, h);
+    oglSetBuffers(context, &surface->descriptor, &surface->descriptor);
+    egliSetCurrentContext(context);
+}
+
+#define CHECK_RGB_AT(x, y, red, green, blue) do { \
+    unsigned char actual_[4]; \
+    glReadPixels((x), (y), 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, actual_); \
+    CHECK(actual_[0] == (red) && actual_[1] == (green) && actual_[2] == (blue)); \
+} while (0)
 
 static void test_gl_strings_errors_and_state(void)
 {
     oglContext_s *ctx;
-    unsigned int colorBuf[16 * 16];
-    unsigned int depthBuf[16 * 16];
-    unsigned char stencilBuf[16 * 16];
-    oglSurfaceDescriptor_s surf;
+    RGBA8SurfaceFixture surf;
     GLboolean bval[4];
     GLint ival[4];
     GLfloat fval[4];
@@ -644,9 +641,7 @@ static void test_gl_strings_errors_and_state(void)
 
     ctx = oglCreateContext(NULL, NULL);
     CHECK(ctx != NULL);
-    init_rgba8_surface(&surf, 16, 16, colorBuf, depthBuf, stencilBuf);
-    oglSetBuffers(ctx, &surf, &surf);
-    egliSetCurrentContext(ctx);
+    bind_rgba8_surface(ctx, &surf, 16, 16);
 
     CHECK(glGetError() == GL_NO_ERROR);
     CHECK(strcmp((const char *)glGetString(GL_VENDOR), "Nokia") == 0);
@@ -907,18 +902,13 @@ static void test_gl_matrices_and_buffers(void)
 static void test_gl_clear_and_readpixels(void)
 {
     oglContext_s *ctx = oglCreateContext(NULL, NULL);
-    unsigned int colorBuf[8 * 8];
-    unsigned int depthBuf[8 * 8];
-    unsigned char stencilBuf[8 * 8];
+    RGBA8SurfaceFixture rgbaSurf;
     unsigned short rgb565Buf[8 * 8];
-    oglSurfaceDescriptor_s rgbaSurf, rgb565Surf;
+    oglSurfaceDescriptor rgb565Surf;
     unsigned char px[8 * 8 * 4];
-    unsigned short px565[4];
     GLint fmt = 0, type = 0;
 
-    init_rgba8_surface(&rgbaSurf, 8, 8, colorBuf, depthBuf, stencilBuf);
-    oglSetBuffers(ctx, &rgbaSurf, &rgbaSurf);
-    egliSetCurrentContext(ctx);
+    bind_rgba8_surface(ctx, &rgbaSurf, 8, 8);
 
     glViewport(0, 0, 8, 8);
     glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
@@ -948,7 +938,7 @@ static void test_gl_clear_and_readpixels(void)
           px[(6 * 8 + 6) * 4 + 1] == 255 &&
           px[(6 * 8 + 6) * 4 + 2] == 0 &&
           px[(6 * 8 + 6) * 4 + 3] == 255);
-    CHECK(stencilBuf[0] == 0x5Au);
+    CHECK(rgbaSurf.stencil[0] == 0x5Au);
 
     /* Switch to RGB565 surface and verify GL_IMPLEMENTATION_COLOR_READ_*_OES */
     memset(&rgb565Surf, 0, sizeof(rgb565Surf));
@@ -977,7 +967,6 @@ static void test_gl_clear_and_readpixels(void)
     CHECK(glGetError() == GL_NO_ERROR);
     CHECK(rgb565Buf[0] == 0x001Fu);
     CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255 && px[3] == 255);
-    (void)px565;
 
     egliSetCurrentContext(NULL);
     oglDestroyContext(ctx);
@@ -986,10 +975,7 @@ static void test_gl_clear_and_readpixels(void)
 static void test_gl_rendering_pipeline(void)
 {
     oglContext_s *ctx = oglCreateContext(NULL, NULL);
-    unsigned int colorBuf[16 * 16];
-    unsigned int depthBuf[16 * 16];
-    unsigned char stencilBuf[16 * 16];
-    oglSurfaceDescriptor_s surf;
+    RGBA8SurfaceFixture surf;
     unsigned char px[4];
 
     static const GLfloat fullQuadZ0[12] = {
@@ -1012,9 +998,7 @@ static void test_gl_rendering_pipeline(void)
     };
     static const GLushort quadIdx[6] = { 0, 1, 2, 2, 1, 3 };
 
-    init_rgba8_surface(&surf, 16, 16, colorBuf, depthBuf, stencilBuf);
-    oglSetBuffers(ctx, &surf, &surf);
-    egliSetCurrentContext(ctx);
+    bind_rgba8_surface(ctx, &surf, 16, 16);
 
     glViewport(0, 0, 16, 16);
     glDisable(GL_DITHER);
@@ -1039,20 +1023,17 @@ static void test_gl_rendering_pipeline(void)
     glVertexPointer(3, GL_FLOAT, 0, fullQuadZFar);
     glColor4f(1.0f, 0.0f, 0.0f, 1.0f);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, quadIdx);
-    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0);
+    CHECK_RGB_AT(8, 8, 255, 0, 0);
 
     glVertexPointer(3, GL_FLOAT, 0, fullQuadZ0);
     glColor4f(0.0f, 0.0f, 1.0f, 1.0f);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, quadIdx);
-    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255);
+    CHECK_RGB_AT(8, 8, 0, 0, 255);
 
     glVertexPointer(3, GL_FLOAT, 0, fullQuadZFar);
     glColor4f(0.0f, 1.0f, 0.0f, 1.0f);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, quadIdx);
-    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255); /* nearer blue preserved */
+    CHECK_RGB_AT(8, 8, 0, 0, 255); /* nearer blue preserved */
     glDisable(GL_DEPTH_TEST);
 
     /* 3. Alpha blending: 50% green over solid red -> ~(127, 128, 0) */
@@ -1078,8 +1059,7 @@ static void test_gl_rendering_pipeline(void)
     CHECK(px[0] == 0 && px[1] == 0);
     glColor4ub(255, 255, 0, 200);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    CHECK(px[0] == 255 && px[1] == 255 && px[2] == 0);
+    CHECK_RGB_AT(8, 8, 255, 255, 0);
     glDisable(GL_ALPHA_TEST);
 
     /* 5. Stencil mask: mark inner [-0.5..0.5]^2 (pixels 4..11) with stencil=1,
@@ -1102,10 +1082,8 @@ static void test_gl_rendering_pipeline(void)
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glDisable(GL_STENCIL_TEST);
 
-    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px); /* inside innerQuad */
-    CHECK(px[0] == 0 && px[1] == 255 && px[2] == 255);
-    glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px); /* outside innerQuad */
-    CHECK(px[0] == 0 && px[1] == 0 && px[2] == 0);
+    CHECK_RGB_AT(8, 8, 0, 255, 255); /* inside innerQuad */
+    CHECK_RGB_AT(1, 1, 0, 0, 0); /* outside innerQuad */
 
     /* 6. VBO + EBO rendering with non-zero byte offsets on 64-bit LP64 */
     {
@@ -1134,8 +1112,7 @@ static void test_gl_rendering_pipeline(void)
         glColor4ub(200, 100, 50, 255);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (const GLvoid *)(uintptr_t)4);
         CHECK(glGetError() == GL_NO_ERROR);
-        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-        CHECK(px[0] == 200 && px[1] == 100 && px[2] == 50);
+        CHECK_RGB_AT(8, 8, 200, 100, 50);
 
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
@@ -1210,10 +1187,8 @@ static void test_gl_rendering_pipeline(void)
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (const GLvoid *)(uintptr_t)0);
         CHECK(glGetError() == GL_NO_ERROR);
 
-        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-        CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0);
-        glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-        CHECK(px[0] == 0 && px[1] == 0 && px[2] == 0);
+        CHECK_RGB_AT(8, 8, 255, 0, 0);
+        CHECK_RGB_AT(1, 1, 0, 0, 0);
 
         /* Perspective + modelview z=-5 + 50% linear fog [start=2, end=8] -> purple ~(127, 0, 127) */
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(perspQuad), perspQuad, GL_DYNAMIC_DRAW);
@@ -1270,8 +1245,7 @@ static void test_gl_rendering_pipeline(void)
             glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(clipBackQuad), clipBackQuad, GL_DYNAMIC_DRAW);
             glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (const GLvoid *)(uintptr_t)0);
             CHECK(glGetError() == GL_NO_ERROR);
-            glReadPixels(8, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-            CHECK(px[0] == 0 && px[1] == 255 && px[2] == 0);
+            CHECK_RGB_AT(8, 2, 0, 255, 0);
         }
         glDisable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
@@ -1296,10 +1270,7 @@ static void test_gl_rendering_pipeline(void)
 static void test_gl_textures_and_drawtex(void)
 {
     oglContext_s *ctx = oglCreateContext(NULL, NULL);
-    unsigned int colorBuf[16 * 16];
-    unsigned int depthBuf[16 * 16];
-    unsigned char stencilBuf[16 * 16];
-    oglSurfaceDescriptor_s surf;
+    RGBA8SurfaceFixture surf;
     GLuint tex[3] = { 0, 0, 0 };
     unsigned char px[4];
 
@@ -1322,9 +1293,7 @@ static void test_gl_textures_and_drawtex(void)
         1.0f, 1.0f
     };
 
-    init_rgba8_surface(&surf, 16, 16, colorBuf, depthBuf, stencilBuf);
-    oglSetBuffers(ctx, &surf, &surf);
-    egliSetCurrentContext(ctx);
+    bind_rgba8_surface(ctx, &surf, 16, 16);
 
     glViewport(0, 0, 16, 16);
     glDisable(GL_DITHER);
@@ -1354,16 +1323,12 @@ static void test_gl_textures_and_drawtex(void)
     CHECK(glGetError() == GL_NO_ERROR);
 
     /* Quadrant checks: (2,2)->Red, (13,2)->Green, (2,13)->Blue, (13,13)->Yellow */
-    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0);
-    glReadPixels(13, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    CHECK(px[0] == 0 && px[1] == 255 && px[2] == 0);
-    glReadPixels(2, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255);
-    glReadPixels(13, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    CHECK(px[0] == 255 && px[1] == 255 && px[2] == 0);
+    CHECK_RGB_AT(2, 2, 255, 0, 0);
+    CHECK_RGB_AT(13, 2, 0, 255, 0);
+    CHECK_RGB_AT(2, 13, 0, 0, 255);
+    CHECK_RGB_AT(13, 13, 255, 255, 0);
 
-    /* GL_COMBINE with GL_RGB_SCALE = 2.0f: 0.4 * 1.0 * 2.0 = 0.8 (~204) on Red quadrant */
+    /* GL_COMBINE doubles the primary red value of 100 to approximately 200. */
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
     glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_MODULATE);
     glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_RGB, GL_TEXTURE);
@@ -1396,10 +1361,8 @@ static void test_gl_textures_and_drawtex(void)
 
         glClear(GL_COLOR_BUFFER_BIT);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-        CHECK(px[0] == 255 && px[1] == 0 && px[2] == 255);
-        glReadPixels(13, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-        CHECK(px[0] == 0 && px[1] == 255 && px[2] == 255);
+        CHECK_RGB_AT(2, 2, 255, 0, 255);
+        CHECK_RGB_AT(13, 2, 0, 255, 255);
     }
 
     /* 3. glCopyTexImage2D + OES_draw_texture (glDrawTexiOES) */
@@ -1414,6 +1377,21 @@ static void test_gl_textures_and_drawtex(void)
         glBindTexture(GL_TEXTURE_2D, tex[2]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        {
+            static const int emptySizes[3][2] = { { 0, 8 }, { 8, 0 }, { 0, 0 } };
+            int i;
+            for (i = 0; i < 3; ++i)
+            {
+                _grTexture *texture = oglGetActiveTexture(ctx, GR_TEXTURETARGET_2D);
+                glCopyTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA, 0, 0,
+                                 emptySizes[i][0], emptySizes[i][1], 0);
+                CHECK(glGetError() == GL_INVALID_VALUE);
+                CHECK(texture->mipmap[1].initialized == 1);
+                CHECK(texture->mipmap[1].pixels == NULL);
+                CHECK(texture->mipmap[1].log2Dim[0] == (emptySizes[i][0] ? 3 : -1));
+                CHECK(texture->mipmap[1].log2Dim[1] == (emptySizes[i][1] ? 3 : -1));
+            }
+        }
         glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, 8, 8, 0);
         CHECK(glGetError() == GL_NO_ERROR);
 
@@ -1429,8 +1407,7 @@ static void test_gl_textures_and_drawtex(void)
         /* Inside (4..11, 4..11): orange; outside (1, 1): black */
         glReadPixels(6, 6, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
         CHECK(px[0] == 255 && px[1] >= 126 && px[1] <= 129 && px[2] == 0);
-        glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-        CHECK(px[0] == 0 && px[1] == 0 && px[2] == 0);
+        CHECK_RGB_AT(1, 1, 0, 0, 0);
 
         /* Also verify 4-quadrant orientation of glDrawTexiOES on tex[0] (2x2 RGBA):
          * crop = {0, 0, 2, 2} -> bottom-left=Red, bottom-right=Green, top-left=Blue, top-right=Yellow */
@@ -1440,14 +1417,10 @@ static void test_gl_textures_and_drawtex(void)
             glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_CROP_RECT_OES, crop2);
             glClear(GL_COLOR_BUFFER_BIT);
             glDrawTexiOES(0, 0, 0, 16, 16);
-            glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-            CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0);
-            glReadPixels(13, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-            CHECK(px[0] == 0 && px[1] == 255 && px[2] == 0);
-            glReadPixels(2, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-            CHECK(px[0] == 0 && px[1] == 0 && px[2] == 255);
-            glReadPixels(13, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-            CHECK(px[0] == 255 && px[1] == 255 && px[2] == 0);
+            CHECK_RGB_AT(2, 2, 255, 0, 0);
+            CHECK_RGB_AT(13, 2, 0, 255, 0);
+            CHECK_RGB_AT(2, 13, 0, 0, 255);
+            CHECK_RGB_AT(13, 13, 255, 255, 0);
         }
     }
 
@@ -1478,15 +1451,14 @@ static void test_gl_buffer_storage_lifetime(void)
         }
     };
     oglContext_s *contexts[2];
-    oglSurfaceDescriptor_s surf;
-    unsigned int colorBuf[8 * 8], depthBuf[8 * 8];
-    unsigned char stencilBuf[8 * 8], px[4];
+    RGBA8SurfaceFixture surf;
+    unsigned char px[4];
     GLuint buffer;
     int i, pass;
 
     contexts[0] = oglCreateContext(NULL, NULL);
     contexts[1] = oglCreateContext(contexts[0], NULL);
-    init_rgba8_surface(&surf, 8, 8, colorBuf, depthBuf, stencilBuf);
+    init_rgba8_surface(&surf, 8, 8);
     egliSetCurrentContext(contexts[0]);
     glGenBuffers(1, &buffer);
     glBindBuffer(GL_ARRAY_BUFFER, buffer);
@@ -1494,7 +1466,7 @@ static void test_gl_buffer_storage_lifetime(void)
 
     for (i = 0; i < 2; ++i)
     {
-        oglSetBuffers(contexts[i], &surf, &surf);
+        oglSetBuffers(contexts[i], &surf.descriptor, &surf.descriptor);
         egliSetCurrentContext(contexts[i]);
         glViewport(0, 0, 8, 8);
         glDisable(GL_DITHER);
@@ -1607,7 +1579,6 @@ static void test_gl_viewport_resize(void)
     EGLContext handle;
     oglContext_s *context;
     GLint viewport[4];
-    GLubyte pixel[4];
 
     CHECK(eglInitialize(display, NULL, NULL) == EGL_TRUE);
     CHECK(eglChooseConfig(display, attributes, &config, 1, &count) == EGL_TRUE && count == 1);
@@ -1630,10 +1601,8 @@ static void test_gl_viewport_resize(void)
     glVertexPointer(2, GL_FLOAT, 0, quad);
     glColor4ub(255, 0, 0, 255);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glReadPixels(3, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
-    CHECK(pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0);
-    glReadPixels(3, 7, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
-    CHECK(pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0);
+    CHECK_RGB_AT(3, 0, 255, 0, 0);
+    CHECK_RGB_AT(3, 7, 255, 0, 0);
 
     glViewport(5, -7, 4096, 8192);
     glGetIntegerv(GL_VIEWPORT, viewport);
@@ -1660,6 +1629,6 @@ int main(void)
     test_gl_buffer_storage_lifetime();
     test_gl_viewport_resize();
 
-    printf("opengl tests: %d checks, %d failures\n", g_checks, g_fails);
-    return g_fails ? 1 : 0;
+    printf("opengl tests: %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
 }

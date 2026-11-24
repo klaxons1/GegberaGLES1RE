@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 /* --- instruction ---------------------------------------------------------- */
-typedef struct _HCInstr
+typedef struct HCInstr_s
 {
     unsigned int instr0;
     unsigned int instr1;

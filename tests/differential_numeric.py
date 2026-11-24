@@ -1,8 +1,7 @@
 """Bit-exact numeric cases for the PE32 reference and recovered C library.
 
 The entrypoints use x86 cdecl; 64-bit arguments occupy low/high stack words
-and 64-bit results use EDX:EAX. Addresses are from docs/libGLES_CM.dll.
-The driver in differential.py owns emulation, limits, and mismatch reporting.
+and 64-bit results use EDX:EAX.
 """
 
 import ctypes
@@ -581,8 +580,67 @@ def check_hc_evaluator(suite):
                 suite.check(name, start, [op, a, b], native(op, a, b))
 
 
+def check_hc_substitution(suite):
+    """Compare folded instruction words, including immediate/register aliases."""
+    class Instr(ctypes.Structure):
+        _fields_ = [("instr0", ctypes.c_uint32), ("instr1", ctypes.c_uint32)]
+
+    name = "emulator_substitute"
+    arm = suite.arch == "arm"
+    start, end = (0x2CABC, 0x2CE48) if arm else (0x45DA50, 0x45DE58)
+    suite.register(name, start, end)
+    native = getattr(suite.lib, name)
+    native.argtypes = [ctypes.POINTER(Instr), ctypes.c_int, ctypes.c_int]
+    native.restype = Instr
+    cases = []
+    for op in list(range(14)) + list(range(17, 23)):
+        for src0, src1, immediate, reg in ((3, 4, False, 3), (2, 3, False, 3),
+                                         (3, 3, False, 3), (2, 4, False, 3),
+                                         (3, 3, True, 3), (2, 3, True, 3),
+                                         (2, 4, True, 3)):
+            cases.append((op, src0, src1, immediate, reg, 5))
+    cases.append((20, 2, 0x803, True, 3, 11))
+    for op in (14, 15):
+        for src0, immediate, reg in ((3, False, 3), (2, False, 3), (0, True, 3)):
+            cases.append((op, src0, 0x80000000 if immediate else 0,
+                          immediate, reg, 0x80000000))
+    for op in range(23, 39):
+        for reg in (2, 3, 4):
+            cases.append((op, 2, 3, False, reg, 0x7FFFFFFF))
+        cases.append((op, 2, 3, True, 3, 0x80000000))
+    for op in range(41, 53):
+        for reg in (2, 3, 4):
+            cases.append((op, 2, 3, False, reg, 5))
+        for value in (0, 5, 0xFFFFFFFF):
+            cases.append((op, 2, 3, True, 2, value))
+
+    oracle = suite.oracle
+    guard = b"\xA5" * 8
+    for op, src0, src1, immediate, reg, value in cases:
+        instr = Instr(op | (1 << 10) | (src0 << 21) | (int(immediate) << 8), src1)
+        before = bytes(instr)
+        expected = native(ctypes.byref(instr), reg, ctypes.c_int(value).value)
+        oracle.reset()
+        source = oracle.alloc(24, guard + before + guard)
+        oracle.watch(source, 24, "source instruction and guards")
+        if arm:
+            destination = oracle.alloc(24, guard + bytes(8) + guard)
+            oracle.watch(destination, 24, "folded instruction and guards")
+            oracle.call(start, [destination + 8, source + 8, reg, value])
+            actual = oracle.readback(destination, 24)
+            output = guard + bytes(expected) + guard
+        else:
+            actual = struct.pack("<Q", oracle.call(start, [source + 8, reg, value], return64=True))
+            output = bytes(expected)
+        original_source = oracle.readback(source, 24)
+        suite.compare(name, (op, src0, src1, immediate, reg, value),
+                      (output, guard + bytes(instr) + guard, before),
+                      (actual, original_source, bytes(instr)))
+
+
 def run(suite):
     check_hc_evaluator(suite)
+    check_hc_substitution(suite)
     if suite.arch == "arm":
         from differential_arm_numeric import run as run_arm
         return run_arm(suite)

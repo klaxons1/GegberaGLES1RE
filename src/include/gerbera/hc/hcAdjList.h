@@ -1,6 +1,6 @@
 /* hcAdjList.h - compressed interference-graph adjacency list (hcAdjList.h).
  *
- * Layout verified from CodeView LF_STRUCTURE TI=0x1996 in docs/libGLES_CM.dll:
+ * 32-bit layout from CodeView LF_STRUCTURE TI=0x1996 in docs/libGLES_CM.dll:
  *   +0 int numNodes
  *   +4 unsigned short *lowerLists[1]   (numNodes row pointers)
  */

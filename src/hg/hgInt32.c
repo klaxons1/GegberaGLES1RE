@@ -1,8 +1,7 @@
 /* hgInt32.c - 32/64 bit integer helpers.
  *
- * Clean port of the decompiled hgInt32.inl / hgInt64Native.inl code from the
- * Gerbera GLES1 driver.  Assert call sites keep the original file/line
- * strings so traces remain comparable against the reference binary.
+ * Assert sites retain the original hgInt32.inl / hgInt64Native.inl file and
+ * line strings for comparison with the reference binaries.
  */
 #include "hg/hgInt32.h"
 #include "hg/hgDefs.h"

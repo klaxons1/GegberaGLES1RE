@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-gen_implibs.py - Clean-room Symbian OS v9.x (EKA2 / S60 3rd Ed+) .dso import
+Symbian OS v9.x (EKA2 / S60 3rd Ed+) .dso import
 library generator using elf2e32 --targettype=IMPLIB.
 
-Every ordinal and DLL linkas target matches Nokia's reference EKA2 platform
-ROM DLLs (version 10.0 = {000a0000}).
+The table specifies imported ordinals and link names for version 10.0
+({000a0000}) of the EKA2 platform DLLs.
 """
 import os
 import subprocess

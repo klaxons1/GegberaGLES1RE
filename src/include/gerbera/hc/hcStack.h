@@ -1,6 +1,6 @@
 /* hcStack.h - arena-backed LIFO stack of uint16 indices (hcStack.h/.c).
  *
- * Layout verified from CodeView LF_STRUCTURE TI=0x1AA0 in docs/libGLES_CM.dll:
+ * 32-bit layout from CodeView LF_STRUCTURE TI=0x1AA0 in docs/libGLES_CM.dll:
  *   +0 int allocSize
  *   +4 int numElems
  *   +8 unsigned short elements[2]

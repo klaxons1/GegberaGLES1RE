@@ -121,18 +121,18 @@ void differential_raster_span_sample(const _grSignature *signature, const int *g
         texture[unit].wrapMode[0] = record[21];
         texture[unit].wrapMode[1] = record[22];
         env->texture = &texture[unit];
-        env->envColor = inputs ? inputs->envColor[unit] : 0;
-        env->envMode = inputs ? inputs->envMode[unit] : GR_TEXENVMODE_REPLACE;
-        env->envFuncRGB = record[36];
-        env->envFuncAlpha = record[37];
-        env->envScaleRGB = 1u << record[38];
-        env->envScaleAlpha = 1u << record[39];
+        env->texEnvColor = inputs ? inputs->envColor[unit] : 0;
+        env->texEnvMode = inputs ? inputs->envMode[unit] : GR_TEXENVMODE_REPLACE;
+        env->texEnvRGBCombFunc = record[36];
+        env->texEnvAlphaCombFunc = record[37];
+        env->texEnvRGBCombScale = 1u << record[38];
+        env->texEnvAlphaCombScale = 1u << record[39];
         for (operand = 0; operand < 3; ++operand)
         {
-            env->envSrcRGB[operand] = record[24 + 4 * operand];
-            env->envSrcAlpha[operand] = record[25 + 4 * operand];
-            env->envOpRGB[operand] = record[26 + 4 * operand];
-            env->envOpAlpha[operand] = record[27 + 4 * operand];
+            env->texEnvRGBCombSrc[operand] = record[24 + 4 * operand];
+            env->texEnvAlphaCombSrc[operand] = record[25 + 4 * operand];
+            env->texEnvRGBCombOperand[operand] = record[26 + 4 * operand];
+            env->texEnvAlphaCombOperand[operand] = record[27 + 4 * operand];
         }
         state.useTexUnit[unit] = 1;
         state.activeGradientMask |= 0xC0 << (2 * unit);
@@ -227,7 +227,7 @@ void differential_raster_signature(const SignatureInput *in,
         textures[i].filterMask[GR_FILTERTYPE_MAG] = unit[3];
         textures[i].wrapMode[0] = unit[4];
         textures[i].wrapMode[1] = unit[5];
-        memcpy(&destination->envMode, unit + 6, 17);
+        memcpy(&destination->texEnvMode, unit + 6, 17);
     }
     grEvaluatePixelPipeline(&state, &signature);
     grCompressSignature(&compressed, &signature);

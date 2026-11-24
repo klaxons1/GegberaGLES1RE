@@ -224,7 +224,7 @@ int imLsl64h_0_31OF(HGint64 a, unsigned int sh)
 }
 
 /* --- XScalar_exp2 ------------------------------------------------------ */
-/* shift-and-add inverse of XScalar_log2; constants = round(2^32 * ln2 / ln(1+2^-i))... */
+/* Shift-and-add exponential using the log2(1 + 2^-i) thresholds below. */
 
 int XScalar_exp2(int x)
 {
@@ -233,7 +233,7 @@ int XScalar_exp2(int x)
     unsigned int frac = (unsigned int)x << 11;
 
     ty = 0x80000000u;
-    /* constants: round(2^32 * log2(1 + 2^-i)); accumulate 2^frac in 0.32 */
+    /* Thresholds approximate 2^32 * log2(1 + 2^-i); ty has 31 fractional bits. */
     if (frac >= 0x95C01A38u) { frac -= 2 * 1256197404u; ty += ty >> 1; }
     if (frac >= 0x5269E12Eu) { frac -= 2 * 691335319u;  ty += ty >> 2; }
     if (frac >= 0x2B803472u) { frac -= 2 * 364911161u;  ty += ty >> 3; }
@@ -262,7 +262,7 @@ int XScalar_exp2(int x)
 
 /* --- imRcpu (imInline.inl) --------------------------------------------- */
 /* reciprocal estimate: (x << sh) normalized, table seed + 2 NR steps.
- * result: high 32 bits = shift, low 32 bits = reciprocal mantissa. */
+ * result: high 32 bits = reciprocal mantissa, low 32 bits = shift. */
 
 static const HGint8 intrcpLUT[310] = {
     0xFF, 0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8, 0xF7, 0xF6, 0xF5,

@@ -92,16 +92,6 @@ typedef struct eglConfig
     int maxSwapInterval;       /* +92 (23) EGL_MAX_SWAP_INTERVAL */
 } eglConfig;
 
-/* TI=0x1079 (8 bytes) */
-typedef struct eglValidColorInfo_s
-{
-    unsigned char r;
-    unsigned char g;
-    unsigned char b;
-    unsigned char a;
-    int           displayMode;
-} eglValidColorInfo_s;
-
 /* TI=0x12C0 */
 typedef struct TEGLCachedConfig
 {
@@ -214,7 +204,7 @@ void eglFillConfig(eglConfig *config, int configID);
 int  eglCompareConfigs(const eglConfig *config1, const eglConfig *config2, const eglConfig *filter);
 int  eglFilterConfig(const eglConfig *config, const eglConfig *filter);
 int  eglUpdateSurfaceBuffers(eglSurface_s *surface);
-void eglSetSurfaceDescriptor(oglSurfaceDescriptor_s *desc, const eglSurface_s *surface, const eglConfig *config);
+void eglSetSurfaceDescriptor(oglSurfaceDescriptor *desc, const eglSurface_s *surface, const eglConfig *config);
 int  eglUpdateSurfaces(oglContext_s *esContext, eglSurface_s *drawSurface, eglSurface_s *readSurface);
 void eglFreeContext(eglContext_s *context);
 void eglBlit(void *dstBuffer, int dstStride, const void *srcBuffer, int srcStride,
@@ -236,7 +226,7 @@ int           eglIsEmptyList(const EGLint *attribList);
 int           eglIsValidDevice(void);
 int           eglCheckSurface(eglSurface_s *surface);
 
-/* --- eglSymbian.inl (hosted platform layer) -------------------------------- */
+/* --- eglSymbian.inl (native and hosted platform layers) -------------------- */
 int                egliNextPowerOfTwo(int v);
 int                egliGetTotalConfigs(void);
 eglNativePixmap_s *eglGetActiveBitmap(int op);
@@ -259,7 +249,7 @@ void               egliWindowSurfaceDestroy(eglWindowSurface *winSurface);
 void               egliPixmapSurfaceDestroy(eglPixmapSurface *pixSurface);
 int                egliSurfaceResized(eglSurface_s *surface);
 void               egliFixConfig(eglConfig *config);
-void               egliFixPixelOffsets(oglSurfaceDescriptor_s *desc, const eglSurface_s *surface);
+void               egliFixPixelOffsets(oglSurfaceDescriptor *desc, const eglSurface_s *surface);
 int                egliCompareConfigs(const TEGLCachedConfig *config1, const TEGLCachedConfig *config2);
 void               egliSortConfigs(EGLConfig *configs, int configCount, const eglConfig *filter);
 void               egliSetDefaultDisplayMode(int displayMode);

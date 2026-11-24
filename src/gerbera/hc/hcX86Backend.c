@@ -1,6 +1,6 @@
 /* hcX86Backend.c - IA-32 x86 JIT backend (hcX86Backend.c of the original).
  *
- * Complete port of the 32-bit x86 code generator, pre/post-regalloc fixers,
+ * 32-bit x86 code generator, pre/post-regalloc fixers,
  * immediate pool (Imm32Set), stack-load fusion (checkLoad), EFLAGS tracker
  * (EncodeContext), and backendDecl vtable from docs/libGLES_CM.dll.c
  * (0044CC80..00450E70, .data 0047D814..0047D8DF) and embedded CodeView enums.

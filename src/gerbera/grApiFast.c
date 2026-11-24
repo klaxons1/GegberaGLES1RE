@@ -161,7 +161,7 @@ int grRoundTriangleArea(HGint64 area)
  * trivial-reject tests (shared clip plane bits, screen-scissor grouping),
  * face culling (clip-space stp sign, then the screen-area sign) and the
  * 8-byte command {packed cache indices | flags, rounded area}.
- * Command storage: renderStack+168 + 8*commandIndex; the u32 counter at
+ * Command storage: renderStack+168 + 4*commandIndex; the u32 counter at
  * renderStack+1192 counts DWORDS and the flush trigger (grApiFast.inl 1042)
  * fires when it would exceed 254 (128 commands fill the queue region). */
 
@@ -471,9 +471,6 @@ void grCheckPixelPipeStack(Gerbera_s *state)
 {
     _grPixelPipe *pixelPipe = (_grPixelPipe *)state->pixelPipeline;
     int ok = 1;
-
-    /* the checked block is the assert-order placeholder at _grPixelPipe+128;
-     * its real offsets get pinned by grSetupRendering */
 
     if (pixelPipe->checked.colorBufferStride != state->drawSurface.buffers[GR_BUFFERTYPE_COLOR].stride &&
         grAssert("pixelPipe->checked.colorBufferStride == drawSurface->buffers[GR_BUFFERTYPE_COLOR].stride",
@@ -895,7 +892,7 @@ void grrUpdateState(Gerbera_s *state)
 }
 
 /* --- grSetupRendering (grApiFast.inl 288; DLL 31702-31859) ------------------
- * Per-frame rendering setup: flushes pending clears, locks the draw surface,
+ * Per-draw rendering setup: flushes pending clears, locks the draw surface,
  * refreshes the per-unit texture-enable flags (grUpdateTexture when a
  * texture's dirty bit is set), validates the pixel pipe, rebuilds the render
  * stack when the pipeline changed, publishes the pixel-pipe head block
@@ -916,7 +913,7 @@ void grSetupRendering(Gerbera_s *state)
     grrBeginRendering(state);
     for (i = 0; i < 2; ++i)
     {
-        _grTexture *tex = (_grTexture *)state->textureUnit[2 * i].texture;
+        _grTexture *tex = state->textureUnit[2 * i].texture;
         int enabled = 0;
 
         if (grTestCapability(state, GR_CAPABILITY_TEXTURE_2D + i) != 0 && tex != NULL)
@@ -984,9 +981,8 @@ LABEL_24:
                 grDie(0);
             state->renderStackAllocated = 1;
             state->renderStack = grStackAllocate(&state->scratchAllocator, 23860);
-            /* the decompile renders this as (char*)extraStack +
-             * &renderStack[1830].whichPool; the +14644 offset is the pixel
-             * pipe within the render stack allocation */
+            /* The backend scratch area starts at renderStack+14644;
+             * pixel-pipe parameters follow it. */
             state->pixelPipeline = (char *)state->renderStack +
                                    GR_RENDER_STACK_PIXEL_PIPELINE + (long)extraStack;
             state->vertexCache = state->renderStack;
@@ -1008,7 +1004,7 @@ LABEL_24:
         {
             if (state->useTexUnit[i] != 0)
                 *(int *)pixelPipe->textureUnit[i].pad0 =
-                    state->textureUnit[2 * i].envColor;
+                    state->textureUnit[2 * i].texEnvColor;
         }
         ok = 1;
         if (state->surfaceScissor.x0 < 0)
@@ -1221,7 +1217,7 @@ void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z)
         {
             if (state->useTexUnit[i] != 0)
             {
-                _grTexture *tex = (_grTexture *)state->textureUnit[2 * i].texture;
+                _grTexture *tex = state->textureUnit[2 * i].texture;
                 int shiftS = 21 - tex->mipmap[0].log2Dim[0];
                 int shiftT = 21 - tex->mipmap[0].log2Dim[1];
 
@@ -1382,7 +1378,7 @@ void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z)
             }
         }
 
-        /* convert to 12.12 fixed-point screen coords (y flipped: y1 -> top fy0, y0 -> bottom fy1) */
+        /* Screen coordinates have 12 fractional bits; flip y1 to top fy0 and y0 to bottom fy1. */
         fx0 = IScalar_scalarToFixed(x0, 12) & 0xFFFFFF00;
         fy0 = ((state->drawSurface.height << 12) - IScalar_scalarToFixed(y1, 12)) & 0xFFFFFF00;
         fx1 = IScalar_scalarToFixed(x1, 12) & 0xFFFFFF00;

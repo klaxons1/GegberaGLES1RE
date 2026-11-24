@@ -4,14 +4,15 @@ import os
 from pathlib import Path
 
 
-def install(seconds=30):
+def install(seconds=30, path=None, error_type=RuntimeError):
     root = Path(__file__).resolve().parents[1]
-    path = os.environ.get("GERBERA_DIFFERENTIAL_LIBRARY", root / "build/differential/libgerbera_diff.so")
+    if path is None:
+        path = os.environ.get("GERBERA_DIFFERENTIAL_LIBRARY", root / "build/differential/libgerbera_diff.so")
     library = ctypes.CDLL(str(Path(path).resolve()))
     library.differential_install_signal_handlers.argtypes = []
     library.differential_install_signal_handlers.restype = ctypes.c_int
     if library.differential_install_signal_handlers() != 0:
-        raise RuntimeError("could not install native fault handlers; refusing to run")
+        raise error_type("could not install native fault handlers")
     library.differential_set_timeout.argtypes = [ctypes.c_uint]
     library.differential_set_timeout.restype = None
     library.differential_set_timeout(seconds)

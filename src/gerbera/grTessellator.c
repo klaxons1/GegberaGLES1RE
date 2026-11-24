@@ -221,7 +221,7 @@ static void grTessellateTriangle(Gerbera_s *state, _grClipTriangle *tri,
     splitBits[2] = 0;
     if (classify == GR_TRIANGLESTATUS_DISCARD)
         return;
-    if (classify == GR_TRIANGLESTATUS_PERSPECTIVE)
+    if (classify == GR_TRIANGLESTATUS_NONAFFINE)
     {
         for (j = 2; j >= 0; --j)
         {

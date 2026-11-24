@@ -1,10 +1,9 @@
-/* eglSymbian.c - portable hosted platform backend for Gerbera EGL 1.1
+/* eglSymbian.c - native Symbian and hosted platform backends for Gerbera EGL 1.1
  * (ported from eglSymbian.inl & PE .rdata s_validColors at 0x4702B4).
  *
- * Replaces Symbian OS Dll::SetTls / UserHeap / CFbsBitmap / RWindow / CWindowGc
- * calls with portable C99 + POSIX mmap equivalents while preserving every
- * original config fixup, surface lock/resize/swap/copy behavior, and
- * uninitialized TLS error sentinel encoding.
+ * The Symbian branch uses Dll::SetTls, UserHeap, CFbsBitmap, RWindow, and
+ * CWindowGc through the platform wrappers. Hosted builds provide TLS,
+ * native-surface descriptors, and platform-specific executable allocation.
  */
 #include <stdint.h>
 #include <stdlib.h>
@@ -33,7 +32,16 @@
 #include "hg/hgMemory.h"
 
 /* --- PE .rdata s_validColors (0x4702B4..0x4702E3) -------------------------- */
-static const eglValidColorInfo_s s_validColors[6] =
+struct Info
+{
+    unsigned char r;
+    unsigned char g;
+    unsigned char b;
+    unsigned char a;
+    int           displayMode;
+};
+
+static const struct Info s_validColors[6] =
 {
     { 8, 8, 8, 8, EGL_SYMBIAN_ECOLOR16MU },
     { 8, 8, 8, 8, EGL_SYMBIAN_ECOLOR16MA },
@@ -1330,7 +1338,7 @@ void egliFixConfig(eglConfig *config)
     }
 }
 
-void egliFixPixelOffsets(oglSurfaceDescriptor_s *desc, const eglSurface_s *surface)
+void egliFixPixelOffsets(oglSurfaceDescriptor *desc, const eglSurface_s *surface)
 {
     /* On Symbian EColor4K / EColor64K / EColor16MU / EColor16MA, B is at bit 0,
      * G at blueBits, R at blueBits+greenBits, A at blueBits+greenBits+redBits -

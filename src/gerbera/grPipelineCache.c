@@ -30,6 +30,8 @@ _grCacheEntry *grCacheGetOldestUsed(_grPipelineCache *cache)
     oldest = cache->firstUsed;
     for (entry = oldest->next; entry != NULL; entry = entry->next)
     {
+        /* Both originals compare unsigned timestamps. After wrap, a new
+         * entry can therefore be selected as oldest; retain that behavior. */
         if (entry->timeStamp < oldest->timeStamp)
             oldest = entry;
     }
@@ -204,6 +206,13 @@ void grCacheInit(_grPipelineCache *cache, void *arena,
         }
     }
     grCacheSelfCheck(cache);
+}
+
+/* The ARM build retains this entry point at 0x1F590. Replacing the arena
+ * invalidates all programs while retaining the entry storage and capacity. */
+void grCacheSetArena(_grPipelineCache *cache, void *arena, int arenaSize)
+{
+    grCacheInit(cache, arena, cache->entries, arenaSize, cache->entryCount);
 }
 
 /* --- grCacheFind (grPipelineCache.inl 419; DLL 35612-35636) ------------------- */

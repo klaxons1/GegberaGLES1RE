@@ -350,7 +350,7 @@ typedef struct oglContext_s
 
 /* --- OpenGL ES surface descriptor (CodeView TI=0x167E, 76 bytes on 32-bit) -- */
 
-typedef struct oglSurfaceDescriptor_s
+typedef struct oglSurfaceDescriptor
 {
     int   width;
     int   height;
@@ -371,7 +371,7 @@ typedef struct oglSurfaceDescriptor_s
     int   blueOffset;
     int   alphaBits;
     int   alphaOffset;
-} oglSurfaceDescriptor_s;
+} oglSurfaceDescriptor;
 
 /* --- oglError.inl ---------------------------------------------------------- */
 void oglSetError(oglContext_s *context, OGL_ERROR error);
@@ -506,10 +506,10 @@ int               oglInitContext(oglContext_s *context, unsigned char *sharedWor
 int               oglIsValidContext(oglContext_s *context);
 oglContext_s     *oglCreateContext(oglContext_s *shareList, oglContext_s *shareMemContext);
 void              oglDestroyContext(oglContext_s *context);
-int               oglIsValidSurfaceDescriptor(const oglSurfaceDescriptor_s *desc);
-void              oglConvertSurfaceDescriptor(_grDrawSurface *dst, const oglSurfaceDescriptor_s *src);
-void              oglSetBuffers(oglContext_s *context, const oglSurfaceDescriptor_s *drawDesc,
-                                const oglSurfaceDescriptor_s *readDesc);
+int               oglIsValidSurfaceDescriptor(const oglSurfaceDescriptor *desc);
+void              oglConvertSurfaceDescriptor(_grDrawSurface *dst, const oglSurfaceDescriptor *src);
+void              oglSetBuffers(oglContext_s *context, const oglSurfaceDescriptor *drawDesc,
+                                const oglSurfaceDescriptor *readDesc);
 int               oglSetSurfaceTexture(oglContext_s *context, void *pixels, int width, int height,
                                        unsigned int format, int mipLevel, int createMipmaps);
 void              oglReleaseSurfaceTexture(oglContext_s *context, unsigned int textureName, int mipLevel);

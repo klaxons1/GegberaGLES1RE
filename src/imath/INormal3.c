@@ -1,8 +1,4 @@
-/* INormal3.c - normals in 10.21 fixed point (three plain ints).
- *
- * Clean port of the decompiled INormal3.c plus the XNormal3 inline
- * functions from imInline.inl / imApi.inl.
- */
+/* Normals stored as three signed components with 21 fractional bits. */
 #include "imath/imApi.h"
 #include "hg/hgInt32.h"
 #include "gerbera/grUtil.h"

@@ -1,6 +1,6 @@
 /* hcQueue.h - arena-backed circular FIFO queue of uint16 indices (hcQueue.h).
  *
- * Layout verified from CodeView LF_STRUCTURE TI=0x1A9B in docs/libGLES_CM.dll:
+ * 32-bit layout from CodeView LF_STRUCTURE TI=0x1A9B in docs/libGLES_CM.dll:
  *   +0  int head
  *   +4  int tail
  *   +8  int allocSize

@@ -7,7 +7,7 @@
  * at screen origin, xAdder[]/yAdder[] the per-pixel steps, both indexed by
  * GR_GRADIENT_*. Depth and fog go through grSetupGradient (which also
  * rebuilds the reference from the v0 screen offset), texcoord gradients go
- * through grComputeDeltas + grSetupTextureUnit (texture unit session), and
+ * through grComputeDeltas + grSetupTextureUnit, and
  * colors use grSetupGradient or the flat-shade direct writes depending on
  * GR_CAPABILITY_SMOOTH_SHADING.
  *
@@ -292,7 +292,6 @@ void grSetupTriangleGradients(Gerbera_s *state, _grClipTriangle *tri,
 
                 for (coord = GR_GRADIENT_DEPTH; coord < GR_GRADIENT_COLOR_G; ++coord)
                 {
-                    /* reference[xAdder/yAdder at +192/+232/+272 raw] */
                     pixelPipe->reference[coord + 2] =
                         ((int)flatRGB[coord] << 8) + 0x8000;
                     pixelPipe->xAdder[coord + 2] = 0;
@@ -622,9 +621,10 @@ int grScanConvertTriangle(Gerbera_s *state, _grRasterPoint *p0,
 /* --- grInterpolateVertexGradients (grRasterizer.inl 251; DLL 25530-25899) -----
  * Interpolates the per-vertex attributes of a clip-generated vertex from the
  * triangle's three source records. The barycentric weights ride in the new
- * vertex's normal[0..1] (the clipFactor alias; normal[2] is c = 1-a-b, not
- * stored): g = (a*t0 + b*t1 + c*t2) >> 29 with IUNITSCALAR_ONE weights. The
- * trivial case (a==1, b==1, or a==b==0) copies the winning record wholesale.
+ * vertex's normal[0..1] (the clipFactor alias); c = ONE-a-b is computed
+ * locally. Attributes use (a*t0 + b*t1 + c*t2) >> 29 with IUNITSCALAR_ONE
+ * weights. The trivial case (a==ONE, b==ONE, or a==b==0) copies attributes
+ * from the corresponding source vertex.
  * Depth (mask bit 0) is NOT handled here - it is a per-scanline gradient. */
 
 void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
@@ -1020,7 +1020,7 @@ void grDrawClippedPoint(Gerbera_s *state, _grClipTriangle *tri,
 void grSetupTextureUnit(Gerbera_s *state, int texIndex, int (*g0)[2], int v0sx, int v0sy)
 {
     _grPixelPipe *pipe = GR_PIXEL_PIPE(state);
-    _grTexture *texture = (_grTexture *)state->textureUnit[2 * texIndex].texture;
+    _grTexture *texture = state->textureUnit[2 * texIndex].texture;
     int activeGradMask = state->activeGradientMask;
     int isMag = 1;
     int mipLevel = 0;

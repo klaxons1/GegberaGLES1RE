@@ -1,5 +1,4 @@
-/* grSmall.c - small core utilities (start of the port; grows as pieces of
- * the original grSmall.c are brought over). */
+/* grSmall.c - core queries, gradient helpers, and triangle filling. */
 #include "gerbera/grState.h"
 #include "gerbera/grDefs.h"
 #include "hg/hgInt32.h"
@@ -70,8 +69,8 @@ void grComputeDepthOffset(Gerbera_s *state)
 }
 
 /* --- g_mutableParamsMask (data.fragments.c 33) -------------------------------
- * Bitmap over the 78 mutable pixel-pipe parameters: the draw poison loop
- * clobbers every mutable slot between draws so stale state cannot leak. */
+ * Identifies mutable slots among the 78 pixel-pipe parameters passed to
+ * HC_compile. Also selects words in the debug poison scratch array. */
 
 const unsigned char g_mutableParamsMask[12] =
 {
@@ -171,16 +170,12 @@ void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
                 pixelPipe->mutableParams[i] = -623195394;
         }
 #endif
-        /* the decompile checks __grMemoryCheck[] canaries on the C stack
-         * here (grRasterizer.inl 906); hosted builds have no smashed-stack
-         * window to re-check - magic0/magic1 keep the locals alive */
     }
 }
 
 /* --- grICacheFlush (grSmall.c; DLL 42318-42321) -------------------------------
- * EPOC: User::IMB_Range(start, start + numBytes) - instruction-cache
- * maintenance over freshly written JIT code. Hosted builds run coherent
- * caches, so this is a no-op. */
+ * Synchronizes freshly written JIT code through User::IMB_Range on Symbian
+ * and the compiler cache-flush builtin on other 32-bit ARM builds. */
 
 void grICacheFlush(void *start, unsigned int numBytes)
 {

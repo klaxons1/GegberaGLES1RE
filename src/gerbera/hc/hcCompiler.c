@@ -549,7 +549,7 @@ static void validateProgramInternal(HCArena_s *mgr, int nHardRegs, HCInstr_s *sr
     {
         HCInstr_s *instr = &lst[i];
         int op = HC_getOpcodeOper(instr);
-        void **perUse;
+        UDChainStub_s *perUse;
         int nUses;
         int u;
 
@@ -574,20 +574,19 @@ static void validateProgramInternal(HCArena_s *mgr, int nHardRegs, HCInstr_s *sr
         if (HC_isBranchOp(op) != 0)
         {
             int target = HC_getOpcodeDst(instr);
-            /* Binary-faithful to 0x4537CB (`cmp eax, 0; je assertFail`):
-             * original C wrote `HC_ASSERT(findLabel(lst, target))`, which treats
-             * return value 0 (a LABEL at instruction index 0) as falsy. */
+            /* The reference rejects a label at instruction index zero
+             * (x86 0x4537CB), even though it is a valid index. */
             if (findLabel(lst, target) == 0)
                 HC_assertFail("findLabel(lst, target)", "hcCompiler.c", 542, NULL);
         }
 
-        perUse = (void **)chains.udChains[i];
+        perUse = chains.udChains[i];
         nUses = HC_getUses(instr, uses);
         for (u = 0; u < nUses; ++u)
         {
             if (uses[u] >= nHardRegs)
             {
-                DUChain_s *ud = (perUse != NULL) ? (DUChain_s *)perUse[u] : NULL;
+                DUChain_s *ud = (perUse != NULL) ? perUse->chains[u] : NULL;
                 if (ud == NULL)
                     HC_assertFail("ud && \"Referencing an uninitialized variable!\"",
                                   "hcCompiler.c", 563, NULL);
@@ -760,10 +759,8 @@ static void computeDominators(HCArena_s *mgr, BasicBlock_s *basicBlocks, int num
             HCBitSet_set(doms[i]);
         HCBitSet_or(doms[0], 0);
 
-        /* Binary-faithful to 0x454144 (`cmp [ebp-0x18], 0; je loop`):
-         * exits on the first pass that makes changes (`changed != 0`), or
-         * keeps looping only if `changed == 0` (which for acyclic/reducible
-         * CFGs in RPO-indexed blocks converges in 1 pass when changed != 0). */
+        /* The reference repeats only when nothing changed (x86 0x454144).
+         * This likely inverted condition can stop before convergence. */
         do
         {
             changed = 0;
@@ -1113,7 +1110,7 @@ static void updateUseDefChain(HCMemory_s *mem, UDChainStub_s **udChains,
                               int pass, HCBitSet_s *useVisit,
                               int instrNdx, int useNdx, int useId, int defPos)
 {
-    DUChain_s **slots = (DUChain_s **)udChains[instrNdx];
+    DUChain_s **slots = udChains[instrNdx]->chains;
 
     if (pass != 0)
     {
@@ -1186,7 +1183,7 @@ static void computeDUChains(HCArena_s *mgr, hcChains_s *dst,
     }
 
     dst->duChains = duChains;
-    dst->udChains = (void **)udChains;
+    dst->udChains = udChains;
 
     for (pass = 0; pass < 2; ++pass)
     {
@@ -1278,16 +1275,16 @@ static void constantPropagation(HCArena_s *mgr, HCInstr_s *lst)
     computeDUChains(mgr, &chains, blocks, nBlocks, lst, 2u);
     do
     {
-        void **perUse = (void **)chains.udChains[i];
+        UDChainStub_s *perUse = chains.udChains[i];
         HCInstr_s *instr = &lst[i];
         int nUses = HC_getUses(instr, uses);
         int u;
 
         for (u = 0; u < nUses; ++u)
         {
-            if (perUse != NULL && perUse[u] != NULL)
+            if (perUse != NULL && perUse->chains[u] != NULL)
             {
-                DUChain_s *ud = (DUChain_s *)perUse[u];
+                DUChain_s *ud = perUse->chains[u];
                 if (ud == NULL)
                     HC_assertFail("ud", "hcCompiler.c", 1530, NULL);
                 if (ud->length == 1)
@@ -1380,15 +1377,15 @@ static void deadCodeElimination(HCArena_s *mgr, HCInstr_s *lst)
     while (HCQueue_isEmpty(queue) == 0)
     {
         int cur = HCQueue_dequeue(queue);
-        void **perUse = (void **)chains.udChains[cur];
+        UDChainStub_s *perUse = chains.udChains[cur];
         int nUses = HC_getUses(&lst[cur], uses);
         int u;
 
         for (u = 0; u < nUses; ++u)
         {
-            if (perUse != NULL && perUse[u] != NULL)
+            if (perUse != NULL && perUse->chains[u] != NULL)
             {
-                DUChain_s *ud = (DUChain_s *)perUse[u];
+                DUChain_s *ud = perUse->chains[u];
                 int k;
                 for (k = 0; k < (int)ud->length; ++k)
                 {
@@ -2031,7 +2028,7 @@ static void shiftLogicalAndCombine(HCArena_s *mgr, HCInstr_s *lst)
     {
         HCInstr_s *instr = &lst[i];
         int op = HC_getOpcodeOper(instr);
-        void **perUse = (void **)chains.udChains[i];
+        UDChainStub_s *perUse = chains.udChains[i];
 
         if (op == HCOP_AND && HC_opcodeHasImm(instr) != 0)
         {
@@ -2042,9 +2039,9 @@ static void shiftLogicalAndCombine(HCArena_s *mgr, HCInstr_s *lst)
 
             for (u = 0; u < nUses; ++u)
             {
-                if (perUse != NULL && perUse[u] != NULL && s0 == uses[u])
+                if (perUse != NULL && perUse->chains[u] != NULL && s0 == uses[u])
                 {
-                    ud = (DUChain_s *)perUse[u];
+                    ud = perUse->chains[u];
                     break;
                 }
             }
@@ -3047,9 +3044,9 @@ static int pruneGraph(HCArena_s *mgr, HCInstr_s **outputLst,
                                   "hcCompiler.c", 4423, NULL);
 #endif
 
-                /* Binary-faithful to 0x459D5F..0x459DDD: original C assigned
-                 * spillNode/spillCost/spillNeigh before checking equality for
-                 * reservoir tie-breaking, still consuming HCRandom_get(). */
+                /* The reference assigns the candidate before testing for a
+                 * tie, making the equality below always true. Keep the PRNG
+                 * consumption and selection order (x86 0x459D5F..0x459DDD). */
                 if (spillNeigh * spCost <= nNeigh * spillCost && hNode >= nHardRegs)
                 {
                     int rnd;
@@ -3305,10 +3302,10 @@ HCBackendInfo_s computeBackEndInfo(HCArena_s *mgr, HCInstr_s *lst, int nHardRegs
     int nBlocks = HC_buildBasicBlocks(mgr, &blocks, lst);
 
     liveness(mgr, blocks, nBlocks, 0, lst);
-    info.lst              = lst;
-    info.freeHardRegMasks = (int *)getFreeHardRegMasks(mgr, blocks, nBlocks, lst, nHardRegs);
-    /* In 0x45A6C0 `liveRegs` (+8) is never read by any backend accessor;
-     * zero-initialize it cleanly in C99. */
+    info.instructions = lst;
+    info.freeRegMasks = getFreeHardRegMasks(mgr, blocks, nBlocks, lst, nHardRegs);
+    /* Neither backend uses liveRegs; the reference leaves it uninitialized
+     * (x86 0x45A6C0). */
     info.liveRegs         = NULL;
     computeDUChains(mgr, &info.chains, blocks, nBlocks, lst, 3u);
     HCArena_releaseBottom(mgr, botMark);
@@ -3408,7 +3405,7 @@ static void coalesceSpillLocations(HCArena_s *mgr, int spillStart, HCInstr_s *ls
     do
     {
         HCInstr_s *instr = &lst[i];
-        void **perUse = (void **)chains.udChains[i];
+        UDChainStub_s *perUse = chains.udChains[i];
 
         if (perUse != NULL && HC_isSpillStore(instr) != 0)
         {
@@ -3422,9 +3419,9 @@ static void coalesceSpillLocations(HCArena_s *mgr, int spillStart, HCInstr_s *ls
 
                 for (u = 0; u < nUses; ++u)
                 {
-                    if (perUse[u] != NULL && valReg == uses[u])
+                    if (perUse->chains[u] != NULL && valReg == uses[u])
                     {
-                        ud = (DUChain_s *)perUse[u];
+                        ud = perUse->chains[u];
                         break;
                     }
                 }

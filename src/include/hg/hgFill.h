@@ -14,7 +14,7 @@ void hgFill8(HGuint8 *d, HGuint8 v, int N);
 void hgFill16(HGuint16 *d, HGuint16 v, int N);
 void hgFill32(HGuint32 *d, HGuint32 v, int N);
 
-/* internal: N must be a multiple of 8 or the tail is left unfilled */
+/* Internal word fill; handles any nonnegative N. */
 void hgFill32_inner(HGuint32 *d, HGuint32 v, int N);
 
 HG_EXTERN_C_END

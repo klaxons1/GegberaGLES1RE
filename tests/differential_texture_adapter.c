@@ -1,5 +1,7 @@
 /* Host-layout adapters for the original 32-bit image and surface records. */
 #include "gerbera/grState.h"
+#include "gerbera/api_opengl/oglContext.h"
+#include "gerbera/egl/eglInternal.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -92,6 +94,72 @@ static void texture_snapshot(const _grTexture *texture, unsigned char *output)
     memcpy(output + 188, &texture->cropRect, 16);
     memcpy(output + 204, texture->wrapMode, 2);
     memcpy(output + 206, texture->filterMask, 2);
+}
+
+void differential_texture_allocate(const int32_t *config, unsigned char *output)
+{
+    _grTexture texture;
+    unsigned char borrowed[64];
+    int format = config[0], width = config[1], height = config[2];
+    int level = config[3], oldKind = config[4];
+    uint32_t result[2];
+    uintptr_t oldAddress = 0;
+    void *replacement;
+    memset(&texture, 0, sizeof(texture));
+    memset(borrowed, 0x5A, sizeof(borrowed));
+    grInitTexture(&texture);
+    texture.target = GR_TEXTURETARGET_2D;
+    if (oldKind)
+    {
+        void *oldPixels = oldKind == 2 ? borrowed : eglAlloc(sizeof(borrowed));
+        oldAddress = (uintptr_t)oldPixels;
+        grrReplaceTextureLevel(&texture, level, oldPixels, 4, 4, format);
+        texture.mipmap[level].pbuffer = oldKind == 2;
+    }
+    texture.parmMask = 2;
+    result[0] = (uint32_t)grrSetupTextureLevel(&texture, level, width, height, format);
+    replacement = texture.mipmap[level].pixels;
+    result[1] = replacement && (uintptr_t)replacement == oldAddress;
+    memcpy(output, result, sizeof(result));
+    texture_snapshot(&texture, output + sizeof(result));
+    grrFreeTextureData(&texture);
+    texture_snapshot(&texture, output + sizeof(result) + TEXTURE_RECORD_BYTES);
+    memcpy(output + sizeof(result) + 2 * TEXTURE_RECORD_BYTES, borrowed, sizeof(borrowed));
+    /* Replacing a pbuffer level preserves its borrowed-storage flag. */
+    if (oldKind == 2)
+        eglFree(replacement);
+}
+
+void differential_texture_copy_empty(const int32_t *config, unsigned char *output)
+{
+    oglContext_s context;
+    Gerbera_s gerbera;
+    eglState_s state;
+    _grTexture texture;
+    oglTexContainer_s container = { OGL_TEXSTATE_VALID, 0, &texture };
+    oglTextureManager manager = { &container, 1, 0, 0, 1 };
+    void *previous = egliGetGlobal();
+    uint32_t error;
+    memset(&context, 0, sizeof(context));
+    memset(&gerbera, 0, sizeof(gerbera));
+    memset(&state, 0, sizeof(state));
+    memset(&texture, 0, sizeof(texture));
+    grInitTexture(&texture);
+    texture.target = GR_TEXTURETARGET_2D;
+    context.gerbera = &gerbera;
+    context.textureManager = &manager;
+    context.error = (OGL_ERROR)config[4];
+    grrGetTextureFormatDescriptor((_grSurfaceDescriptor *)&gerbera.drawSurface,
+                                 GR_TEXTUREFORMAT_RGBA8);
+    state.currentESContext = &context;
+    egliSetGlobal(&state);
+    glCopyTexImage2D(GL_TEXTURE_2D, config[2], config[3], 0, 0,
+                     config[0], config[1], 0);
+    egliSetGlobal(previous);
+    error = (uint32_t)context.error;
+    memcpy(output, &error, sizeof(error));
+    texture_snapshot(&texture, output + sizeof(error));
+    grrFreeTextureData(&texture);
 }
 
 void differential_texture_convert(const int32_t *config, const unsigned char *descriptor,

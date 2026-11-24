@@ -341,7 +341,7 @@ void oglDestroyContext(oglContext_s *context)
     }
 }
 
-int oglIsValidSurfaceDescriptor(const oglSurfaceDescriptor_s *desc)
+int oglIsValidSurfaceDescriptor(const oglSurfaceDescriptor *desc)
 {
     OGL_ASSERT_AT("oglContext.inl", 554, "desc", desc != NULL);
     OGL_ASSERT_AT("oglContext.inl", 557,
@@ -368,7 +368,7 @@ int oglIsValidSurfaceDescriptor(const oglSurfaceDescriptor_s *desc)
     return 1;
 }
 
-void oglConvertSurfaceDescriptor(_grDrawSurface *dst, const oglSurfaceDescriptor_s *src)
+void oglConvertSurfaceDescriptor(_grDrawSurface *dst, const oglSurfaceDescriptor *src)
 {
     int i;
     unsigned int colorMask = 0;
@@ -400,8 +400,8 @@ void oglConvertSurfaceDescriptor(_grDrawSurface *dst, const oglSurfaceDescriptor
     dst->colorMask = (unsigned char)colorMask;
 }
 
-void oglSetBuffers(oglContext_s *context, const oglSurfaceDescriptor_s *drawDesc,
-                   const oglSurfaceDescriptor_s *readDesc)
+void oglSetBuffers(oglContext_s *context, const oglSurfaceDescriptor *drawDesc,
+                   const oglSurfaceDescriptor *readDesc)
 {
     _grDrawSurface drawSurf;
     _grDrawSurface readSurf;

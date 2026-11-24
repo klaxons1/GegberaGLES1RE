@@ -1,13 +1,8 @@
-/* hcMemory.c - HC arena allocator (hcMemory.c / hcRandom.c of the original).
- *
- * Ported from generated/fragments/hc/hcMemory.h.fragments.c and the
- * HCRandom_* fragments of _helpers_hc.c.fragments.c
- * (decompiled: docs/libGLES_CM.dll.c).
- */
+/* Double-ended scratch arena and register-allocation PRNG. */
 #include "gerbera/hc/hcMemory.h"
-#include "gerbera/hc/hcOpcode.h"          /* HC_assertFail */
+#include "gerbera/hc/hcOpcode.h"
 
-#include <string.h>                        /* memset (HCRandom_setSeed uses none; keep for clarity) */
+#include <stddef.h>
 #include <stdint.h>
 
 /* --- hcRandom (hcRandom.c) ------------------------------------------------ */

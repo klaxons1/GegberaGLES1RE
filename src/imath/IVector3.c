@@ -1,6 +1,5 @@
 /* IVector3.c - shared-exponent 3-vectors.
  *
- * Clean port of the decompiled IVector3.c from the Gerbera GLES1 driver.
  * The rsqLUTa/rsqLUTm tables are used by the fast inverse-square-root
  * seeds in normsub/length (they live at the start of the .data section
  * next to the core tables in the reference binary).
@@ -9,8 +8,8 @@
 #include "hg/hgInt32.h"
 #include "gerbera/grUtil.h"
 
-/* fast rsqrt seeds: rsqLUTm[i] = 0.32 mantissa estimate, rsqLUTa[i] =
- * packed exponent estimate for input binade i (decompile lines 5949/6208) */
+/* Linear inverse-square-root seed coefficients, indexed by the normalized
+ * input's high bits and exponent parity (decompile lines 5949/6208). */
 const HGint32 rsqLUTm[256] = {
     268435456, 265302000, 262193024, 259108432, 256048128, 253012016, 250000000, 247011984,
     244047872, 241107568, 239646314, 236741542, 233860338, 231002606, 229582512, 226759808,

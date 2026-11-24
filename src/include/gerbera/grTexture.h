@@ -9,7 +9,8 @@
  *    first bind).
  *  - GR_TEXTUREFORMAT: oglMapInternalTextureFormat maps GL_ALPHA..GL_LUMINANCE_ALPHA
  *    (6406..6410) onto 0..4; paletted formats are 5..14 (grIsPalettedTextureFormat);
- *    15..17 unnamed so far; grInitTexture seeds texFormat = 18 = MAX.
+ *    15..17 are RGB565, RGBA4444, and RGBA5551; grInitTexture seeds
+ *    texFormat = 18 = MAX.
  *  - GR_MAX_TEXTURE_MIPMAPS = 11 (level asserts 0..10, count asserts 0..11,
  *    grInitTexture zeroes 11 mip levels).
  *  - GR_FILTERMASK_ALL = 7 (filterMask range asserts), filterMask init = {6, 1}.
@@ -51,7 +52,7 @@ enum GR_TEXTUREFORMAT_e
     GR_TEXTUREFORMAT_RGBA4444 = 16,
     GR_TEXTUREFORMAT_RGBA5551 = 17,
     GR_TEXTUREFORMAT_MAX = 18,
-    /* Legacy aliases preserved for existing tests */
+    /* Alternate format names. */
     GR_TEXTUREFORMAT_ALPHA = 0,
     GR_TEXTUREFORMAT_RGB = 1,
     GR_TEXTUREFORMAT_RGBA = 2,

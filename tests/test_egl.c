@@ -11,19 +11,12 @@
 #include <GLES/gl.h>
 #include "gerbera/egl/eglInternal.h"
 
-static int g_checks = 0;
-static int g_fails  = 0;
+#include "test_support.h"
 
-#define CHECK(cond)                                                     \
-    do                                                                  \
-    {                                                                   \
-        ++g_checks;                                                     \
-        if (!(cond))                                                    \
-        {                                                               \
-            ++g_fails;                                                  \
-            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-        }                                                               \
-    } while (0)
+#define CHECK_EGL(call, result, error) do { \
+    CHECK((call) == (result)); \
+    CHECK(eglGetError() == (error)); \
+} while (0)
 
 /* -------------------------------------------------------------------------- */
 /* 1. Pre-initialization & Display Lifecycle                                  */
@@ -39,76 +32,49 @@ static void test_preinit_and_lifecycle(void)
     dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     CHECK(dpy == (EGLDisplay)1);
     CHECK(eglGetError() == EGL_SUCCESS);
-    CHECK(eglGetDisplay((NativeDisplayType)42) == EGL_NO_DISPLAY);
-    CHECK(eglGetError() == EGL_SUCCESS);
+    CHECK_EGL(eglGetDisplay((NativeDisplayType)42), EGL_NO_DISPLAY, EGL_SUCCESS);
 
     eglTerminate(dpy);
     CHECK(eglGetError() == EGL_SUCCESS);
 
     /* Uninitialized queries & error sentinel tags in TLS */
-    CHECK(eglGetCurrentContext() == EGL_NO_CONTEXT);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglGetCurrentContext(), EGL_NO_CONTEXT, EGL_NOT_INITIALIZED);
     CHECK(eglGetError() == EGL_SUCCESS);
-    CHECK(eglGetCurrentSurface(EGL_DRAW) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglGetCurrentSurface(EGL_READ) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglGetCurrentSurface(0xDEAD) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglGetCurrentDisplay() == EGL_NO_DISPLAY);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglGetCurrentSurface(EGL_DRAW), EGL_NO_SURFACE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglGetCurrentSurface(EGL_READ), EGL_NO_SURFACE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglGetCurrentSurface(0xDEAD), EGL_NO_SURFACE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglGetCurrentDisplay(), EGL_NO_DISPLAY, EGL_NOT_INITIALIZED);
 
-    CHECK(eglQueryString(dpy, EGL_VENDOR) == NULL);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglQueryString(dpy, EGL_VENDOR), NULL, EGL_NOT_INITIALIZED);
     /* Reading eglGetError resets TLS sentinel to EGL_SUCCESS */
     CHECK(eglGetError() == EGL_SUCCESS);
 
-    CHECK(eglGetConfigs(dpy, NULL, 0, &numCfg) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglChooseConfig(dpy, NULL, NULL, 0, &numCfg) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglCreatePbufferSurface(dpy, 1, NULL) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglCreateWindowSurface(dpy, 1, NULL, NULL) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglCreatePixmapSurface(dpy, 1, NULL, NULL) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglCreateContext(dpy, 1, EGL_NO_CONTEXT, NULL) == EGL_NO_CONTEXT);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglSwapBuffers(dpy, 1) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglCopyBuffers(dpy, 1, NULL) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglWaitGL() == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglWaitNative(EGL_CORE_NATIVE_ENGINE) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglBindTexImage(dpy, 1, EGL_BACK_BUFFER) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglReleaseTexImage(dpy, 1, EGL_BACK_BUFFER) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglSwapInterval(dpy, 1) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglSurfaceAttrib(dpy, 1, EGL_MIPMAP_LEVEL, 0) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglQuerySurface(dpy, 1, EGL_WIDTH, &val) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
-    CHECK(eglQueryContext(dpy, 1, EGL_CONFIG_ID, &val) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglGetConfigs(dpy, NULL, 0, &numCfg), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglChooseConfig(dpy, NULL, NULL, 0, &numCfg), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglCreatePbufferSurface(dpy, 1, NULL), EGL_NO_SURFACE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglCreateWindowSurface(dpy, 1, NULL, NULL), EGL_NO_SURFACE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglCreatePixmapSurface(dpy, 1, NULL, NULL), EGL_NO_SURFACE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglCreateContext(dpy, 1, EGL_NO_CONTEXT, NULL), EGL_NO_CONTEXT, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglSwapBuffers(dpy, 1), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglCopyBuffers(dpy, 1, NULL), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglWaitGL(), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglWaitNative(EGL_CORE_NATIVE_ENGINE), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglBindTexImage(dpy, 1, EGL_BACK_BUFFER), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglReleaseTexImage(dpy, 1, EGL_BACK_BUFFER), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglSwapInterval(dpy, 1), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglSurfaceAttrib(dpy, 1, EGL_MIPMAP_LEVEL, 0), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglQuerySurface(dpy, 1, EGL_WIDTH, &val), EGL_FALSE, EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglQueryContext(dpy, 1, EGL_CONFIG_ID, &val), EGL_FALSE, EGL_NOT_INITIALIZED);
 
     /* An invalid first display still creates the original's global state. */
-    CHECK(eglInitialize(EGL_NO_DISPLAY, &major, &minor) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_DISPLAY);
-    CHECK(eglGetCurrentContext() == EGL_NO_CONTEXT);
-    CHECK(eglGetError() == EGL_SUCCESS);
+    CHECK_EGL(eglInitialize(EGL_NO_DISPLAY, &major, &minor), EGL_FALSE, EGL_BAD_DISPLAY);
+    CHECK_EGL(eglGetCurrentContext(), EGL_NO_CONTEXT, EGL_SUCCESS);
     CHECK(major == 0 && minor == 0);
     CHECK(eglTerminate(dpy) == EGL_TRUE);
 
     /* Initialize EGL 1.1 */
-    CHECK(eglInitialize(dpy, &major, &minor) == EGL_TRUE);
-    CHECK(eglGetError() == EGL_SUCCESS);
+    CHECK_EGL(eglInitialize(dpy, &major, &minor), EGL_TRUE, EGL_SUCCESS);
     CHECK(major == 1 && minor == 1);
 
     /* Idempotent second eglInitialize */
@@ -121,10 +87,8 @@ static void test_preinit_and_lifecycle(void)
     CHECK(strcmp(eglQueryString(dpy, EGL_VENDOR), "Hybrid Graphics, Ltd.") == 0);
     CHECK(strcmp(eglQueryString(dpy, EGL_VERSION), "1.1") == 0);
     CHECK(strcmp(eglQueryString(dpy, EGL_EXTENSIONS), "") == 0);
-    CHECK(eglQueryString(EGL_NO_DISPLAY, EGL_VENDOR) == NULL);
-    CHECK(eglGetError() == EGL_BAD_DISPLAY);
-    CHECK(eglQueryString(dpy, 0x9999) == NULL);
-    CHECK(eglGetError() == EGL_BAD_PARAMETER);
+    CHECK_EGL(eglQueryString(EGL_NO_DISPLAY, EGL_VENDOR), NULL, EGL_BAD_DISPLAY);
+    CHECK_EGL(eglQueryString(dpy, 0x9999), NULL, EGL_BAD_PARAMETER);
 
     /* eglGetProcAddress: all 18 exported OES / ES 1.1 procedures */
     CHECK(eglGetProcAddress(NULL) == NULL);
@@ -166,8 +130,7 @@ static void test_configs(void)
     egliSetDefaultDisplayMode(EGL_SYMBIAN_ECOLOR64K);
     CHECK(eglInitialize(dpy, NULL, NULL) == EGL_TRUE);
 
-    CHECK(eglGetConfigs(dpy, NULL, 0, NULL) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_PARAMETER);
+    CHECK_EGL(eglGetConfigs(dpy, NULL, 0, NULL), EGL_FALSE, EGL_BAD_PARAMETER);
 
     CHECK(eglGetConfigs(dpy, NULL, 0, &count) == EGL_TRUE);
     CHECK(count == 48);
@@ -198,12 +161,9 @@ static void test_configs(void)
         CHECK(mw == EGL_MAX_PBUFFER_DIM && mh == EGL_MAX_PBUFFER_DIM && mp == EGL_MAX_PBUFFER_PIX);
     }
 
-    CHECK(eglGetConfigAttrib(dpy, 0, EGL_CONFIG_ID, &val) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_CONFIG);
-    CHECK(eglGetConfigAttrib(dpy, 73, EGL_CONFIG_ID, &val) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_CONFIG);
-    CHECK(eglGetConfigAttrib(dpy, 1, 0x9999, &val) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_ATTRIBUTE);
+    CHECK_EGL(eglGetConfigAttrib(dpy, 0, EGL_CONFIG_ID, &val), EGL_FALSE, EGL_BAD_CONFIG);
+    CHECK_EGL(eglGetConfigAttrib(dpy, 73, EGL_CONFIG_ID, &val), EGL_FALSE, EGL_BAD_CONFIG);
+    CHECK_EGL(eglGetConfigAttrib(dpy, 1, 0x9999, &val), EGL_FALSE, EGL_BAD_ATTRIBUTE);
 
     /* Window configs must match the original native display format. */
     CHECK(eglChooseConfig(dpy, NULL, all, 80, &count) == EGL_TRUE);
@@ -250,24 +210,18 @@ static void test_configs(void)
 
     /* Bad filter attributes */
     {
-        const EGLint bad1[] = { EGL_LEVEL, EGL_DONT_CARE, EGL_NONE };
-        const EGLint bad2[] = { EGL_RED_SIZE, -5, EGL_NONE };
-        const EGLint bad3[] = { 0x3999, 0, EGL_NONE };
-        const EGLint bad4[] = { EGL_LEVEL, -2, EGL_NONE };
-        const EGLint bad5[] = { EGL_NATIVE_VISUAL_TYPE, -2, EGL_NONE };
-        const EGLint bad6[] = { EGL_RED_SIZE, -2, EGL_RED_SIZE, 0, EGL_NONE };
-        CHECK(eglChooseConfig(dpy, bad1, all, 80, &count) == EGL_FALSE);
-        CHECK(eglGetError() == EGL_BAD_ATTRIBUTE);
-        CHECK(eglChooseConfig(dpy, bad2, all, 80, &count) == EGL_FALSE);
-        CHECK(eglGetError() == EGL_BAD_ATTRIBUTE);
-        CHECK(eglChooseConfig(dpy, bad3, all, 80, &count) == EGL_FALSE);
-        CHECK(eglGetError() == EGL_BAD_ATTRIBUTE);
-        CHECK(eglChooseConfig(dpy, bad4, all, 80, &count) == EGL_FALSE);
-        CHECK(eglGetError() == EGL_BAD_ATTRIBUTE);
-        CHECK(eglChooseConfig(dpy, bad5, all, 80, &count) == EGL_FALSE);
-        CHECK(eglGetError() == EGL_BAD_ATTRIBUTE);
-        CHECK(eglChooseConfig(dpy, bad6, all, 80, &count) == EGL_FALSE);
-        CHECK(eglGetError() == EGL_BAD_ATTRIBUTE);
+        const EGLint invalid[][5] = {
+            { EGL_LEVEL, EGL_DONT_CARE, EGL_NONE },
+            { EGL_RED_SIZE, -5, EGL_NONE },
+            { 0x3999, 0, EGL_NONE },
+            { EGL_LEVEL, -2, EGL_NONE },
+            { EGL_NATIVE_VISUAL_TYPE, -2, EGL_NONE },
+            { EGL_RED_SIZE, -2, EGL_RED_SIZE, 0, EGL_NONE }
+        };
+        unsigned int invalidIndex;
+        for (invalidIndex = 0; invalidIndex < sizeof(invalid) / sizeof(invalid[0]); ++invalidIndex)
+            CHECK_EGL(eglChooseConfig(dpy, invalid[invalidIndex], all, 80, &count),
+                      EGL_FALSE, EGL_BAD_ATTRIBUTE);
     }
 
     {
@@ -276,8 +230,7 @@ static void test_configs(void)
 
         /* Original 0x403540 preserves errors and sorts only the selected prefix. */
         CHECK(eglChooseConfig(dpy, invalid, all, 80, &count) == EGL_FALSE);
-        CHECK(eglChooseConfig(dpy, pbuffer, all, 3, &count) == EGL_TRUE);
-        CHECK(eglGetError() == EGL_BAD_ATTRIBUTE);
+        CHECK_EGL(eglChooseConfig(dpy, pbuffer, all, 3, &count), EGL_TRUE, EGL_BAD_ATTRIBUTE);
         CHECK(count == 3 && all[0] == 1 && all[1] == 4 && all[2] == 7);
 
         /* Its equality limit accepts a negative size; provide a full array. */
@@ -351,8 +304,7 @@ static void test_pbuffer_and_render_to_texture(void)
     CHECK(eglChooseConfig(dpy, cfgAttrs, &rttCfg, 1, &count) == EGL_TRUE && count == 1);
 
     /* Both original drivers report BAD_ATTRIBUTE for a non-power-of-two texture. */
-    CHECK(eglCreatePbufferSurface(dpy, rttCfg, npotTexAttrs) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_BAD_ATTRIBUTE);
+    CHECK_EGL(eglCreatePbufferSurface(dpy, rttCfg, npotTexAttrs), EGL_NO_SURFACE, EGL_BAD_ATTRIBUTE);
 
     /* EGL_LARGEST_PBUFFER clamps to 2048x2048 */
     largeSurf = eglCreatePbufferSurface(dpy, rttCfg, largeSurfAttrs);
@@ -454,11 +406,9 @@ static void test_pbuffer_and_render_to_texture(void)
     CHECK(glIsTexture(sharedTex) == GL_TRUE);
     glBindTexture(GL_TEXTURE_2D, sharedTex);
 
-    CHECK(eglBindTexImage(dpy, rttSurf, EGL_BACK_BUFFER) == EGL_TRUE);
-    CHECK(eglGetError() == EGL_SUCCESS);
+    CHECK_EGL(eglBindTexImage(dpy, rttSurf, EGL_BACK_BUFFER), EGL_TRUE, EGL_SUCCESS);
     /* Second bind while already bound must fail with EGL_BAD_ACCESS */
-    CHECK(eglBindTexImage(dpy, rttSurf, EGL_BACK_BUFFER) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_ACCESS);
+    CHECK_EGL(eglBindTexImage(dpy, rttSurf, EGL_BACK_BUFFER), EGL_FALSE, EGL_BAD_ACCESS);
 
     glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -574,8 +524,7 @@ static void test_window_and_pixmap_surfaces(void)
     winSurf = eglCreateWindowSurface(dpy, winCfg, &nativeWin, NULL);
     CHECK(winSurf != EGL_NO_SURFACE);
     /* Duplicate surface on same nativeWindow must fail with EGL_BAD_ALLOC */
-    CHECK(eglCreateWindowSurface(dpy, winCfg, &nativeWin, NULL) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_BAD_ALLOC);
+    CHECK_EGL(eglCreateWindowSurface(dpy, winCfg, &nativeWin, NULL), EGL_NO_SURFACE, EGL_BAD_ALLOC);
 
     winCtx = eglCreateContext(dpy, winCfg, EGL_NO_CONTEXT, NULL);
     CHECK(winCtx != EGL_NO_CONTEXT);
@@ -628,8 +577,7 @@ static void test_window_and_pixmap_surfaces(void)
             copyTarget.width = sizes[i][0];
             copyTarget.height = sizes[i][1];
             copyTargetPixels[0] = 0x12345678u;
-            CHECK(eglCopyBuffers(dpy, winSurf, &copyTarget) == EGL_FALSE);
-            CHECK(eglGetError() == EGL_BAD_MATCH);
+            CHECK_EGL(eglCopyBuffers(dpy, winSurf, &copyTarget), EGL_FALSE, EGL_BAD_MATCH);
             CHECK(copyTargetPixels[0] == 0x12345678u);
             CHECK(copyTarget.locked == 0);
         }
@@ -639,8 +587,7 @@ static void test_window_and_pixmap_surfaces(void)
 
     /* Mismatched pixmap displayMode fails eglCopyBuffers with EGL_BAD_MATCH */
     copyTarget.displayMode = EGL_SYMBIAN_ECOLOR64K;
-    CHECK(eglCopyBuffers(dpy, winSurf, &copyTarget) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_MATCH);
+    CHECK_EGL(eglCopyBuffers(dpy, winSurf, &copyTarget), EGL_FALSE, EGL_BAD_MATCH);
 
     /* Direct Pixmap Surface rendering */
     pixmapPixels = (uint32_t *)calloc(32 * 32, sizeof(uint32_t));
@@ -653,24 +600,20 @@ static void test_window_and_pixmap_surfaces(void)
     nativePix.data = pixmapPixels;
 
     /* Creating pixmap surface with window config fails with EGL_BAD_MATCH */
-    CHECK(eglCreatePixmapSurface(dpy, winCfg, &nativePix, NULL) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_BAD_MATCH);
+    CHECK_EGL(eglCreatePixmapSurface(dpy, winCfg, &nativePix, NULL), EGL_NO_SURFACE, EGL_BAD_MATCH);
 
     pixSurf = eglCreatePixmapSurface(dpy, pixCfg, &nativePix, NULL);
     CHECK(pixSurf != EGL_NO_SURFACE);
     /* Duplicate pixmap surface on same nativePixmap fails with EGL_BAD_ALLOC */
-    CHECK(eglCreatePixmapSurface(dpy, pixCfg, &nativePix, NULL) == EGL_NO_SURFACE);
-    CHECK(eglGetError() == EGL_BAD_ALLOC);
+    CHECK_EGL(eglCreatePixmapSurface(dpy, pixCfg, &nativePix, NULL), EGL_NO_SURFACE, EGL_BAD_ALLOC);
 
     pixCtx = eglCreateContext(dpy, pixCfg, EGL_NO_CONTEXT, NULL);
     CHECK(pixCtx != EGL_NO_CONTEXT);
     CHECK(eglMakeCurrent(dpy, pixSurf, pixSurf, pixCtx) == EGL_TRUE);
 
     /* A mapped but noncurrent surface is rejected before target validation. */
-    CHECK(eglCopyBuffers(dpy, winSurf, NULL) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_SURFACE);
-    CHECK(eglCopyBuffers(dpy, winSurf, &copyTarget) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_SURFACE);
+    CHECK_EGL(eglCopyBuffers(dpy, winSurf, NULL), EGL_FALSE, EGL_BAD_SURFACE);
+    CHECK_EGL(eglCopyBuffers(dpy, winSurf, &copyTarget), EGL_FALSE, EGL_BAD_SURFACE);
 
     /* Clear pixmap to yellow (R=255, G=255, B=0, A=255 -> BGRA 0xFFFFFF00) */
     glClearColor(1.0f, 1.0f, 0.0f, 1.0f);
@@ -687,8 +630,7 @@ static void test_window_and_pixmap_surfaces(void)
     /* Leave pixCtx & pixSurf bound and test eglTerminate full teardown! */
     CHECK(eglTerminate(dpy) == EGL_TRUE);
     CHECK(eglGetCurrentContext() == EGL_NO_CONTEXT);
-    CHECK(eglQueryString(dpy, EGL_VERSION) == NULL);
-    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
+    CHECK_EGL(eglQueryString(dpy, EGL_VERSION), NULL, EGL_NOT_INITIALIZED);
 
     free(frontPixels);
     free(copyTargetPixels);
@@ -727,10 +669,8 @@ static void test_bound_pbuffer_destruction(void)
     CHECK(eglMakeCurrent(dpy, draw, draw, first) == EGL_TRUE);
     glGenTextures(1, &name);
     glBindTexture(GL_TEXTURE_2D, name);
-    CHECK(eglReleaseTexImage(dpy, image, EGL_BACK_BUFFER) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_SURFACE);
-    CHECK(eglReleaseTexImage(dpy, draw, EGL_BACK_BUFFER) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_SURFACE);
+    CHECK_EGL(eglReleaseTexImage(dpy, image, EGL_BACK_BUFFER), EGL_FALSE, EGL_BAD_SURFACE);
+    CHECK_EGL(eglReleaseTexImage(dpy, draw, EGL_BACK_BUFFER), EGL_FALSE, EGL_BAD_SURFACE);
     CHECK(eglBindTexImage(dpy, image, EGL_BACK_BUFFER) == EGL_TRUE);
     CHECK(oglIsSurfaceTextureReleased(egliGetState()->currentESContext, name) == 0);
 
@@ -756,15 +696,12 @@ static void test_bound_pbuffer_destruction(void)
     pbuffer = (eglPbufferSurface *)eglMapSurface(eglMapDisplay(dpy), image);
 
     /* The original tracks the texture name, even after a new image replaces it. */
-    CHECK(eglMakeCurrent(dpy, replaced, replaced, first) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_SURFACE);
+    CHECK_EGL(eglMakeCurrent(dpy, replaced, replaced, first), EGL_FALSE, EGL_BAD_SURFACE);
     CHECK(eglDestroySurface(dpy, replaced) == EGL_TRUE);
     CHECK(oglIsSurfaceTextureReleased(egliGetState()->currentESContext, name) == 1);
-    CHECK(eglBindTexImage(dpy, image, EGL_BACK_BUFFER) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_ACCESS);
+    CHECK_EGL(eglBindTexImage(dpy, image, EGL_BACK_BUFFER), EGL_FALSE, EGL_BAD_ACCESS);
     CHECK(eglReleaseTexImage(dpy, image, EGL_BACK_BUFFER) == EGL_TRUE);
-    CHECK(eglReleaseTexImage(dpy, image, EGL_BACK_BUFFER) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_SURFACE);
+    CHECK_EGL(eglReleaseTexImage(dpy, image, EGL_BACK_BUFFER), EGL_FALSE, EGL_BAD_SURFACE);
     CHECK(eglBindTexImage(dpy, image, EGL_BACK_BUFFER) == EGL_TRUE);
 
     /* A current context dies on the later switch, not in DestroyContext. */
@@ -794,6 +731,6 @@ int main(void)
     test_window_and_pixmap_surfaces();
     test_bound_pbuffer_destruction();
 
-    printf("test_egl: %d/%d checks passed\n", g_checks - g_fails, g_checks);
-    return (g_fails == 0) ? 0 : 1;
+    printf("test_egl: %d/%d checks passed\n", checks - failures, checks);
+    return (failures == 0) ? 0 : 1;
 }

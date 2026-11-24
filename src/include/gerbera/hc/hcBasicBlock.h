@@ -1,6 +1,6 @@
 /* hcBasicBlock.h - CFG basic block record & inline accessors (hcBasicBlock.h).
  *
- * Layout verified from CodeView LF_STRUCTURE TI=0x1A8D in docs/libGLES_CM.dll
+ * 32-bit layout from CodeView LF_STRUCTURE TI=0x1A8D in docs/libGLES_CM.dll
  * (64 bytes on 32-bit targets):
  *   +0  unsigned char *pred
  *   +4  unsigned char *succ

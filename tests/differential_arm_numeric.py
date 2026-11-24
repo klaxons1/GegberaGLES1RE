@@ -10,7 +10,6 @@ from differential_numeric import (
 )
 
 
-# Exact function boundaries from the original ARM disassembly.
 ARM_FUNCTIONS = {
     "hgClz32": (0x3224C, 0x32288),
     "F_ADD": (0x32E10, 0x32EF8),

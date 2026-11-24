@@ -11,20 +11,13 @@
 #include "../src/gerbera/egl/eglSymbian.c"
 #include "../src/gerbera/egl/eglUtil.c"
 
-static int checks, failures;
 enum {
     CONFIG_RGBA8_WINDOW = 57,
     CONFIG_RGBA8_PIXMAP = 56,
     CONFIG_RGBA8_WINDOW_DEPTH16_STENCIL8 = 66,
     CONFIG_RGBA8_PIXMAP_DEPTH16_STENCIL8 = 65
 };
-#define CHECK(cond) do { \
-    ++checks; \
-    if (!(cond)) { \
-        ++failures; \
-        fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-    } \
-} while (0)
+#include "test_support.h"
 
 typedef struct MockBitmap_s {
     SymTSize size;
@@ -35,7 +28,7 @@ typedef struct MockBitmap_s {
 
 static eglState_s state;
 static unsigned int oldPixels[16 * 16], newPixels[16 * 16];
-static oglSurfaceDescriptor_s installedDraw, installedRead;
+static oglSurfaceDescriptor installedDraw, installedRead;
 static int updates;
 static int resizeFails;
 
@@ -134,8 +127,8 @@ int sym_TDisplayModeUtils_NumDisplayModeBitsPerPixel(int mode)
     return 32;
 }
 
-void oglSetBuffers(oglContext_s *context, const oglSurfaceDescriptor_s *draw,
-                   const oglSurfaceDescriptor_s *read)
+void oglSetBuffers(oglContext_s *context, const oglSurfaceDescriptor *draw,
+                   const oglSurfaceDescriptor *read)
 {
     (void)context;
     installedDraw = *draw;

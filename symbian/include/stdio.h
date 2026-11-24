@@ -1,4 +1,4 @@
-/* Minimal freestanding <stdio.h> stub for Symbian EKA2 ARM EABI. */
+/* No-output stdio functions for the freestanding Symbian runtime. */
 #ifndef SYMBIAN_STDIO_H
 #define SYMBIAN_STDIO_H
 

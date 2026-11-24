@@ -3,9 +3,8 @@
  *
  * Port of the decompiled grDefs.h (functions were inline in the original
  * header; they appear as 2-3 identical TU copies in the binary - a single
- * definition is ported here). Struct layouts are reconstructed from field
- * accesses (the original defs.h was lost with the Hex-Rays local types;
- * field names come straight from the decompile).
+ * definition is provided in grDefs.c). Struct layouts follow the original
+ * field accesses; pointer fields widen on 64-bit hosts.
  */
 #ifndef GR_DEFS_H
 #define GR_DEFS_H
@@ -98,7 +97,7 @@ typedef struct _grSurfaceDescriptor
 
 /* --- draw surface (decompile cv_anon_1686; first 4 ints ARE the descriptor
  * view, then width/height (assert strings name them), then per-buffer
- * {data, stride} records with stride at ints 7/9/11; 48 bytes total -
+ * {data, stride} records with stride at ints 7/9/11; 48 bytes on 32-bit -
  * grSetSurfaces copies 0x30. grrClear* use this struct AS the descriptor
  * (grPackColor(&surface->descriptor) over the same 16-byte view). ------- */
 typedef struct _grSurfaceBuffer
@@ -196,8 +195,7 @@ void *grStackGetPtr(_grStackAllocator *allocator, int offset);
 void *grStackAllocate(_grStackAllocator *allocator, int size);
 void  grStackFree(_grStackAllocator *allocator, void *ptr);
 
-/* --- descriptor <-> color utilities (grUtilSmall.inl) --------------------
- * grIsValidTexture / grUpdateTexture land with the texture subsystem. */
+/* --- descriptor <-> color utilities (grUtilSmall.inl) -------------------- */
 int          grIsValidDescriptor(_grSurfaceDescriptor *desc);
 unsigned int grPackColor(unsigned int color, _grSurfaceDescriptor *desc);
 int          grMaskedDescriptorsEqual(unsigned int mask, _grSurfaceDescriptor *a, _grSurfaceDescriptor *b);

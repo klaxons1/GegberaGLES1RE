@@ -1,6 +1,6 @@
 /* hcARMBackend.c - 32-bit ARM (A32) JIT backend (hcARMBackend.c of original).
  *
- * Complete port of the ARM machine-code generator, pre-regalloc fixer,
+ * ARM machine-code generator, pre-regalloc fixer,
  * immediate recognizer (rotated imm8 + multi-chunk MOV/ORR & MVN/BIC
  * synthesis), barrel-shifter operand fusion, CPSR flag-setting CMP/TST
  * elision, MUL Rd!=Rm register allocator/spiller, and backendDecl vtable
@@ -400,8 +400,11 @@ static void HCARMBackend_emulate(void (*program)(void *), void *stackPtr)
 }
 
 /* sub_25480: bare `bx lr` in slot 9 (+36). */
-static void HCARMBackend_reserved9(void)
+static void HCARMBackend_disasm(void *program, int length, void (*output)(char *))
 {
+    (void)program;
+    (void)length;
+    (void)output;
 }
 
 /* --- immediate recognition & preRegallocFixer ----------------------------- */
@@ -788,7 +791,7 @@ static void armGenCondBranch(ArmEmitCtx_s *ctx, HCInstr_s *instrs, int pc, void 
                     && HCChain_getLength(ud) == 1
                     && HCChain_getValue(ud, 0) == pc - 1)
                 {
-                    /* Set S-bit on preceding ARM instruction to elide CMP/TST! */
+                    /* Reuse the preceding ALU instruction's flags to omit CMP/TST. */
                     ctx->code[ctx->count - 1] |= 0x00100000u;
                     armEmitBranch(ctx, armBranchCond[op - HCOP_CBA], dstLabel);
                     return;
@@ -1172,7 +1175,7 @@ static const HCBackend_s armBackendDecl =
     &HCARMBackend_codegen,
     NULL,                               /* no ARM postRegallocFixer */
     &HCARMBackend_emulate,
-    &HCARMBackend_reserved9,            /* VA 0x25480 (`bx lr`)     */
+    &HCARMBackend_disasm,               /* VA 0x25480 (`bx lr`)     */
     &HCARMBackend_isNative,
     NULL
 };

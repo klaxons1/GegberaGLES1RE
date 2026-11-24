@@ -226,10 +226,9 @@ int HCBitSet_getNextUnset(HCBitSet_s *self, int first)
     len = self->length;
     nWords = (int)((unsigned int)(len + 31) >> 5);
     ndx = (int)((unsigned int)(first + 1) >> 5);
-    /* Binary-faithful to 0x451688 (`shr [ebp-0x1c], cl`): logical right shift
-     * leaves `ofs` top zero bits when `ofs > 0`, which works identically for
-     * single-word bitsets (`length <= 32`, its sole caller in `minColor` where
-     * `length == nHardRegs`) because `ofs + (32 - ofs) == 32 >= length` -> -1. */
+    /* The reference uses a logical shift (x86 0x451688). Its zero-filled
+     * high bits can hide unset bits in later words; preserve that behavior.
+     * minColor uses a single-word bitset, where this cannot occur. */
     for (ofs = (first + 1) & 0x1F; ; ofs = 0)
     {
         if (ndx >= nWords)
