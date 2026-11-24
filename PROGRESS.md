@@ -2,6 +2,25 @@
 
 Last updated: 2026-11-22 (PixelFlinger four-subsystem regression audit)
 
+## Vincent alternative native port
+
+- Added `vincent/`, pinned to mcejp/vincent-es commit
+  `d55bb4f2e372526f5201f3f123f557586f36ed88` (`ogles`), with license/notices,
+  freestanding EKA2 EGL/runtime adapter and reproducible host/native builds.
+- Uses the portable fixed-point C++ renderer (legacy JIT disabled), system
+  GLES DLL UIDs/version and exact 175-ordinal ABI; linker forbids global
+  constructors and WSD; final E32 Data/BSS both zero.
+- Repaired inactive varying reads, texture-unit validation, consistent linear
+  depth/stencil addressing and partial-edge bounds; added absent API wrappers
+  and libm-free fog/power paths.
+- Host ASan rendering/lifecycle suite passes. Actual E32 DLL execution under
+  ARM926EJ-S Unicorn passes RGB565/RGBA4444/RGBA8888 with mocked OS imports:
+  clear, triangles, depth, lighting, fog, texture, native bitmap presentation,
+  zero-size startup, non-block-aligned resize, deferred destruction.
+- Gerbera `make test`: 4,422 checks pass. SDK ZIP and DLL under `vincent/out/`.
+  No physical-device or conformance validation; unsupported sharing, pixmap
+  creation and render-to-texture explicitly return errors. See Vincent README.
+
 ## PixelFlinger audit: lights, depth/perspective, textures, sprites
 
 - Completed fixes in `pixelflinger/libagl/` and `libpixelflinger/`: two-sided

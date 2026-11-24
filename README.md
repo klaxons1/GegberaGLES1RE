@@ -45,3 +45,15 @@ ordinal exports of `libGLES_CM.dll` are ported and verified**:
 | Overworld & GLES 1.1 HUD | Block Showcase Pavilion | Sunset & `GL_LINEAR` Fog |
 |--------------------------|-------------------------|--------------------------|
 | ![GLES 1.1 HUD](demo/02_gles1_gpuinfo_hud.png) | ![Pavilion](demo/03_block_showcase_pavilion.png) | ![Sunset Fog](demo/06_sunset_fog_atmosphere.png) |
+
+## Alternative native GLES implementations
+
+- [PixelFlinger](pixelflinger/README.md): Android software renderer with
+  ARMv5TE JIT and C++ fallback.
+- [Vincent](vincent/README.md): pinned mcejp/vincent-es portable fixed-point
+  renderer with a native EKA2 window/pbuffer adapter; legacy JIT disabled.
+  Build with `./vincent/build_symbian.sh`; packaged SDK is under `vincent/out/`.
+
+These are alternatives to Gerbera. They intentionally share the system
+`libgles_cm.dll` name/UIDs and must not be installed simultaneously. See each
+port's validation limits and deployment cautions before using it on a device.
