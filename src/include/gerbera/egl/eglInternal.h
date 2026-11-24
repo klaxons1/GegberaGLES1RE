@@ -253,6 +253,9 @@ void               egliFixPixelOffsets(oglSurfaceDescriptor *desc, const eglSurf
 int                egliCompareConfigs(const TEGLCachedConfig *config1, const TEGLCachedConfig *config2);
 void               egliSortConfigs(EGLConfig *configs, int configCount, const eglConfig *filter);
 void               egliSetDefaultDisplayMode(int displayMode);
+#if defined(GERBERA_RGB565)
+int                egliRelaxConfigFilter(eglConfig *filter);
+#endif
 
 #ifdef __cplusplus
 }

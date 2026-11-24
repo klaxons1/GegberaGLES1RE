@@ -10,8 +10,17 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS_DIR="${SYMBIAN_TOOLS_DIR:-/tmp/symbian_tools}"
 GCC_DIR="${TOOLS_DIR}/gcc"
 ELF2E32="${TOOLS_DIR}/elf2e32_bin"
-BUILD_DIR="/tmp/gerbera_symbian_build"
-OUT_DIR="${REPO_ROOT}/symbian/out"
+# GERBERA_FRAMEBUFFER_BPP=16 builds the RGB565 variant: window surfaces always
+# render into EColor64K back buffers (window configs are RGB565 only) and
+# R8G8B8(A8) window requests are given the RGB565 config.
+FB_BPP="${GERBERA_FRAMEBUFFER_BPP:-32}"
+case "${FB_BPP}" in
+    32) BUILD_DIR="/tmp/gerbera_symbian_build"; OUT_DIR="${REPO_ROOT}/symbian/out"
+        ZIP_NAME="Gerbera-GLES1-Symbian-EKA2-ARMv5.zip"; FB_DEFINES=() ;;
+    16) BUILD_DIR="/tmp/gerbera_symbian_build_rgb565"; OUT_DIR="${REPO_ROOT}/symbian/out/rgb565"
+        ZIP_NAME="Gerbera-GLES1-Symbian-EKA2-ARMv5-RGB565.zip"; FB_DEFINES=(-DGERBERA_RGB565) ;;
+    *) echo "GERBERA_FRAMEBUFFER_BPP must be 16 or 32" >&2; exit 2 ;;
+esac
 
 # Bootstrap missing compiler and image-conversion tools.
 if [[ ! -x "${GCC_DIR}/bin/arm-none-symbianelf-gcc" ]]; then
@@ -167,6 +176,7 @@ COMMON_FLAGS=(
     -D__EPOC32__
     -D__MARM__
     -D__EABI__
+    ${FB_DEFINES[@]+"${FB_DEFINES[@]}"}
     -I"${REPO_ROOT}"
     -I"${REPO_ROOT}/symbian/include"
     -I"${REPO_ROOT}/src/include"
@@ -253,10 +263,10 @@ echo "[symbian] Running elf2e32 -> libgles_cm.dll & libgles_cm.dso..."
 
 cp -f "${OUT_DIR}/libgles_cm{000a0000}.dso" "${OUT_DIR}/libgles_cm.dso"
 
-python3 - "${OUT_DIR}" "${REPO_ROOT}" <<'PY'
+python3 - "${OUT_DIR}" "${REPO_ROOT}" "${ZIP_NAME}" <<'PY'
 import os, sys, zipfile
-out_dir, repo_root = sys.argv[1], sys.argv[2]
-zip_path = os.path.join(out_dir, "Gerbera-GLES1-Symbian-EKA2-ARMv5.zip")
+out_dir, repo_root, zip_name = sys.argv[1], sys.argv[2], sys.argv[3]
+zip_path = os.path.join(out_dir, zip_name)
 with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
     zf.write(os.path.join(out_dir, "libgles_cm.dll"), "sys/bin/libgles_cm.dll")
     zf.write(os.path.join(out_dir, "libgles_cm.dso"), "epoc32/release/armv5/lib/libgles_cm.dso")
@@ -267,4 +277,4 @@ with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
 PY
 
 echo "[symbian] Build complete:"
-ls -lh "${OUT_DIR}/libgles_cm.dll" "${OUT_DIR}/libgles_cm.dso" "${OUT_DIR}/Gerbera-GLES1-Symbian-EKA2-ARMv5.zip"
+ls -lh "${OUT_DIR}/libgles_cm.dll" "${OUT_DIR}/libgles_cm.dso" "${OUT_DIR}/${ZIP_NAME}"

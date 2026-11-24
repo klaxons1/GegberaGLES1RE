@@ -9,7 +9,7 @@ LIB_DIRS := src/hg src/imath src/gerbera src/gerbera/hc \
 LIB_SRC := $(foreach dir,$(LIB_DIRS),$(wildcard $(dir)/*.c))
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 
-TEST_NAMES := hg imath geometry core opengl egl symbian_surface symbian_state egl_threads
+TEST_NAMES := hg imath geometry core opengl egl symbian_surface symbian_state symbian_rgb565 egl_threads
 TEST_OBJ := $(addprefix $(BUILD)/tests/test_,$(addsuffix .o,$(TEST_NAMES)))
 TEST_BINS := $(addprefix $(BUILD)/test_,$(TEST_NAMES))
 SYMBIAN_TEST_FLAGS := -DNDEBUG -ffunction-sections -fdata-sections -Wno-attributes -idirafter symbian/include
@@ -20,7 +20,7 @@ else
 TEST_GC_LDFLAGS := -Wl,--gc-sections
 endif
 
-.PHONY: all test check differential differential-build differential-harness-check differential-coverage symbian-entry-check native-dispatch-check library-sources win32 symbian clean
+.PHONY: all test check differential differential-build differential-harness-check differential-coverage symbian-entry-check native-dispatch-check library-sources win32 symbian symbian-rgb565 clean
 all: $(BUILD)/libgerbera.a
 
 library-sources:
@@ -31,6 +31,9 @@ win32:
 
 symbian:
 	./symbian/build_symbian.sh
+
+symbian-rgb565:
+	GERBERA_FRAMEBUFFER_BPP=16 ./symbian/build_symbian.sh
 
 symbian-entry-check: differential-build
 	GERBERA_DIFFERENTIAL_LIBRARY=$(DIFF_LIB) $(PYTHON) tests/test_symbian_entry.py
@@ -48,14 +51,15 @@ $(BUILD)/test_%: $(BUILD)/tests/test_%.o $(BUILD)/libgerbera.a
 $(BUILD)/tests/test_egl_threads.o: EXTRA_CFLAGS := -pthread
 $(BUILD)/test_egl_threads: TEST_FLAGS := -pthread
 
-$(BUILD)/tests/test_symbian_surface.o $(BUILD)/tests/test_symbian_state.o: EXTRA_CFLAGS := $(SYMBIAN_TEST_FLAGS)
+$(BUILD)/tests/test_symbian_surface.o $(BUILD)/tests/test_symbian_state.o $(BUILD)/tests/test_symbian_rgb565.o: EXTRA_CFLAGS := $(SYMBIAN_TEST_FLAGS)
 $(BUILD)/symbian/%.o: src/hg/%.c Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(SYMBIAN_TEST_FLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD)/test_symbian_surface: $(BUILD)/tests/test_symbian_surface.o $(BUILD)/symbian/hgInt32.o
 $(BUILD)/test_symbian_state: $(BUILD)/tests/test_symbian_state.o
-$(BUILD)/test_symbian_surface $(BUILD)/test_symbian_state:
+$(BUILD)/test_symbian_rgb565: $(BUILD)/tests/test_symbian_rgb565.o $(BUILD)/symbian/hgInt32.o
+$(BUILD)/test_symbian_surface $(BUILD)/test_symbian_state $(BUILD)/test_symbian_rgb565:
 	$(CC) $(CFLAGS) $^ $(TEST_GC_LDFLAGS) -o $@
 
 .SECONDARY: $(TEST_OBJ)

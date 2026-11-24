@@ -26,6 +26,7 @@ Build and test:
 make test      # builds build/libgerbera.a (65 .c files) and runs all 5 test suites
 make win32     # cross-compiles Win32 (i386 PE32) libGLES_CM.dll + ClassiCube.exe in demo/win32/
 make symbian   # cross-compiles Symbian OS v9.x (EKA2 ARMv5) libgles_cm.dll + libgles_cm.dso in symbian/out/
+make symbian-rgb565  # RGB565 variant in symbian/out/rgb565/ (EColor64K window back buffers)
 ```
 
 Status: **100% of all modules (`hg`, `imath`, `gerbera/core`, `grr`, `hc`,

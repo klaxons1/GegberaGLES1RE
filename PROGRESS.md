@@ -1,6 +1,33 @@
 # PROGRESS.md - live status of the reconstruction
 
-Last updated: 2026-11-24 (merged SOMETHINKWORKS 4b31ebc, rebuilt Symbian + Win32)
+Last updated: 2026-11-24 (Gerbera RGB565 Symbian variant)
+
+## Gerbera RGB565 Symbian variant
+
+- `GERBERA_FRAMEBUFFER_BPP=16 ./symbian/build_symbian.sh` (or
+  `make symbian-rgb565`) builds with `-DGERBERA_RGB565` into
+  `symbian/out/rgb565/` (`Gerbera-GLES1-Symbian-EKA2-ARMv5-RGB565.zip`).
+- What `-DGERBERA_RGB565` changes:
+  - `egliInitState` always sets `displayMode` to EColor64K, so window back
+    buffers are EColor64K CWsBitmaps and Gerbera renders 16-bit pixels on
+    any screen. The Window Server converts them on BitBlt. This is the
+    original's own path on EColor64K phones.
+  - `egliFixConfig` then leaves the window bit only on the 6 RGB565
+    configs (depth 0/16/32 x stencil 0/8).
+  - `eglChooseConfig`: if a window request asking for more than 5/6/5/0
+    color (or a 16-bit buffer) matches nothing, `egliRelaxConfigFilter` caps
+    those minimums and retries, so R8G8B8(A8) requests get RGB565. Queries
+    report the real sizes.
+  - Pixmap and pbuffer configs are unchanged, so 16MU/16MA pixmaps (M3G)
+    and 32-bit pbuffers still work.
+- The default build is unchanged: same 229,636-byte text; only the E32
+  timestamp/CRC differ.
+- RGB565 DLL: 232,920 bytes (code +408). UIDs, flags, 175 exports,
+  7 DLL refs, data/bss 0, `.def` and `.dso` are identical to the default.
+- New host test `tests/test_symbian_rgb565.c` (850 checks, in `make test`).
+  It runs the real Symbian `egliInitState`/`egliFixConfig` and
+  `eglInitialize`/`eglChooseConfig`/`eglGetConfigAttrib` for 16MU, 16MA,
+  64K and 4K screens. Not run on a device.
 
 ## Merged SOMETHINKWORKS 4b31ebc ("saem persun patch") and rebuilt
 

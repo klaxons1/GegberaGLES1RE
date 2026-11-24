@@ -485,6 +485,9 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
     }
 
     totalConfigs = egliGetTotalConfigs();
+#if defined(GERBERA_RGB565)
+retry_filter:
+#endif
     /* ARM 0x98CC (x86 0x403D15) stops on equality before sorting the selected prefix.
      * A negative size therefore does not limit the original's output. */
     for (i = 0; i < totalConfigs && (configs == NULL || count != config_size); ++i)
@@ -500,6 +503,11 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
             ++count;
         }
     }
+#if defined(GERBERA_RGB565)
+    /* 16-bit build: map R8G8B8(A8) window requests onto RGB565. */
+    if (count == 0 && egliRelaxConfigFilter(&filter) != 0)
+        goto retry_filter;
+#endif
 
     *num_config = count;
     if (configs != NULL && count > 1)

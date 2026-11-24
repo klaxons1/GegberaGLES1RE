@@ -214,6 +214,13 @@ eglState_s *egliInitState(void)
     {
         state->displayMode = 0;
     }
+#if defined(GERBERA_RGB565)
+    /* RGB565 build: window back buffers are always EColor64K CWsBitmaps, so
+     * Gerbera renders 16-bit pixels whatever the screen mode is; the Window
+     * Server converts them on BitBlt. egliFixConfig then leaves the window bit
+     * only on the RGB565 configs (s_validColors EColor64K entry). */
+    state->displayMode = EGL_SYMBIAN_ECOLOR64K;
+#endif
 
     egliSetGlobal(state);
     return state;
@@ -1339,6 +1346,37 @@ void egliFixConfig(eglConfig *config)
         }
     }
 }
+
+#if defined(GERBERA_RGB565)
+/* RGB565 build: games commonly ask for R8G8B8(A8) window configs, which this
+ * build deliberately lacks. When such a request matched nothing, eglChooseConfig
+ * retries with the color minimums capped at 5/6/5/0 (16-bit buffer), so the
+ * best RGB565 config is returned; queries report the real 5/6/5 sizes.
+ * Returns 1 when the filter was changed. */
+int egliRelaxConfigFilter(eglConfig *filter)
+{
+    int relaxed = 0;
+
+    if (filter == NULL || filter->configID != EGL_DONT_CARE)
+        return 0;
+    if (filter->surfaceType != EGL_DONT_CARE &&
+        (filter->surfaceType & EGL_WINDOW_BIT) == 0)
+        return 0;
+#define EGL_RELAX_FIELD(field, cap)                                 \
+    if (filter->field != EGL_DONT_CARE && filter->field > (cap))     \
+    {                                                               \
+        filter->field = (cap);                                      \
+        relaxed = 1;                                                \
+    }
+    EGL_RELAX_FIELD(colorBits, 16)
+    EGL_RELAX_FIELD(redBits, 5)
+    EGL_RELAX_FIELD(greenBits, 6)
+    EGL_RELAX_FIELD(blueBits, 5)
+    EGL_RELAX_FIELD(alphaBits, 0)
+#undef EGL_RELAX_FIELD
+    return relaxed;
+}
+#endif
 
 void egliFixPixelOffsets(oglSurfaceDescriptor *desc, const eglSurface_s *surface)
 {
