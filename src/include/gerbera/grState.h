@@ -579,9 +579,8 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_INDEX_ARRAY = 24,
     GR_CAPABILITY_TEXTURE_COORD_ARRAY_0 = 25,
     GR_CAPABILITY_TEXTURE_COORD_ARRAY_1 = 26,
-    GR_CAPABILITY_WEIGHT_ARRAY = 27,      /* flagged guess: unpinned gap; not
-                                           * in the GL keys table (internal) */
-    GR_CAPABILITY_MATRIX_INDEX_ARRAY = 28,/* flagged guess: unpinned gap */
+    GR_CAPABILITY_MATRIX_INDEX_ARRAY = 27, /* EPOC oglSetClientState 0x1100C */
+    GR_CAPABILITY_WEIGHT_ARRAY = 28,
     GR_CAPABILITY_POINT_SIZE_ARRAY = 29,
     GR_CAPABILITY_CLIP_PLANE0 = 30,       /* GL_CLIP_PLANE0..5 -> caps 30..35 */
     GR_CAPABILITY_CLIP_PLANE1 = 31,
@@ -592,14 +591,9 @@ enum GR_CAPABILITY_e
     GR_CAPABILITY_SMOOTH_SHADING = 9,     /* internal cap (EPOC glShadeModel
                                            * sub_22018(caps, 9, ...); GL_FLAT
                                            * clears it, GL_SMOOTH sets it) */
-    GR_CAPABILITY_PERSPECTIVE_CORRECTION = 8, /* flagged guess: unpinned gap;
-                                               * glHint(GL_PERSPECTIVE_CORRECTION_
-                                               * HINT, GL_NICEST) sets it and
-                                               * grrDrawClippedTriangle picks the
-                                               * tessellator path when set */
-    GR_CAPABILITY_UNUSED = 17,            /* flagged guess: unpinned gap;
-                                           * scratch slot (grDrawClippedLine
-                                           * clears it after its quad draws) */
+    GR_CAPABILITY_PERSPECTIVE_CORRECTION = 17, /* glHint 0x414825 and the
+                                               * triangle wrapper 0x427D73 */
+    GR_CAPABILITY_UNUSED = 0,            /* line quad cleanup at 0x425FF1 */
     GR_CAPABILITY_DEPTH_OFFSET_POINT = 12,   /* grIsDepthOffsetEnabled:
                                                * primitiveType (POINT=1) + 11 */
     GR_CAPABILITY_DEPTH_OFFSET_LINE = 13,    /* primitiveType (LINE=2) + 11 */
@@ -672,9 +666,8 @@ typedef struct _grLight
 
 /* client vertex array record (grGetVertexArrayPointer/Binding/Reset +
  * the fetchers). EPOC vertexArray base = +308, stride 20; WINSCW reaches
- * the same records through a byte array. WINSCW puts `type` at record+5,
- * the EPOC build at record+6 - a compiler padding difference; the clean
- * layout here follows WINSCW (size@4, type@5).
+ * the same records through a byte array. Both builds put `type` at record+5
+ * and size at record+4 (EPOC grSetVertexArray, 0x22D14).
  *   stride@0 (int), size@4 (u8: 2 or 4 components), type@5 (u8 GR_DATATYPE),
  *   data@8, binding@12 (ogl buffer object), origPointer@16. */
 typedef struct Gerbera_s Gerbera_s;

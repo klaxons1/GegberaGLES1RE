@@ -52,24 +52,33 @@ static const oglArrayRestriction_s restrictions[7] =
     { 197u, 2u, 4u }  /* TEXCOORD0/1:  INT8, INT16, FLOAT, FIXED (2..4) */
 };
 
+/* Original EPOC tables at 0x35F28/0x35F68 use the point-size array enums. */
 static const unsigned int s_arrTypes[8] =
 {
-    0x807Bu, 0x807Eu, 0x8082u, 0x86A9u, 0x8847u, 0x8B98u, 0x8089u, 0x8089u
+    GL_VERTEX_ARRAY_TYPE, GL_NORMAL_ARRAY_TYPE, GL_COLOR_ARRAY_TYPE,
+    GL_WEIGHT_ARRAY_TYPE_OES, GL_MATRIX_INDEX_ARRAY_TYPE_OES,
+    GL_POINT_SIZE_ARRAY_TYPE_OES, GL_TEXTURE_COORD_ARRAY_TYPE, GL_TEXTURE_COORD_ARRAY_TYPE
 };
 
 static const unsigned int s_arrSizes[8] =
 {
-    0x807Au, 0x0000u, 0x8081u, 0x86ABu, 0x8846u, 0x0000u, 0x8088u, 0x8088u
+    GL_VERTEX_ARRAY_SIZE, 0, GL_COLOR_ARRAY_SIZE, GL_WEIGHT_ARRAY_SIZE_OES,
+    GL_MATRIX_INDEX_ARRAY_SIZE_OES, 0, GL_TEXTURE_COORD_ARRAY_SIZE, GL_TEXTURE_COORD_ARRAY_SIZE
 };
 
 static const unsigned int s_arrStrides[8] =
 {
-    0x807Cu, 0x807Fu, 0x8083u, 0x86AAu, 0x8848u, 0x8B99u, 0x808Au, 0x808Au
+    GL_VERTEX_ARRAY_STRIDE, GL_NORMAL_ARRAY_STRIDE, GL_COLOR_ARRAY_STRIDE,
+    GL_WEIGHT_ARRAY_STRIDE_OES, GL_MATRIX_INDEX_ARRAY_STRIDE_OES,
+    GL_POINT_SIZE_ARRAY_STRIDE_OES, GL_TEXTURE_COORD_ARRAY_STRIDE, GL_TEXTURE_COORD_ARRAY_STRIDE
 };
 
 static const unsigned int s_arrBindings[8] =
 {
-    0x8896u, 0x8897u, 0x8898u, 0x889Eu, 0x8B9Eu, 0x8B9Fu, 0x889Au, 0x889Au
+    GL_VERTEX_ARRAY_BUFFER_BINDING, GL_NORMAL_ARRAY_BUFFER_BINDING, GL_COLOR_ARRAY_BUFFER_BINDING,
+    GL_WEIGHT_ARRAY_BUFFER_BINDING_OES, GL_MATRIX_INDEX_ARRAY_BUFFER_BINDING_OES,
+    GL_POINT_SIZE_ARRAY_BUFFER_BINDING_OES,
+    GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING, GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING
 };
 
 static const unsigned short s_palettedFormats[10] =
@@ -2805,15 +2814,24 @@ GL_API void GL_APIENTRY glBufferData(GLenum target, GLsizeiptr size,
                 OGL_ASSERT_AT("oglApi.inl", 3564, "bufObj", bufObj != NULL);
                 if (oglSetupBufObj(bufObj, bu, (int)size) != 0)
                 {
-                    if (bt == OGL_BUFOBJTARGET_ARRAY && context->gerbera != NULL)
+                    oglContext_s *shared = context;
+                    unsigned int activeName = context->activeBufObjs[bt];
+
+                    /* Vertex arrays retain the object binding independently of
+                     * its current target. Replace cached addresses in every
+                     * sharing context before any of them draws again. */
+                    while (shared->shareListPrev != NULL)
+                        shared = shared->shareListPrev;
+                    for (; shared != NULL; shared = shared->shareListNext)
                     {
                         int i;
-                        unsigned int activeName = context->activeBufObjs[bt];
                         for (i = 0; i < GR_VERTEXARRAY_MAX; ++i)
                         {
-                            _grVertexArray *arr = &context->gerbera->vertexArray[i];
+                            _grVertexArray *arr = &shared->gerbera->vertexArray[i];
                             if (arr->binding == activeName)
-                                arr->data = (char *)bufObj->buffer + (uintptr_t)arr->origPointer;
+                                arr->data = bufObj->buffer != NULL
+                                          ? (char *)bufObj->buffer + (uintptr_t)arr->origPointer
+                                          : NULL;
                         }
                     }
                     glBufferSubData(target, 0, size, data);
@@ -3241,10 +3259,22 @@ void oglShareListRemoveBufObj(oglContext_s *context, unsigned int bufObjIndex)
         context = context->shareListPrev;
     while (context != NULL)
     {
+        int arrayType;
         for (bt = OGL_BUFOBJTARGET_ARRAY; bt < OGL_BUFOBJTARGET_MAX; bt = (OGL_BUFOBJTARGET)(bt + 1))
         {
             if (bufObjIndex == context->activeBufObjs[bt])
                 oglBindBuffer(context, bt, 0);
+        }
+        for (arrayType = 0; arrayType < GR_VERTEXARRAY_MAX; ++arrayType)
+        {
+            _grVertexArray *array = &context->gerbera->vertexArray[arrayType];
+            if (array->binding == bufObjIndex)
+            {
+                grResetVertexArray(context->gerbera, arrayType);
+                /* Detach the private storage reference without changing the
+                 * original driver's saved pointer and binding query values. */
+                array->binding = 0;
+            }
         }
         context = context->shareListNext;
     }
@@ -3306,19 +3336,7 @@ GL_API void GL_APIENTRY glDeleteBuffers(GLsizei n, const GLuint *buffers)
                     unsigned int idx = buffers[i];
                     if (idx != 0 && oglIsBufObj(context->bufObjManager, idx) != 0)
                     {
-                        OGL_BUFOBJTARGET bt;
-                        int v;
                         oglShareListRemoveBufObj(context, idx);
-                        for (bt = OGL_BUFOBJTARGET_ARRAY; bt < OGL_BUFOBJTARGET_MAX; bt = (OGL_BUFOBJTARGET)(bt + 1))
-                        {
-                            if (idx == context->activeBufObjs[bt])
-                                oglBindBuffer(context, bt, 0);
-                        }
-                        for (v = GR_VERTEXARRAY_POSITION; v < 8; ++v)
-                        {
-                            if (idx == grGetVertexArrayBinding(context->gerbera, v))
-                                grResetVertexArray(context->gerbera, v);
-                        }
                         oglDeleteBufObj(context->bufObjManager, idx);
                     }
                 }

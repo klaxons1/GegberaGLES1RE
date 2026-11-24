@@ -42,5 +42,5 @@ HGint32 IUnitScalar_tos(HGint32 x)
         e = (HGuint32)(127 - sh);
     else
         e = 0;
-    return IScalar_set(e, x << sh);
+    return IScalar_set(e, (HGint32)((HGuint32)x << sh));
 }

@@ -160,7 +160,8 @@ void grDrawClippedTriangle(Gerbera_s *state, _grClipTriangle *tri,
         {
             int g = state->activeGradientIndex[i];
 
-            pixelPipe->reference[g] += pixelPipe->yAdder[g] * yStart;
+            pixelPipe->reference[g] = (int)((unsigned int)pixelPipe->reference[g] +
+                                          (unsigned int)pixelPipe->yAdder[g] * (unsigned int)yStart);
         }
         grExecutePixelPipeline(state);
 #if HG_ASSERT_ENABLED

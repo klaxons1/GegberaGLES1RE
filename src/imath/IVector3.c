@@ -247,7 +247,7 @@ int IVector3_length(_IVector3 *pA)
     mh <<= sh;
     shExp = 3 - sh;
     idx = ((mh >> 22) & 0x7F) | (((3 - sh) & 1) << 7);
-    rsq_m = 8 * rsqLUTm[idx];
+    rsq_m = (int)(8u * (unsigned int)rsqLUTm[idx]);
     rsq_m = hgMulu64h(rsq_m, mh);
     rsq_e = shExp >> 1;
     rsq_m = (rsqLUTa[idx] << 17) - 2 * rsq_m;
@@ -325,7 +325,7 @@ int IVector3_clipperDot(int *weights, int *distances)
     if (sh < 0)
         imAssert("sh >= 0", "IVector3.c", 357);
     e = maxExp - (sh + 27);
-    mt = (sum << sh) >> 1;
+    mt = (int)((unsigned int)sum << sh) >> 1;
     if (hgAbs32(mt) >= 0x40000000)
         imAssert("hgAbs32(mt) < 0x40000000", "IVector3.c", 364);
     if (e > 0 && mt != 0)

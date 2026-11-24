@@ -8,6 +8,7 @@
 #include "gerbera/hc/hcOpcode.h"          /* HC_assertFail */
 
 #include <string.h>                        /* memset (HCRandom_setSeed uses none; keep for clarity) */
+#include <stdint.h>
 
 /* --- hcRandom (hcRandom.c) ------------------------------------------------ */
 
@@ -121,12 +122,26 @@ void HCArena_releaseTop(HCArena_s *self, int mark)
 
 void *HCArena_current(HCArena_s *self)
 {
+#if UINTPTR_MAX > 0xFFFFFFFFu
+    /* The original allocator aligns four-byte pointers (0045E168). Host
+     * compiler records contain wider pointers; align a new block's start
+     * without adding padding between its packed, appended elements. */
+    uintptr_t address = (uintptr_t)self->arena + (unsigned int)self->bottom;
+    self->bottom = (int)((unsigned int)self->bottom
+        + (unsigned int)((0u - address) & (sizeof(void *) - 1u)));
+    HCArena_updateStats(self);
+    if (self->bottom < 0 || self->bottom >= self->top)
+        self->longjmp(self->jmpbuf, 1);
+#endif
     return &self->arena[self->bottom];
 }
 
 void HCArena_growCurrent(HCArena_s *self, unsigned int nBytes)
 {
-    HCArena_allocBottom(self, nBytes);
+    self->bottom = (int)((nBytes + (unsigned int)self->bottom + 3u) & ~3u);
+    HCArena_updateStats(self);
+    if (self->bottom < 0 || self->bottom >= self->top)
+        self->longjmp(self->jmpbuf, 1);
 }
 
 int HCArena_inLowMem(HCArena_s *self, void *ptr)
@@ -155,11 +170,11 @@ void *HCArena_allocBottom(HCArena_s *self, unsigned int nBytes)
 {
     int oldIndex;
 
+#if UINTPTR_MAX > 0xFFFFFFFFu
+    HCArena_current(self);
+#endif
     oldIndex = self->bottom;
-    self->bottom = (int)((nBytes + (unsigned int)oldIndex + 3u) & ~3u);
-    HCArena_updateStats(self);
-    if (self->bottom < 0 || self->bottom >= self->top)
-        self->longjmp(self->jmpbuf, 1);
+    HCArena_growCurrent(self, nBytes);
     return &self->arena[oldIndex];
 }
 
@@ -177,7 +192,13 @@ void HCArena_setBottom(HCArena_s *self, void *ptr)
 
 void *HCArena_allocTop(HCArena_s *self, unsigned int nBytes)
 {
-    self->top = (int)((self->top - (int)nBytes) & ~3);
+#if UINTPTR_MAX > 0xFFFFFFFFu
+    uintptr_t address = (uintptr_t)self->arena + (unsigned int)self->top - nBytes;
+    self->top = (int)((address & ~(uintptr_t)(sizeof(void *) - 1u))
+                     - (uintptr_t)self->arena);
+#else
+    self->top = (int)(((unsigned int)self->top - nBytes) & ~3u);
+#endif
     HCArena_updateStats(self);
     if (self->top < 0 || self->top < self->bottom)
         self->longjmp(self->jmpbuf, 1);

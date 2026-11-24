@@ -48,7 +48,7 @@ static void test_clz(void)
     CHECK_EQ(hgClz32(0x40000000u), 1);
     CHECK_EQ(hgClz32(0xFFFFFFFFu), 0);
     CHECK_EQ(hgClz64(0), 64);
-    CHECK_EQ(hgClz64(((HGint64)1) << 63), 0);
+    CHECK_EQ(hgClz64((HGint64)((HGuint64)1 << 63)), 0);
     CHECK_EQ(hgClz64(((HGint64)1) << 32), 31);
     CHECK_EQ(hgClz64(1), 63);
 }
@@ -63,6 +63,8 @@ static void test_range_minmax(void)
     CHECK_EQ(hgInRange32(-5, -10, -1), 1);
     CHECK_EQ(hgInRange32(-11, -10, -1), 0);
     CHECK_EQ(hgInRange32(-1, -10, -1), 1);
+    CHECK_EQ(hgInRange32(0, -0x7FFFFFFF - 1, 0x7FFFFFFF), 1);
+    CHECK_EQ(hgInRange32(0x7FFFFFFF, -0x7FFFFFFF - 1, -1), 0);
 
     CHECK_EQ(hgMin32(3, 7), 3);
     CHECK_EQ(hgMin32(-3, 7), -3);
@@ -71,6 +73,7 @@ static void test_range_minmax(void)
     CHECK_EQ(hgMaxu32(3u, 7u), 7u);
     CHECK_EQ(hgAbs32(-9), 9);
     CHECK_EQ(hgAbs32(9), 9);
+    CHECK_EQ(hgAbs32(-0x7FFFFFFF - 1), -0x7FFFFFFF - 1);
     CHECK_EQ(hgSign32(5), 1);
     CHECK_EQ(hgSign32(0), 0);
     CHECK_EQ(hgSign32(-5), -1);
@@ -82,6 +85,7 @@ static void test_range_minmax(void)
     CHECK_EQ(hgMaxZero32(-7), 0);
     CHECK_EQ(hgDiff32(10, 3), 7);
     CHECK_EQ(hgDiff32(3, 10), 7);
+    CHECK_EQ(hgDiff32(0x7FFFFFFF, -0x7FFFFFFF - 1), 1);
 }
 
 static void test_clamp_misc(void)
@@ -144,6 +148,13 @@ static void test_64(void)
     CHECK_EQ(hgNeg64(hgSet64s(5)), -5);
     CHECK_EQ(hgNot64(0), -1);
     CHECK_EQ(hgAbs64(-5), 5);
+    CHECK_EQ(hgNeg64((HGint64)0x8000000000000000ull), (HGint64)0x8000000000000000ull);
+    CHECK_EQ(hgAbs64((HGint64)0x8000000000000000ull), (HGint64)0x8000000000000000ull);
+    CHECK_EQ(hgAdd64(0x7FFFFFFFFFFFFFFFll, 1), (HGint64)0x8000000000000000ull);
+    CHECK_EQ(hgSub64((HGint64)0x8000000000000000ull, 1), 0x7FFFFFFFFFFFFFFFll);
+    CHECK_EQ(hgMadd64(0x7FFFFFFFFFFFFFFFll, 2, 2), (HGint64)0x8000000000000003ull);
+    CHECK_EQ(hgMul64x32(0x7FFFFFFFFFFFFFFFll, 3), 0x7FFFFFFFFFFFFFFDll);
+    CHECK_EQ(hgMul64x32((HGint64)0x80000000FFFFFFFFull, -2), (HGint64)0xFFFFFFFE00000002ull);
     CHECK_EQ(hgAbs64(hgSet64(-1, 5)), (HGint64)(0xFFFFFFFF00000005ull * -1ull));
     CHECK_EQ(hgEq64(hgSet64(1, 2), hgSet64(1, 2)), 1);
     CHECK_EQ(hgEq64(hgSet64(1, 2), hgSet64(1, 3)), 0);
@@ -163,6 +174,10 @@ static void test_64(void)
     CHECK_EQ(hgIsZero64(hgSetBit64(0, 32) ^ hgSet64x(1)), 1);
 
     CHECK_EQ(hgLsl64(1, 4), 16);
+    CHECK_EQ(hgLsl64(-1, 4), -16);
+    CHECK_EQ(hgLsl64(0x4000000000000000ll, 1), (HGint64)0x8000000000000000ull);
+    CHECK_EQ(hgLsl64h(-1, 4), -1);
+    CHECK_EQ(hgLsl64h_0_31(-1, 4), -1);
     CHECK_EQ(hgLsl64(1, 32), (HGint64)1 << 32);
     CHECK_EQ(hgLsl64h(((HGint64)1) << 40, 8), 65536);  /* (1<<48)>>32 */
     CHECK_EQ(hgLsl64h_0_31(((HGint64)1) << 40, 8), 65536);
@@ -239,6 +254,36 @@ static void test_float_bits(void)
     CHECK_EQ(F_ADD(FIN(3.75f), 0xC0200000u), FIN(1.25f));  /* 3.75 + (-2.5) */
 }
 
+static void test_float_multiply(void)
+{
+    static const HGuint32 subnormalCases[][3] = {
+        {0x7939E89Fu, 0x004C8976u, 0x3A148931u},
+        {0xEC3A5FAEu, 0x007DE735u, 0xAD38D8E1u},
+        {0x621C2D9Eu, 0x800F7B92u, 0xA2AF11BCu},
+        {0x40000000u, 0x00000001u, 0x00800001u},
+        {0x40000000u, 0x80000001u, 0x80800001u},
+        {0x40000000u, 0x007FFFFFu, 0x00FFFFFFu},
+        {0x40000000u, 0x807FFFFFu, 0x80FFFFFFu},
+    };
+    unsigned int i;
+    /* The original treats subnormals differently in the two operands. */
+    for (i = 0; i < sizeof(subnormalCases) / sizeof(subnormalCases[0]); ++i)
+    {
+        const HGuint32 *c = subnormalCases[i];
+        CHECK_EQ(F_MUL(c[0], c[1]), c[2]);
+        CHECK_EQ(F_MUL(c[1], c[0]), 0u);
+    }
+    CHECK_EQ(F_MUL(0x40000000u, 0u), 0u);
+    CHECK_EQ(F_MUL(0x40000000u, 0x80000000u), 0u);
+    CHECK_EQ(F_MUL(0x3F800000u, 0x007FFFFFu), 0u);
+    CHECK_EQ(F_MUL(0x40000000u, 0x00800000u), 0x01000000u);
+    CHECK_EQ(F_MUL(0x00800000u, 0x40000000u), 0x01000000u);
+    CHECK_EQ(F_SQR(FIN(1.0f)), FIN(1.0f));
+    CHECK_EQ(F_SQR(FIN(1.5f)), FIN(2.25f));
+    CHECK_EQ(F_SQR(FIN(-1.5f)), FIN(2.25f));
+    CHECK_EQ(F_SQR(FIN(0.75f)), FIN(0.5625f));
+}
+
 static void test_trig(void)
 {
     CHECK_EQ(FIN(hgFsin(0.0f)), FIN(0.0f));
@@ -301,6 +346,7 @@ int main(void)
     test_64();
     test_div();
     test_float_bits();
+    test_float_multiply();
     test_trig();
     test_fill();
     test_endian();

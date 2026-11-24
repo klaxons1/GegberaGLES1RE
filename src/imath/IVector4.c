@@ -166,7 +166,7 @@ void IFVector4_setfv(_IFVector4 *pD, int *pS, int n)
             }
             else
             {
-                m = (((ix >> 31) ^ ((ix & 0x7FFFFF) | 0x800000)) - (ix >> 31)) << 6;
+                m = (int)((unsigned int)(((ix >> 31) ^ ((ix & 0x7FFFFF) | 0x800000)) - (ix >> 31)) << 6);
             }
         }
         else
@@ -261,10 +261,10 @@ void IVector4_add(_IVector4 *pD, _IVector4 *pA, _IVector4 *pB)
     if (asum != 0)
     {
         clz = hgClz32(asum);
-        m0 = ((int)(m0 << (clz - 1))) >> 1;
-        m1 = ((int)(m1 << (clz - 1))) >> 1;
-        m2 = ((int)(m2 << (clz - 1))) >> 1;
-        m3 = ((int)(m3 << (clz - 1))) >> 1;
+        m0 = (int)((unsigned int)m0 << (clz - 1)) >> 1;
+        m1 = (int)((unsigned int)m1 << (clz - 1)) >> 1;
+        m2 = (int)((unsigned int)m2 << (clz - 1)) >> 1;
+        m3 = (int)((unsigned int)m3 << (clz - 1)) >> 1;
         eMax += 1 - (clz - 1);
         if ((clz - 1) >= 0x3F)
             imAssert("sh < 63", "IVector4.c", 0x11Eu);
@@ -364,7 +364,10 @@ void IVector4_fixClipSpacePosition(_IVector4 *pD, _IVector4 *src, int nGuardband
         int sh = hgClz32(amax) - 2;
         e -= sh;
         if ((int)e > 0)
-            IVector4_set_noINF(pD, e, x << sh, y << sh, z << sh, w << sh);
+            IVector4_set_noINF(pD, e, (int)((unsigned int)x << sh),
+                              (int)((unsigned int)y << sh),
+                              (int)((unsigned int)z << sh),
+                              (int)((unsigned int)w << sh));
         else
         {
             IVector4_zero(pD);
@@ -428,21 +431,21 @@ void IVector4_viewportTransform(int *pD, _IVector4 *pS, int *pScale, int *pOffse
         sx = (int)t;
         t = hgLsl64h_0_31(hgMul64(pS->m[1], (int)recip), (int)rsh - 1);
         sy = (int)t;
-        sz = hgMul64h(pS->m[2] << ((int)rsh - 1), (int)recip);
+        sz = hgMul64h((int)((unsigned int)pS->m[2] << ((int)rsh - 1)), (int)recip);
         if (hgSignBit32(sx) != hgSignBit32(pS->m[0]))
             imAssert("hgSignBit32(sx) == hgSignBit32(pS->m[0])", "imApi.inl", 0x580u);
         if (hgSignBit32(sy) != hgSignBit32(pS->m[1]))
             imAssert("hgSignBit32(sy) == hgSignBit32(pS->m[1])", "imApi.inl", 0x581u);
         if (hgInRange32(sz, -536870912, 0x20000000) == 0)
             imAssert("hgInRange32(sz, -IUNITSCALAR_ONE, IUNITSCALAR_ONE)", "imApi.inl", 0x582u);
-        pD[0] = (*pOffset + hgMul64h(sx, *pScale)) << xyShift;
-        pD[1] = (pOffset[1] + hgMul64h(sy, pScale[1])) << xyShift;
+        pD[0] = (int)((unsigned int)(*pOffset + hgMul64h(sx, *pScale)) << xyShift);
+        pD[1] = (int)((unsigned int)(pOffset[1] + hgMul64h(sy, pScale[1])) << xyShift);
         pD[2] = pOffset[2] + hgLsl64h_0_31(hgMul64(sz, pScale[2]), 3);
     }
     else
     {
-        pD[0] = *pOffset << xyShift;
-        pD[1] = pOffset[1] << xyShift;
+        pD[0] = (int)((unsigned int)*pOffset << xyShift);
+        pD[1] = (int)((unsigned int)pOffset[1] << xyShift);
         pD[2] = pOffset[2];
     }
 }

@@ -94,7 +94,6 @@ void eglInitRefCount(eglRefCount *refCount)
 {
     refCount->referenceCount = 0;
     refCount->destroyed = 0;
-    refCount->padding = 0;
 }
 
 void eglAddRef(eglRefCount *refCount)
@@ -122,6 +121,8 @@ int eglReleaseRef(eglRefCount *refCount)
 
 void eglDisplayAddSurface(eglDisplay_s *display, eglSurface_s *surface)
 {
+    surface->display = display;
+    surface->id = ++display->surfaceCount;
     surface->prev = NULL;
     surface->next = display->surfaceList;
     if (display->surfaceList != NULL)
@@ -170,12 +171,21 @@ void eglFreeSurface(eglSurface_s *surface)
         egliWindowSurfaceDestroy((eglWindowSurface *)surface);
         break;
     case EGL_SURFACE_PBUFFER:
+    {
+        eglPbufferSurface *pbuffer = (eglPbufferSurface *)surface;
+        /* The original releases by texture name, even if that name now holds
+         * another pbuffer's image. Preserve this likely lifetime bookkeeping bug. */
+        if (pbuffer->boundESContext != NULL)
+            oglReleaseSurfaceTexture(pbuffer->boundESContext, pbuffer->textureName,
+                                     pbuffer->mipmapLevel);
+        pbuffer->boundESContext = NULL;
         if (surface->colorBuffer != NULL)
         {
             eglFree(surface->colorBuffer);
             surface->colorBuffer = (void *)EGL_POISON_PTR;
         }
         break;
+    }
     case EGL_SURFACE_PIXMAP:
         egliPixmapSurfaceDestroy((eglPixmapSurface *)surface);
         break;
@@ -202,6 +212,10 @@ void eglFreeSurface(eglSurface_s *surface)
 
 void eglGetConfigIndices(ConfigIndices *indices, int configID)
 {
+    enum {
+        CONFIGS_PER_DEPTH = EGL_NUM_STENCIL_FORMATS * EGL_NUM_SURFACE_TYPES,
+        CONFIGS_PER_COLOR = EGL_NUM_DEPTH_FORMATS * CONFIGS_PER_DEPTH
+    };
     int idx;
 
     EGL_ASSERT_AT("eglUtil.inl", 232, "indices", indices != NULL);
@@ -209,12 +223,12 @@ void eglGetConfigIndices(ConfigIndices *indices, int configID)
                   hgInRange32(configID, 1, EGL_NUM_BUFFER_FORMATS) != 0);
 
     idx = configID - 1;
-    indices->colorIndex = idx % EGL_NUM_COLOR_FORMATS;
-    idx /= EGL_NUM_COLOR_FORMATS;
-    indices->depthIndex = idx % EGL_NUM_DEPTH_FORMATS;
-    idx /= EGL_NUM_DEPTH_FORMATS;
-    indices->stencilIndex = idx % EGL_NUM_STENCIL_FORMATS;
-    indices->surfaceTypeIndex = idx / EGL_NUM_STENCIL_FORMATS;
+    indices->colorIndex = idx / CONFIGS_PER_COLOR;
+    idx %= CONFIGS_PER_COLOR;
+    indices->depthIndex = idx / CONFIGS_PER_DEPTH;
+    idx %= CONFIGS_PER_DEPTH;
+    indices->stencilIndex = idx / EGL_NUM_SURFACE_TYPES;
+    indices->surfaceTypeIndex = idx % EGL_NUM_SURFACE_TYPES;
 
     EGL_ASSERT_AT("eglUtil.inl", 248, "hgInRange32(indices->colorIndex, 0, EGL_NUM_COLOR_FORMATS - 1)",
                   hgInRange32(indices->colorIndex, 0, EGL_NUM_COLOR_FORMATS - 1) != 0);
@@ -249,56 +263,55 @@ void eglFillConfig(eglConfig *config, int configID)
     config->stencilBits = 8 * g_stencilFormats[indices.stencilIndex];
     config->surfaceType = g_surfaceTypes[indices.surfaceTypeIndex];
 
-    if (config->surfaceType == EGL_PBUFFER_BIT)
-    {
-        config->bindToTextureRgb = cf->bindToRgb;
-        config->bindToTextureRgba = cf->bindToRgba;
-    }
-
-    if ((config->surfaceType & (EGL_WINDOW_BIT | EGL_PIXMAP_BIT)) != 0)
-        config->nativeRenderable = EGL_TRUE;
-
-    config->minSwapInterval = 0;
-    config->maxSwapInterval = 32767;
+    config->bindToTextureRgb = cf->bindToRgb;
+    config->bindToTextureRgba = cf->bindToRgba;
 
     egliFixConfig(config);
 }
 
 int eglCompareConfigs(const eglConfig *config1, const eglConfig *config2, const eglConfig *filter)
 {
-    int sum1 = 0;
-    int sum2 = 0;
+    unsigned int sum1 = 0, sum2 = 0;
+    int caveat1 = config1->configCaveat, caveat2 = config2->configCaveat;
+    if ((caveat1 == EGL_NONE && (caveat2 == EGL_SLOW_CONFIG || caveat2 == EGL_NON_CONFORMANT_CONFIG)) ||
+        (caveat1 == EGL_SLOW_CONFIG && caveat2 == EGL_NON_CONFORMANT_CONFIG))
+        return -1;
+    if ((caveat2 == EGL_NONE && (caveat1 == EGL_SLOW_CONFIG || caveat1 == EGL_NON_CONFORMANT_CONFIG)) ||
+        (caveat2 == EGL_SLOW_CONFIG && caveat1 == EGL_NON_CONFORMANT_CONFIG))
+        return 1;
 
-    if (config1->configCaveat != config2->configCaveat)
-        return config1->configCaveat - config2->configCaveat;
+#define ADD_CHANNEL(field) \
+    if (filter->field != 0 && filter->field != EGL_DONT_CARE) \
+    { sum1 += (unsigned int)config1->field; sum2 += (unsigned int)config2->field; }
+    if (filter != NULL)
+    {
+        ADD_CHANNEL(redBits);
+        ADD_CHANNEL(greenBits);
+        ADD_CHANNEL(blueBits);
+        ADD_CHANNEL(alphaBits);
+    }
+#undef ADD_CHANNEL
+    if ((int)sum1 != (int)sum2)
+        return (int)sum1 > (int)sum2 ? -1 : 1;
 
-    if (filter->redBits > 0)   { sum1 += config1->redBits;   sum2 += config2->redBits; }
-    if (filter->greenBits > 0) { sum1 += config1->greenBits; sum2 += config2->greenBits; }
-    if (filter->blueBits > 0)  { sum1 += config1->blueBits;  sum2 += config2->blueBits; }
-    if (filter->alphaBits > 0) { sum1 += config1->alphaBits; sum2 += config2->alphaBits; }
-
-    if (sum1 != sum2)
-        return sum2 - sum1;
-    if (config1->colorBits != config2->colorBits)
-        return config1->colorBits - config2->colorBits;
-    if (config1->numSampleBuffers != config2->numSampleBuffers)
-        return config1->numSampleBuffers - config2->numSampleBuffers;
-    if (config1->numSamples != config2->numSamples)
-        return config1->numSamples - config2->numSamples;
-    if (config1->depthBits != config2->depthBits)
-        return config1->depthBits - config2->depthBits;
-    if (config1->stencilBits != config2->stencilBits)
-        return config1->stencilBits - config2->stencilBits;
-    if (config1->nativeVisualType != config2->nativeVisualType)
-        return config1->nativeVisualType - config2->nativeVisualType;
-
-    return config1->configID - config2->configID;
+#define COMPARE_FIELD(field) \
+    if (config1->field != config2->field) return config1->field < config2->field ? -1 : 1
+    COMPARE_FIELD(colorBits);
+    COMPARE_FIELD(numSampleBuffers);
+    COMPARE_FIELD(numSamples);
+    COMPARE_FIELD(depthBits);
+    COMPARE_FIELD(stencilBits);
+    COMPARE_FIELD(configID);
+#undef COMPARE_FIELD
+    return 0;
 }
 
 int eglFilterConfig(const eglConfig *config, const eglConfig *filter)
 {
-    if (filter->configID != EGL_DONT_CARE)
-        return filter->configID == config->configID;
+    if (!eglIsValidConfigID(config->configID))
+        return 0;
+    if (filter->configID == config->configID)
+        return 1;
 
     if (smaller(config->colorBits, filter->colorBits) ||
         smaller(config->redBits, filter->redBits) ||
@@ -306,10 +319,12 @@ int eglFilterConfig(const eglConfig *config, const eglConfig *filter)
         smaller(config->blueBits, filter->blueBits) ||
         smaller(config->alphaBits, filter->alphaBits) ||
         unequal(config->configCaveat, filter->configCaveat) ||
+        unequal(config->configID, filter->configID) ||
         smaller(config->depthBits, filter->depthBits) ||
-        unequal(config->level, filter->level) ||
+        config->level != filter->level ||
         unequal(config->nativeRenderable, filter->nativeRenderable) ||
         unequal(config->nativeVisualType, filter->nativeVisualType) ||
+        unequal(config->nativeVisualID, filter->nativeVisualID) ||
         smaller(config->numSampleBuffers, filter->numSampleBuffers) ||
         smaller(config->numSamples, filter->numSamples) ||
         smaller(config->stencilBits, filter->stencilBits) ||
@@ -323,14 +338,7 @@ int eglFilterConfig(const eglConfig *config, const eglConfig *filter)
         return 0;
     }
 
-    if (filter->transparentType == EGL_TRANSPARENT_RGB &&
-        (unequal(config->transparentRedValue, filter->transparentRedValue) ||
-         unequal(config->transparentGreenValue, filter->transparentGreenValue) ||
-         unequal(config->transparentBlueValue, filter->transparentBlueValue)))
-    {
-        return 0;
-    }
-
+    /* The original ignores transparent RGB component values. */
     return 1;
 }
 
@@ -341,20 +349,29 @@ int eglUpdateSurfaceBuffers(eglSurface_s *surface)
     int height = 0;
     int depthBytes;
     int stencilBytes;
+    int valid = 1;
+    unsigned int depthSize;
+    unsigned int stencilSize;
+    void *depthBuffer;
+    void *stencilBuffer;
 
     EGL_ASSERT_AT("eglUtil.inl", 408, "surface", surface != NULL);
 
     switch (surface->type)
     {
     case EGL_SURFACE_WINDOW:
-        egliGetNativeWindowSize((eglWindowSurface *)surface, &width, &height);
+        valid = egliIsValidNativeWindow(((eglWindowSurface *)surface)->nativeWindow);
+        if (valid)
+            egliGetNativeWindowSize((eglWindowSurface *)surface, &width, &height);
         break;
     case EGL_SURFACE_PBUFFER:
         width = surface->width;
         height = surface->height;
         break;
     case EGL_SURFACE_PIXMAP:
-        egliGetNativePixmapSize(((eglPixmapSurface *)surface)->nativePixmap, &width, &height);
+        valid = egliIsValidNativePixmap(((eglPixmapSurface *)surface)->nativePixmap);
+        if (valid)
+            egliGetNativePixmapSize(((eglPixmapSurface *)surface)->nativePixmap, &width, &height);
         break;
     default:
         EGL_ASSERT_AT("eglUtil.inl", 425, "0", 0);
@@ -379,26 +396,32 @@ int eglUpdateSurfaceBuffers(eglSurface_s *surface)
             return 0;
     }
 
+    if (!valid)
+        return 0;
+
     eglGetConfigIndices(&indices, surface->configID);
     depthBytes = g_depthFormats[indices.depthIndex];
     stencilBytes = g_stencilFormats[indices.stencilIndex];
 
-    if (width == 0 || height == 0)
-        return 1;
-
-    if (surface->depthBuffer == NULL && depthBytes != 0)
+    depthSize = (unsigned int)height * (unsigned int)width * (unsigned int)depthBytes;
+    stencilSize = (unsigned int)height * (unsigned int)width * (unsigned int)stencilBytes;
+    depthBuffer = surface->depthBuffer;
+    stencilBuffer = surface->stencilBuffer;
+    if (depthBuffer == NULL && depthSize != 0)
+        depthBuffer = eglAlloc(depthSize);
+    if (stencilBuffer == NULL && stencilSize != 0)
+        stencilBuffer = eglAlloc(stencilSize);
+    if ((depthBuffer == NULL && depthSize != 0) ||
+        (stencilBuffer == NULL && stencilSize != 0))
     {
-        surface->depthBuffer = eglAlloc((unsigned int)(height * width * depthBytes));
-        if (surface->depthBuffer == NULL)
-            return 0;
+        eglFree(depthBuffer);
+        eglFree(stencilBuffer);
+        surface->depthBuffer = NULL;
+        surface->stencilBuffer = NULL;
+        return 0;
     }
-    if (surface->stencilBuffer == NULL && stencilBytes != 0)
-    {
-        surface->stencilBuffer = eglAlloc((unsigned int)(height * width * stencilBytes));
-        if (surface->stencilBuffer == NULL)
-            return 0;
-    }
-
+    surface->depthBuffer = depthBuffer;
+    surface->stencilBuffer = stencilBuffer;
     return 1;
 }
 
@@ -461,10 +484,31 @@ int eglUpdateSurfaces(oglContext_s *esContext, eglSurface_s *drawSurface, eglSur
 
 void eglFreeContext(eglContext_s *context)
 {
+    eglSurface_s *surface;
+
     EGL_ASSERT_AT("eglUtil.inl", 545, "context", context != NULL);
     EGL_ASSERT_AT("eglUtil.inl", 546,
                   "context->refCount.referenceCount == 0 && context->refCount.destroyed",
                   context->refCount.referenceCount == 0 && context->refCount.destroyed != 0);
+
+    /* Keep pbuffer references from outliving their context, including deferred
+     * destruction. Clearing another context's binding would lose the reference
+     * needed to detach its texture before the surface storage is freed. */
+    for (surface = context->display->surfaceList; surface != NULL; surface = surface->next)
+    {
+        if (surface->type == EGL_SURFACE_PBUFFER)
+        {
+            eglPbufferSurface *pbuffer = (eglPbufferSurface *)surface;
+            if (pbuffer->boundESContext == context->esContext)
+            {
+                if (!oglIsSurfaceTextureReleased(pbuffer->boundESContext, pbuffer->textureName))
+                    oglReleaseSurfaceTexture(pbuffer->boundESContext, pbuffer->textureName,
+                                             pbuffer->mipmapLevel);
+                pbuffer->boundESContext = NULL;
+                pbuffer->textureName = 0;
+            }
+        }
+    }
 
     oglDestroyContext(context->esContext);
     context->esContext = (oglContext_s *)EGL_POISON_PTR;

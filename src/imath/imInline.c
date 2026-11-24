@@ -90,17 +90,20 @@ int XScalar_pow(int base, int power)
 
 int imLsl32s(int v, int sh)
 {
+    int shifted;
     if (hgInRange32(sh, 0, 31) == 0)
         imAssert("hgInRange32(sh, 0, 31)", "imApi.inl", 45);
-    if (v == (v << sh >> sh))
-        return v << sh;
+    shifted = (int)((unsigned int)v << sh);
+    if (v == (shifted >> sh))
+        return shifted;
     return hgSignMask32(v) ^ 0x7FFFFFFF;
 }
 
 int imLsl32us(unsigned int v, int sh)
 {
-    if (v == (unsigned int)((int)v << sh >> sh) && ((v << sh) & 0x80000000u) == 0)
-        return (int)(v << sh);
+    unsigned int shifted = v << sh;
+    if (v == (shifted >> sh) && (shifted & 0x80000000u) == 0)
+        return (int)shifted;
     return 0x7FFFFFFF;
 }
 
@@ -182,29 +185,33 @@ int imMulLsl64h(int a, int b, unsigned int shift)
 
 int imAdd32OF(int a, int b)
 {
+    int r = (int)((unsigned int)a + (unsigned int)b);
     HGint64 r64 = hgAdd64(hgSet64s(a), hgSet64s(b));
-    if (hgEq64(r64, hgSet64s(b + a)) == 0)
+    if (hgEq64(r64, hgSet64s(r)) == 0)
         imAssert("hgEq64(r64, hgSet64s(r))", "imApi.inl", 0x525u);
-    return b + a;
+    return r;
 }
 
 int imSub32OF(int a, int b)
 {
+    int r = (int)((unsigned int)a - (unsigned int)b);
     HGint64 r64 = hgSub64(hgSet64s(a), hgSet64s(b));
-    if (hgEq64(r64, hgSet64s(a - b)) == 0)
+    if (hgEq64(r64, hgSet64s(r)) == 0)
         imAssert("hgEq64(r64, hgSet64s(r))", "imApi.inl", 0x519u);
-    return a - b;
+    return r;
 }
 
 int imLsl32OF(int a, unsigned int sh)
 {
     HGint64 r64;
+    int r;
     if (sh > 0x1Fu)
         imAssert("sh <= 31", "imApi.inl", 0x9E2u);
     r64 = hgLsl64(hgSet64s(a), sh);
-    if (hgEq64(r64, hgSet64s(a << sh)) == 0)
+    r = (int)((unsigned int)a << sh);
+    if (hgEq64(r64, hgSet64s(r)) == 0)
         imAssert("hgEq64(r64, hgSet64s(r))", "imApi.inl", 0x9E6u);
-    return a << sh;
+    return r;
 }
 
 int imLsl64h_0_31OF(HGint64 a, unsigned int sh)
@@ -223,7 +230,7 @@ int XScalar_exp2(int x)
 {
     unsigned int ty;
     int e = (int)((unsigned int)((HGint64)(HGint32)x >> 21));  /* integer part */
-    unsigned int frac = (unsigned int)(x << 11);
+    unsigned int frac = (unsigned int)x << 11;
 
     ty = 0x80000000u;
     /* constants: round(2^32 * log2(1 + 2^-i)); accumulate 2^frac in 0.32 */

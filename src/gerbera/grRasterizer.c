@@ -57,7 +57,8 @@ void grSetupGradient(_grGradientInfo *info, int gradient, int g01, int g02,
                           info->shift + 14);
         yAdd32 = hgGet64l(yAdd64a);
         yAdd64b = hgMul64x32(yAdd64a, info->v0sy);
-        reference -= hgLsl64h_0_31(hgAdd64(xAdd64b, yAdd64b), 20);
+        reference = (int)((unsigned int)reference
+            - (unsigned int)hgLsl64h_0_31(hgAdd64(xAdd64b, yAdd64b), 20));
     }
     info->pPP->reference[gradient] = reference;
     info->pPP->xAdder[gradient] = xAdd32;
@@ -197,9 +198,9 @@ void grSetupTriangleGradients(Gerbera_s *state, _grClipTriangle *tri,
                     shift = hgClz32(hgAbs32(d2) | (hgAbs32(d0) | hgAbs32(d1))) - 1;
                     {
                         int clamped = hgClamp32_0_x(shift, 11);
-                        d0 <<= clamped;
-                        d1 <<= clamped;
-                        d2 <<= clamped;
+                        d0 = (int)((unsigned int)d0 << clamped);
+                        d1 = (int)((unsigned int)d1 << clamped);
+                        d2 = (int)((unsigned int)d2 << clamped);
                         d0 >>= 1;
                         d1 >>= 1;
                         d2 >>= 1;
@@ -557,15 +558,19 @@ int grScanConvertTriangle(Gerbera_s *state, _grRasterPoint *p0,
         int advance = scissor->y0 - v0yTop;
 
         topHeight = hgMaxZero32(topHeight - advance);
-        edges[0].xStart[0] += edges[0].xAdder[0] * advance;
-        edges[0].xStart[1] += edges[0].xAdder[1] * advance;
+        edges[0].xStart[0] = (int)((unsigned int)edges[0].xStart[0]
+            + (unsigned int)edges[0].xAdder[0] * (unsigned int)advance);
+        edges[0].xStart[1] = (int)((unsigned int)edges[0].xStart[1]
+            + (unsigned int)edges[0].xAdder[1] * (unsigned int)advance);
         if (v1yTop < scissor->y0)
         {
             int advanceMid = scissor->y0 - v1yTop;
 
             btmHeight = hgMaxZero32(btmHeight - advanceMid);
-            edges[1].xStart[0] += edges[1].xAdder[0] * advanceMid;
-            edges[1].xStart[1] += edges[1].xAdder[1] * advanceMid;
+            edges[1].xStart[0] = (int)((unsigned int)edges[1].xStart[0]
+                + (unsigned int)edges[1].xAdder[0] * (unsigned int)advanceMid);
+            edges[1].xStart[1] = (int)((unsigned int)edges[1].xStart[1]
+                + (unsigned int)edges[1].xAdder[1] * (unsigned int)advanceMid);
         }
     }
     total = btmHeight + topHeight;
@@ -787,23 +792,19 @@ void grInterpolateVertexGradients(Gerbera_s *state, _grVertex *vertex,
 
 static const signed char g_xSign[4] = { -1, -1, 1, 1 };
 static const signed char g_ySign[4] = { -1, 1, 1, -1 };
+static const signed char g_lineSign[4] = { 1, -1, -1, 1 };
 static const int g_xTexCoord[4] = { 0, 0, 2097151, 2097151 };
 static const int g_yTexCoord[4] = { 0, 2097151, 2097151, 0 };
 
-/* corner index bytes of 1128415552 (0x43434340): vertex-cache slots 64..67 */
+/* corner index bytes of 1128415552 (0x43424140): vertex-cache slots 64..67 */
 #define GR_QUAD_CORNER_BYTES 1128415552u
 
 /* --- grDrawClippedLine (grRasterizer.inl 931; DLL 26391-26556) ----------------
  * Builds the thick-line quad in the vertex cache (slots 64..67): each
  * endpoint contributes two corners offset by the rounded half-width, with a
  * slope term slanting the near/far ends and a +-2048 (half-pixel) snap along
- * the major axis. Both offsets multiply the SAME sign table (the decompile's
- * sign[] = { -1, +1, +1, -1 } = g_ySign; xSign would degenerate the
- * non-steep end edges). RECONSTRUCTION NOTE: the decompile loses two stores
- * (dstPos[4].shift / dstPos[6].rcp in the non-steep branch) to stack reuse;
- * both recover as the half-width (dstPos[10].rcp >> 5, matching the visible
- * steep-branch store), which is the only value that keeps every corner
- * 256-aligned (emptyBits 8) and the quad a parallelogram (assert 1073). */
+ * the major axis. Width displaces only the minor axis: x86 00425C69 and
+ * ARM 00016F4C initialize the major-axis displacement to zero. */
 
 void grDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri,
                        unsigned int origIndices)
@@ -844,14 +845,14 @@ void grDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri,
             offX = hw;                              /* perpendicular in X */
             snapX = slope;                          /* slant term on X */
             snapY = 2048;                           /* half-pixel snap on Y */
-            offY = hw;                              /* along Y (recovered) */
+            offY = 0;
         }
         else
         {
             offY = -hw;                             /* perpendicular in Y */
             snapY = slope;                          /* slant term on Y */
             snapX = 2048;                           /* half-pixel snap on X */
-            offX = hw;                              /* along X (recovered) */
+            offX = 0;
         }
         /* the endpoints carry their barycentric weights for the corner
          * copies: orig vertex 0 -> (1,0), orig vertex 1 -> (0,1) */
@@ -859,12 +860,10 @@ void grDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri,
         vertexBuffer[grUnpackIndex(origIndices, 0)].normal[1] = 0;
         vertexBuffer[grUnpackIndex(origIndices, 1)].normal[0] = 0;
         vertexBuffer[grUnpackIndex(origIndices, 1)].normal[1] = IUNITSCALAR_ONE;
-        /* direction swap: only the slant/snap terms negate (the decompile
-         * swaps dstPos[13]/dstPos[11], whose only live effect is the sign
-         * of the slope and half-pixel terms), keeping the coverage biased
-         * toward the rec0 side on the major axis */
-        if (grVector3iGet((_grVector3i *)&rec1->screenPosition[0], steep) >
-            grVector3iGet((_grVector3i *)&rec0->screenPosition[0], steep))
+        /* x86 00425D27 / ARM 00016FB8 negate the half-pixel offset when
+         * the first endpoint is farther along the major axis. */
+        if (grVector3iGet((_grVector3i *)&rec0->screenPosition[0], steep) >
+            grVector3iGet((_grVector3i *)&rec1->screenPosition[0], steep))
         {
             snapX = -snapX;
             snapY = -snapY;
@@ -881,9 +880,9 @@ void grDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri,
             IVector4_copy((_IVector4 *)&corner->clipPosition,
                           (_IVector4 *)&src->clipPosition);
             corner->screenPosition[0] = snapX + src->screenPosition[0] +
-                                        offX * g_ySign[k];
+                                        offX * g_lineSign[k];
             corner->screenPosition[1] = snapY + src->screenPosition[1] +
-                                        offY * g_ySign[k];
+                                        offY * g_lineSign[k];
             corner->screenPosition[2] = src->screenPosition[2];
             grInterpolateVertexGradients(state, corner, origIndices, tri->side);
         }
@@ -898,14 +897,14 @@ void grDrawClippedLine(Gerbera_s *state, _grClipTriangle *tri,
             if (quad.area == 0 &&
                 grAssert("newTri.area != 0", "grRasterizer.inl", 1067) != 0)
                 grDie(0);
-            grDrawClippedTriangle(state, &quad, origIndices, 8);
+            grrDrawClippedTriangle(state, &quad, origIndices);
             quad.indices = grSetIndices(66, 67, 64);
             if (quad.area != grRoundTriangleArea(
                     grComputeTriangleArea(vertexBuffer, quad.indices)) &&
                 grAssert("newTri.area == grRoundTriangleArea(grComputeTriangleArea(vertexCache, newTri.indices))",
                          "grRasterizer.inl", 1073) != 0)
                 grDie(0);
-            grDrawClippedTriangle(state, &quad, origIndices, 8);
+            grrDrawClippedTriangle(state, &quad, origIndices);
             grDisableCapability(state, GR_CAPABILITY_UNUSED);
         }
     }
@@ -1116,7 +1115,9 @@ void grSetupTextureUnit(Gerbera_s *state, int texIndex, int (*g0)[2], int v0sx, 
                 else
                     bias <<= -relShift;
 
-                ref = g0[i][0] + grComputeGradientReference(v0sx, v0sy, xAdd, yAdd) - bias;
+                ref = (int)((unsigned int)g0[i][0] +
+                    (unsigned int)grComputeGradientReference(v0sx, v0sy, xAdd, yAdd) -
+                    (unsigned int)bias);
                 switch (texture->wrapMode[i])
                 {
                 case GR_WRAPMODE_REPEAT:
@@ -1135,9 +1136,9 @@ void grSetupTextureUnit(Gerbera_s *state, int texIndex, int (*g0)[2], int v0sx, 
                     imAssert("0", "grRasterizer.inl", 183);
                     break;
                 }
-                pipe->xAdder[gradIdx] = xAdd << lsh;
-                pipe->yAdder[gradIdx] = yAdd << lsh;
-                pipe->reference[gradIdx] = ref << lsh;
+                pipe->xAdder[gradIdx] = (int)((unsigned int)xAdd << lsh);
+                pipe->yAdder[gradIdx] = (int)((unsigned int)yAdd << lsh);
+                pipe->reference[gradIdx] = (int)((unsigned int)ref << lsh);
                 tex->rShift[i] = baseShift - mipmap->log2Dim[i];
                 if ((unsigned int)tex->rShift[i] > 31u &&
                     grAssert("tex->rShift[i] >= 0 && tex->rShift[i] <= 31",

@@ -36,12 +36,14 @@ eglSurface_s *eglMapSurface(eglDisplay_s *display, EGLSurface id)
 {
     eglSurface_s *s;
 
-    if (display == NULL || id == EGL_NO_SURFACE)
+    if (display == NULL)
         return NULL;
 
     for (s = display->surfaceList; s != NULL; s = s->next)
     {
-        if (s->id == id && s->refCount.destroyed == 0)
+        /* The original keeps referenced, destroyed objects addressable until
+         * release unlinks them, including through repeated destroy calls. */
+        if (s->id == id)
             return s;
     }
     return NULL;
@@ -51,12 +53,12 @@ eglContext_s *eglMapContext(eglDisplay_s *display, EGLContext id)
 {
     eglContext_s *c;
 
-    if (display == NULL || id == EGL_NO_CONTEXT)
+    if (display == NULL)
         return NULL;
 
     for (c = display->contextList; c != NULL; c = c->next)
     {
-        if (c->id == id && c->refCount.destroyed == 0)
+        if (c->id == id)
             return c;
     }
     return NULL;
@@ -93,6 +95,8 @@ void eglDisplayAddContext(eglDisplay_s *display, eglContext_s *context)
     EGL_ASSERT_AT("eglBase.inl", 206, "!eglDisplayOwnsContext(display, context)",
                   eglDisplayOwnsContext(display, context) == 0);
 
+    context->display = display;
+    context->id = ++display->contextCount;
     context->prev = NULL;
     context->next = display->contextList;
     if (display->contextList != NULL)
@@ -146,7 +150,11 @@ int eglGetConfigAttributeOffset(int attribute)
 
 int eglIsValidConfigID(int configID)
 {
-    return configID > 0 && configID <= egliGetTotalConfigs();
+    eglConfig config;
+    if (configID <= 0 || configID > EGL_NUM_BUFFER_FORMATS)
+        return 0;
+    eglFillConfig(&config, configID);
+    return config.surfaceType != 0;
 }
 
 int eglIsEmptyList(const EGLint *attribList)
@@ -313,7 +321,7 @@ EGLAPI const char *EGLAPIENTRY eglQueryString(EGLDisplay dpy, EGLint name)
 
 EGLAPI EGLBoolean EGLAPIENTRY eglGetConfigs(EGLDisplay dpy, EGLConfig *configs, EGLint config_size, EGLint *num_config)
 {
-    int totalConfigs;
+    int totalConfigs, i, count = 0;
 
     if (egliGetState() == NULL)
     {
@@ -334,18 +342,16 @@ EGLAPI EGLBoolean EGLAPIENTRY eglGetConfigs(EGLDisplay dpy, EGLConfig *configs, 
     }
 
     totalConfigs = egliGetTotalConfigs();
-    if (configs != NULL)
+    for (i = 1; i <= totalConfigs && (configs == NULL || count < config_size); ++i)
     {
-        int i;
-        if (config_size < totalConfigs)
-            totalConfigs = config_size;
-        for (i = 0; i < totalConfigs; ++i)
-            configs[i] = (EGLConfig)(i + 1);
+        if (eglIsValidConfigID(i))
+        {
+            if (configs != NULL)
+                configs[count] = (EGLConfig)i;
+            ++count;
+        }
     }
-
-    if (totalConfigs < 0)
-        totalConfigs = 0;
-    *num_config = totalConfigs;
+    *num_config = count;
     return EGL_TRUE;
 }
 
@@ -353,7 +359,6 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
                                               EGLConfig *configs, EGLint config_size, EGLint *num_config)
 {
     eglConfig filter;
-    EGLConfig matched[EGL_NUM_BUFFER_FORMATS];
     int totalConfigs;
     int count = 0;
     int i;
@@ -364,7 +369,7 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
         return EGL_FALSE;
     }
 
-    eglSetError(EGL_SUCCESS);
+    /* The original leaves the current EGL error unchanged on success. */
     if (eglMapDisplay(dpy) == NULL)
     {
         eglSetError(EGL_BAD_DISPLAY);
@@ -408,6 +413,7 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
             case EGL_TRANSPARENT_RED_VALUE:
             case EGL_MIN_SWAP_INTERVAL:
             case EGL_MAX_SWAP_INTERVAL:
+            case EGL_NATIVE_VISUAL_TYPE:
                 if (val != EGL_DONT_CARE && val < 0)
                 {
                     eglSetError(EGL_BAD_ATTRIBUTE);
@@ -425,7 +431,7 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
                 break;
 
             case EGL_LEVEL:
-                if (val == EGL_DONT_CARE)
+                if (val < 0)
                 {
                     eglSetError(EGL_BAD_ATTRIBUTE);
                     return EGL_FALSE;
@@ -469,29 +475,25 @@ EGLAPI EGLBoolean EGLAPIENTRY eglChooseConfig(EGLDisplay dpy, const EGLint *attr
     }
 
     totalConfigs = egliGetTotalConfigs();
-    for (i = 0; i < totalConfigs; ++i)
+    /* ARM 0x98CC (x86 0x403D15) stops on equality before sorting the selected prefix.
+     * A negative size therefore does not limit the original's output. */
+    for (i = 0; i < totalConfigs && (configs == NULL || count != config_size); ++i)
     {
         eglConfig cfg;
         int configID = i + 1;
 
         eglFillConfig(&cfg, configID);
         if (eglFilterConfig(&cfg, &filter) != 0)
-            matched[count++] = (EGLConfig)configID;
+        {
+            if (configs != NULL)
+                configs[count] = (EGLConfig)configID;
+            ++count;
+        }
     }
 
-    egliSortConfigs(matched, count, &filter);
-
-    if (configs != NULL)
-    {
-        if (config_size < count)
-            count = config_size;
-        for (i = 0; i < count; ++i)
-            configs[i] = matched[i];
-    }
-
-    if (count < 0)
-        count = 0;
     *num_config = count;
+    if (configs != NULL && count > 1)
+        egliSortConfigs(configs, count, &filter);
     return EGL_TRUE;
 }
 
@@ -525,11 +527,11 @@ EGLAPI EGLBoolean EGLAPIENTRY eglGetConfigAttrib(EGLDisplay dpy, EGLConfig confi
     eglFillConfig(&cfg, config);
     if (attribute == EGL_MAX_PBUFFER_WIDTH || attribute == EGL_MAX_PBUFFER_HEIGHT)
     {
-        *value = ((cfg.surfaceType & EGL_PBUFFER_BIT) != 0) ? EGL_MAX_PBUFFER_DIM : 0;
+        *value = EGL_MAX_PBUFFER_DIM;
     }
     else if (attribute == EGL_MAX_PBUFFER_PIXELS)
     {
-        *value = ((cfg.surfaceType & EGL_PBUFFER_BIT) != 0) ? EGL_MAX_PBUFFER_PIX : 0;
+        *value = EGL_MAX_PBUFFER_PIX;
     }
     else
     {
@@ -615,7 +617,6 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreateWindowSurface(EGLDisplay dpy, EGLConfig c
     eglInitRefCount(&winSurf->surface.refCount);
     winSurf->surface.display = display;
     winSurf->surface.configID = config;
-    winSurf->surface.id = ++display->surfaceCount;
     winSurf->surface.type = EGL_SURFACE_WINDOW;
     winSurf->nativeWindow = (eglNativeWindow_s *)win;
 
@@ -702,7 +703,6 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePixmapSurface(EGLDisplay dpy, EGLConfig c
     eglInitRefCount(&pixSurf->surface.refCount);
     pixSurf->surface.display = display;
     pixSurf->surface.configID = config;
-    pixSurf->surface.id = ++display->surfaceCount;
     pixSurf->surface.type = EGL_SURFACE_PIXMAP;
     pixSurf->nativePixmap = (eglNativePixmap_s *)pixmap;
 
@@ -768,6 +768,14 @@ EGLAPI EGLBoolean EGLAPIENTRY eglSurfaceAttrib(EGLDisplay dpy, EGLSurface surfac
     eglSetError(EGL_SUCCESS);
     display = eglMapDisplay(dpy);
     surf = eglMapSurface(display, surface);
+    /* Both originals reject the attribute before touching the mapped surface.
+     * A valid attribute with a missing surface dereferences NULL there; retain
+     * the checked failure below for that undefined case. */
+    if (attribute != EGL_MIPMAP_LEVEL)
+    {
+        eglSetError(EGL_BAD_ATTRIBUTE);
+        return EGL_FALSE;
+    }
     if (display == NULL)
     {
         eglSetError(EGL_BAD_DISPLAY);
@@ -776,12 +784,6 @@ EGLAPI EGLBoolean EGLAPIENTRY eglSurfaceAttrib(EGLDisplay dpy, EGLSurface surfac
     if (surf == NULL)
     {
         eglSetError(EGL_BAD_SURFACE);
-        return EGL_FALSE;
-    }
-
-    if (attribute != EGL_MIPMAP_LEVEL)
-    {
-        eglSetError(EGL_BAD_ATTRIBUTE);
         return EGL_FALSE;
     }
 
@@ -798,8 +800,6 @@ EGLAPI EGLBoolean EGLAPIENTRY eglQuerySurface(EGLDisplay dpy, EGLSurface surface
 {
     eglDisplay_s *display;
     eglSurface_s *surf;
-    int width = 0;
-    int height = 0;
 
     if (egliGetState() == NULL)
     {
@@ -826,33 +826,16 @@ EGLAPI EGLBoolean EGLAPIENTRY eglQuerySurface(EGLDisplay dpy, EGLSurface surface
         return EGL_FALSE;
     }
 
-    switch (surf->type)
-    {
-    case EGL_SURFACE_WINDOW:
-        egliGetNativeWindowSize((eglWindowSurface *)surf, &width, &height);
-        break;
-    case EGL_SURFACE_PBUFFER:
-        width = surf->width;
-        height = surf->height;
-        break;
-    case EGL_SURFACE_PIXMAP:
-        egliGetNativePixmapSize(((eglPixmapSurface *)surf)->nativePixmap, &width, &height);
-        break;
-    default:
-        EGL_ASSERT_AT("eglBase.inl", 861, "0", 0);
-        break;
-    }
-
     switch (attribute)
     {
     case EGL_CONFIG_ID:
         *value = surf->configID;
         break;
     case EGL_HEIGHT:
-        *value = height;
+        *value = surf->height;
         break;
     case EGL_WIDTH:
-        *value = width;
+        *value = surf->width;
         break;
     case EGL_LARGEST_PBUFFER:
         if (surf->type == EGL_SURFACE_PBUFFER)
@@ -864,7 +847,8 @@ EGLAPI EGLBoolean EGLAPIENTRY eglQuerySurface(EGLDisplay dpy, EGLSurface surface
         break;
     case EGL_TEXTURE_TARGET:
         if (surf->type == EGL_SURFACE_PBUFFER)
-            *value = ((eglPbufferSurface *)surf)->textureTarget;
+            *value = ((eglPbufferSurface *)surf)->textureFormat == EGL_NO_TEXTURE
+                   ? EGL_NO_TEXTURE : EGL_TEXTURE_2D;
         break;
     case EGL_MIPMAP_TEXTURE:
         if (surf->type == EGL_SURFACE_PBUFFER)
@@ -1023,7 +1007,6 @@ EGLAPI EGLBoolean EGLAPIENTRY eglReleaseTexImage(EGLDisplay dpy, EGLSurface surf
     eglDisplay_s *display;
     eglSurface_s *surf;
     eglPbufferSurface *pbuf;
-    eglConfig cfg;
 
     if (egliGetState() == NULL)
     {
@@ -1051,25 +1034,14 @@ EGLAPI EGLBoolean EGLAPIENTRY eglReleaseTexImage(EGLDisplay dpy, EGLSurface surf
     }
 
     pbuf = (eglPbufferSurface *)surf;
-    if (pbuf->textureFormat == EGL_NO_TEXTURE)
-    {
-        eglSetError(EGL_BAD_MATCH);
-        return EGL_FALSE;
-    }
-
-    eglFillConfig(&cfg, surf->configID);
-    if (cfg.bindToTextureRgb == 0 && cfg.bindToTextureRgba == 0)
+    if (pbuf->boundESContext == NULL)
     {
         eglSetError(EGL_BAD_SURFACE);
         return EGL_FALSE;
     }
 
-    if (pbuf->boundESContext != NULL && pbuf->textureName != 0)
-    {
-        if (oglIsSurfaceTextureReleased(pbuf->boundESContext, pbuf->textureName) == 0)
-            oglReleaseSurfaceTexture(pbuf->boundESContext, pbuf->textureName, pbuf->mipmapLevel);
-    }
-
+    if (oglIsSurfaceTextureReleased(pbuf->boundESContext, pbuf->textureName) == 0)
+        oglReleaseSurfaceTexture(pbuf->boundESContext, pbuf->textureName, pbuf->mipmapLevel);
     pbuf->boundESContext = NULL;
     pbuf->textureName = 0;
     return EGL_TRUE;
@@ -1246,14 +1218,14 @@ EGLAPI EGLBoolean EGLAPIENTRY eglQueryContext(EGLDisplay dpy, EGLContext ctx, EG
         eglSetError(EGL_BAD_CONTEXT);
         return EGL_FALSE;
     }
-    if (value == NULL)
-    {
-        eglSetError(EGL_BAD_PARAMETER);
-        return EGL_FALSE;
-    }
     if (attribute != EGL_CONFIG_ID)
     {
         eglSetError(EGL_BAD_ATTRIBUTE);
+        return EGL_FALSE;
+    }
+    if (value == NULL)
+    {
+        eglSetError(EGL_BAD_PARAMETER);
         return EGL_FALSE;
     }
 

@@ -36,9 +36,12 @@ static void copy_column(_IFVector4 *pD, _IFVector4 *pA)
 /* pD[c] = sum_i pA[i][c] * pB->m[i]  (matrix rows times vector) */
 static void rows_by_column(_IFVector4 *pD, _IMatrix4x4 *pA, _IFVector4 *pB)
 {
+    _IFVector4 source = *pB;
     unsigned int out = 0;
     int c, i;
 
+    /* Matrix multiplication permits the destination to alias its right operand. */
+    pB = &source;
     for (c = 0; c < 4; ++c)
     {
         unsigned int e[4];
@@ -116,7 +119,7 @@ static void rows_by_scalar(_IFVector4 *pD, _IFVector4 *pA, int x)
 
         if (m == 0)
             e = 0;
-        if (m + 0x40000000 <= 0)
+        if (m >= 0x40000000 || m <= -0x40000000)
         {
             m >>= 1;
             ++e;
@@ -181,7 +184,7 @@ static int dp3h(int ax, int ay, int az, int bx, int by, int bz)
     if (m != 0)
     {
         int clz = hgClz32(hgAbs32(m));
-        m <<= clz - 1;
+        m = (int)((unsigned int)m << (clz - 1));
         m = ((int)m) >> 1;
         exp = exp + 2 - (clz - 1 + 126);
         if (exp <= 0)
@@ -518,11 +521,11 @@ void IMatrix4x4_rotate(_IMatrix4x4 *pD, _IMatrix4x4 *pM, int angle, _IFVector3 *
     XNormal3_normalize(axis, axisv.m);
     cxs = hgAsr64_0_31(hgSet64x(cosUS), 11);        /* cos << 21: scale 2^51 */
 
-    /* columns of the result matrix start zeroed */
+    /* The homogeneous component stays zero; the other components follow. */
     for (i = 0; i < 3; ++i)
     {
         cols[i].e = 0;
-        cols[i].m[1] = 0;
+        cols[i].m[3] = 0;
     }
 
     /* off-diagonal pairs: (k,j,m) = (1,2,0), (2,0,1), (0,1,2) */
@@ -587,7 +590,7 @@ HGint32 IMatrix4x4_det2h(_IMatrix4x4 *pA, int ca, int ra, int cb, int rb)
     {
         int clz = hgClz32(hgAbs32(m));
         exp = (int)exp + 1 - (clz - 1 + 126);   /* shared max exp drives it */
-        m = ((int)(m << (clz - 1))) >> 1;
+        m = (int)((unsigned int)m << (clz - 1)) >> 1;
         if (exp <= 0)
         {
             exp = 0;
@@ -598,6 +601,10 @@ HGint32 IMatrix4x4_det2h(_IMatrix4x4 *pA, int ca, int ra, int cb, int rb)
             exp = 254;
             m = ((m & 0x80000000) == 0) ? 0x3FFFFFFF : (int)0xC0000001;
         }
+    }
+    else
+    {
+        exp = 0;
     }
     return IScalar_set(exp, m);
 }
@@ -643,22 +650,22 @@ void IMatrix4x4_inverse(_IMatrix4x4 *pD, _IMatrix4x4 *pS, int bScale)
     d[1]  = IMatrix4x4_det2h(pS, 1, 1, 3, 2);
     d[0]  = IMatrix4x4_det2h(pS, 2, 1, 3, 2);
 
-    setScalar((_IFVector4 *)&pD->v[0], 0, dp3h(d[20], -d[19], d[18], d[12], d[13], d[14]));
-    setScalar((_IFVector4 *)&pD->v[0], 1, IScalar_negate(dp3h(d[21], -d[19], d[18], d[12], d[15], d[16])));
-    setScalar((_IFVector4 *)&pD->v[0], 2, dp3h(d[21], -d[20], d[18], d[13], d[15], d[17]));
-    setScalar((_IFVector4 *)&pD->v[0], 3, IScalar_negate(dp3h(d[21], -d[20], d[19], d[14], d[16], d[17])));
-    setScalar((_IFVector4 *)&pD->v[1], 0, IScalar_negate(dp3h(d[24], -d[23], d[22], d[12], d[13], d[14])));
-    setScalar((_IFVector4 *)&pD->v[1], 1, dp3h(d[25], -d[23], d[22], d[12], d[15], d[16]));
-    setScalar((_IFVector4 *)&pD->v[1], 2, IScalar_negate(dp3h(d[25], -d[24], d[22], d[13], d[15], d[17])));
-    setScalar((_IFVector4 *)&pD->v[1], 3, dp3h(d[25], -d[24], d[23], d[14], d[16], d[17]));
-    setScalar((_IFVector4 *)&pD->v[2], 0, dp3h(d[24], -d[23], d[22], d[6], d[7], d[8]));
-    setScalar((_IFVector4 *)&pD->v[2], 1, IScalar_negate(dp3h(d[25], -d[23], d[22], d[6], d[11], d[9])));
-    setScalar((_IFVector4 *)&pD->v[2], 2, dp3h(d[25], -d[24], d[22], d[7], d[11], d[10]));
-    setScalar((_IFVector4 *)&pD->v[2], 3, IScalar_negate(dp3h(d[25], -d[24], d[23], d[8], d[9], d[10])));
-    setScalar((_IFVector4 *)&pD->v[3], 0, IScalar_negate(dp3h(d[24], -d[23], d[22], d[0], d[1], d[2])));
-    setScalar((_IFVector4 *)&pD->v[3], 1, dp3h(d[25], -d[23], d[22], d[0], d[3], d[4]));
-    setScalar((_IFVector4 *)&pD->v[3], 2, IScalar_negate(dp3h(d[25], -d[24], d[22], d[1], d[3], d[5])));
-    setScalar((_IFVector4 *)&pD->v[3], 3, dp3h(d[25], -d[24], d[23], d[2], d[4], d[5]));
+    setScalar((_IFVector4 *)&pD->v[0], 0, dp3h(d[20], IScalar_negate(d[19]), d[18], d[12], d[13], d[14]));
+    setScalar((_IFVector4 *)&pD->v[0], 1, IScalar_negate(dp3h(d[21], IScalar_negate(d[19]), d[18], d[12], d[15], d[16])));
+    setScalar((_IFVector4 *)&pD->v[0], 2, dp3h(d[21], IScalar_negate(d[20]), d[18], d[13], d[15], d[17]));
+    setScalar((_IFVector4 *)&pD->v[0], 3, IScalar_negate(dp3h(d[21], IScalar_negate(d[20]), d[19], d[14], d[16], d[17])));
+    setScalar((_IFVector4 *)&pD->v[1], 0, IScalar_negate(dp3h(d[24], IScalar_negate(d[23]), d[22], d[12], d[13], d[14])));
+    setScalar((_IFVector4 *)&pD->v[1], 1, dp3h(d[25], IScalar_negate(d[23]), d[22], d[12], d[15], d[16]));
+    setScalar((_IFVector4 *)&pD->v[1], 2, IScalar_negate(dp3h(d[25], IScalar_negate(d[24]), d[22], d[13], d[15], d[17])));
+    setScalar((_IFVector4 *)&pD->v[1], 3, dp3h(d[25], IScalar_negate(d[24]), d[23], d[14], d[16], d[17]));
+    setScalar((_IFVector4 *)&pD->v[2], 0, dp3h(d[24], IScalar_negate(d[23]), d[22], d[6], d[7], d[8]));
+    setScalar((_IFVector4 *)&pD->v[2], 1, IScalar_negate(dp3h(d[25], IScalar_negate(d[23]), d[22], d[6], d[11], d[9])));
+    setScalar((_IFVector4 *)&pD->v[2], 2, dp3h(d[25], IScalar_negate(d[24]), d[22], d[7], d[11], d[10]));
+    setScalar((_IFVector4 *)&pD->v[2], 3, IScalar_negate(dp3h(d[25], IScalar_negate(d[24]), d[23], d[8], d[9], d[10])));
+    setScalar((_IFVector4 *)&pD->v[3], 0, IScalar_negate(dp3h(d[24], IScalar_negate(d[23]), d[22], d[0], d[1], d[2])));
+    setScalar((_IFVector4 *)&pD->v[3], 1, dp3h(d[25], IScalar_negate(d[23]), d[22], d[0], d[3], d[4]));
+    setScalar((_IFVector4 *)&pD->v[3], 2, IScalar_negate(dp3h(d[25], IScalar_negate(d[24]), d[22], d[1], d[3], d[5])));
+    setScalar((_IFVector4 *)&pD->v[3], 3, dp3h(d[25], IScalar_negate(d[24]), d[23], d[2], d[4], d[5]));
 
     /* first row becomes a vector for the determinant check */
     e = (pD->v[0].e & 0xFFu) | ((pD->v[1].e & 0xFFu) << 8) |
@@ -825,7 +832,7 @@ HGint32 IFVector4_dp4l(_IFVector4 *pA, _IFVector4 *pB)
     if (m != 0)
     {
         int clz = hgClz32(hgAbs32(m));
-        m <<= clz - 1;
+        m = (int)((unsigned int)m << (clz - 1));
         m = ((int)m) >> 1;
         exp = maxE + 1 - (clz - 1 + 126);
         if (exp <= 0)
@@ -886,9 +893,9 @@ int IFVector4_tov3(_IVector3 *pD, _IFVector4 *pA)
     m[1] = (int)p;
     p = hgLsl64h_0_31(hgMul64(pA->m[2], IScalar_getMantissa(q)), 3);
     m[2] = (int)p;
-    if (m[0] + 0x40000000 <= 0) { m[0] >>= 1; ++e[0]; }
-    if (m[1] + 0x40000000 <= 0) { m[1] >>= 1; ++e[1]; }
-    if (m[2] + 0x40000000 <= 0) { m[2] >>= 1; ++e[2]; }
+    if ((int)((unsigned int)m[0] + 0x40000000u) <= 0) { m[0] >>= 1; ++e[0]; }
+    if ((int)((unsigned int)m[1] + 0x40000000u) <= 0) { m[1] >>= 1; ++e[1]; }
+    if ((int)((unsigned int)m[2] + 0x40000000u) <= 0) { m[2] >>= 1; ++e[2]; }
     eMax = e[0];
     if (eMax < e[1]) eMax = e[1];
     if (eMax < e[2]) eMax = e[2];
@@ -1167,7 +1174,10 @@ add_w_cols:
             int e = 140 - sh;
             if (sh >= 0)
             {
-                x <<= sh; y <<= sh; z <<= sh; w <<= sh;
+                x = (int)((unsigned int)x << sh);
+                y = (int)((unsigned int)y << sh);
+                z = (int)((unsigned int)z << sh);
+                w = (int)((unsigned int)w << sh);
             }
             else
             {
@@ -1275,20 +1285,20 @@ int IVertexTransform_zmulxv4(_IVertexTransform *pT, int *pS)
     if ((pT->cl & 0xFF0000) == 0x200000)
         return IScalar_fixedToScalar(pS[2], 16);
     sh = pT->sh[2];
-    acc = imAsr64_1_31(hgMul64(pT->unnormalized[2][0], pS[0]), (unsigned int)sh >> 24);
-    acc = hgAdd64(acc, imAsr64_1_31(hgMul64(pT->unnormalized[2][1], pS[1]), (unsigned int)sh >> 8 & 0xFF));
-    acc = hgAdd64(acc, imAsr64_1_31(hgMul64(pT->unnormalized[2][2], pS[2]), (unsigned int)sh >> 16 & 0xFFFF));
+    acc = imAsr64_1_31(hgMul64(pT->unnormalized[2][0], pS[0]), (HGuint8)sh);
+    acc = hgAdd64(acc, imAsr64_1_31(hgMul64(pT->unnormalized[2][1], pS[1]), (HGuint8)(sh >> 8)));
+    acc = hgAdd64(acc, imAsr64_1_31(hgMul64(pT->unnormalized[2][2], pS[2]), (HGuint8)(sh >> 16)));
     if (pS[3] == 0x10000)
         acc = hgAdd64(acc, pT->w[2]);
     else
-        acc = hgAdd64(acc, imAsr64_1_31(hgMul64(pT->unnormalized[2][3], pS[3]), (unsigned int)sh >> 24 & 0xFF));
+        acc = hgAdd64(acc, imAsr64_1_31(hgMul64(pT->unnormalized[2][3], pS[3]), (HGuint8)(sh >> 24)));
     a = hgAbs64(acc);
     if (hgIsZero64(a) != 0)
         return IScalar_zero();
     {
         int clz = hgClz64(a) - 1;
         e = pT->exp - clz + 1;
-        m = (int)(hgLsl64(acc, clz) >> 1);
+        m = hgLsl64h(acc, clz) >> 1;
         if (m == -1073741824)
         {
             m = -536870912;

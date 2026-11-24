@@ -235,6 +235,41 @@ static void test_bufobj_manager(void)
     oglDestroyBufObjManager(mgr);
 }
 
+static void test_object_name_hash_wrap(void)
+{
+    static const unsigned int names[] = {
+        0x10000000u, 0x10000008u, 0x30000000u,
+        0x60000000u, 0x60000008u, 0xC0000000u, 0xFFFFFFFFu
+    };
+    oglTextureManager *textures = oglCreateTextureManager();
+    oglBufObjManager_s *buffers = oglCreateBufObjManager();
+    _grTexture *textureObjects[7];
+    oglBufObj_s *bufferObjects[7];
+    unsigned int i;
+
+    /* The original hash probes wrap at 32 bits, including for arbitrary
+     * application-supplied names whose probe sum exceeds signed int range. */
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+    {
+        CHECK(oglAllocateTexture(textures, names[i]) == 1);
+        CHECK(oglAllocateBufObj(buffers, names[i]) == 1);
+        textureObjects[i] = oglGetTexture(textures, names[i]);
+        bufferObjects[i] = oglGetBufObj(buffers, names[i]);
+        CHECK(textureObjects[i] != NULL && bufferObjects[i] != NULL);
+    }
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+    {
+        CHECK(oglGetTexture(textures, names[i]) == textureObjects[i]);
+        CHECK(oglGetBufObj(buffers, names[i]) == bufferObjects[i]);
+        oglDeleteTexture(textures, names[i]);
+        oglDeleteBufObj(buffers, names[i]);
+        CHECK(oglGetTexture(textures, names[i]) == NULL);
+        CHECK(oglGetBufObj(buffers, names[i]) == NULL);
+    }
+    oglDestroyTextureManager(textures);
+    oglDestroyBufObjManager(buffers);
+}
+
 static void test_getters(void)
 {
     static unsigned char arena[8192];
@@ -637,6 +672,10 @@ static void test_gl_strings_errors_and_state(void)
     glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
     glGetIntegerv(GL_PERSPECTIVE_CORRECTION_HINT, ival);
     CHECK(ival[0] == GL_NICEST);
+    /* Pin the original slot independently of the recovered enum. */
+    CHECK(ctx->gerbera->capabilities[17] == 1 && ctx->gerbera->capabilities[8] == 0);
+    glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST);
+    CHECK(ctx->gerbera->capabilities[17] == 0);
     glHint(GL_FOG_HINT, 0xDEADu);
     CHECK(glGetError() == GL_INVALID_ENUM);
 
@@ -665,6 +704,20 @@ static void test_gl_strings_errors_and_state(void)
     CHECK(NEAR_F(fval[0], 0.5f, 1e-5f));
     glGetBooleanv(GL_SAMPLE_COVERAGE_INVERT, bval);
     CHECK(bval[0] == GL_TRUE);
+
+    /* Original 0x446580 keeps eight core mask bits and the full GL query value. */
+    glStencilMask(0x100u);
+    glGetIntegerv(GL_STENCIL_WRITEMASK, ival);
+    CHECK(ival[0] == 0x100 && ctx->gerbera->stencilWriteMask == 0);
+    ctx->gerbera->pixelPipelineDirty = 0;
+    glStencilMask(0x100u);
+    CHECK(ctx->gerbera->pixelPipelineDirty == 1);
+    ctx->gerbera->pixelPipelineDirty = 0;
+    glStencilMask(0);
+    CHECK(ctx->gerbera->pixelPipelineDirty == 0);
+    glStencilMask(0xFFFFFFFFu);
+    glGetIntegerv(GL_STENCIL_WRITEMASK, ival);
+    CHECK(ival[0] == -1 && ctx->gerbera->stencilWriteMask == 0xFFu);
 
     /* ClipPlane round-trip (identity modelview -> eye plane == object plane) */
     {
@@ -785,6 +838,23 @@ static void test_gl_matrices_and_buffers(void)
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     (void)i;
+
+    /* Original capability slots: matrix indices 27, weights 28. */
+    glEnableClientState(GL_WEIGHT_ARRAY_OES);
+    CHECK(ctx->gerbera->capabilities[28] == 1 && ctx->gerbera->capabilities[27] == 0);
+    glEnableClientState(GL_MATRIX_INDEX_ARRAY_OES);
+    glDisableClientState(GL_WEIGHT_ARRAY_OES);
+    CHECK(ctx->gerbera->capabilities[27] == 1 && ctx->gerbera->capabilities[28] == 0);
+    glDisableClientState(GL_MATRIX_INDEX_ARRAY_OES);
+
+    glPointSizePointerOES(GL_FLOAT, 12, vboData);
+    glGetIntegerv(GL_POINT_SIZE_ARRAY_TYPE_OES, &bparam);
+    CHECK(bparam == GL_FLOAT);
+    glGetIntegerv(GL_POINT_SIZE_ARRAY_STRIDE_OES, &bparam);
+    CHECK(bparam == 12);
+    glGetPointerv(GL_POINT_SIZE_ARRAY_POINTER_OES, &ptr);
+    CHECK(ptr == vboData);
+    CHECK(glGetError() == GL_NO_ERROR);
 
     /* VBO / EBO lifecycle, BufferData, BufferSubData, GetBufferParameteriv, GetPointerv */
     CHECK(glIsBuffer(9999u) == GL_FALSE);
@@ -1302,9 +1372,9 @@ static void test_gl_textures_and_drawtex(void)
         /* Palette entry 1 = Magenta (255, 0, 255, 255), entry 2 = Cyan (0, 255, 255, 255) */
         palData[1 * 4 + 0] = 255; palData[1 * 4 + 2] = 255; palData[1 * 4 + 3] = 255;
         palData[2 * 4 + 1] = 255; palData[2 * 4 + 2] = 255; palData[2 * 4 + 3] = 255;
-        /* 4 texels packed in 2 bytes: texel0=1 (low), texel1=2 (high), texel2=2, texel3=1 */
-        palData[64] = (unsigned char)(1 | (2 << 4));
-        palData[65] = (unsigned char)(2 | (1 << 4));
+        /* Palette4 stores the first texel in the high nibble of each byte. */
+        palData[64] = (unsigned char)((1 << 4) | 2);
+        palData[65] = (unsigned char)((2 << 4) | 1);
 
         glBindTexture(GL_TEXTURE_2D, tex[1]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -1378,12 +1448,147 @@ static void test_gl_textures_and_drawtex(void)
     oglDestroyContext(ctx);
 }
 
+static void test_gl_buffer_storage_lifetime(void)
+{
+    typedef struct BufferVertex_s {
+        GLfloat x, y;
+        GLubyte color[4];
+    } BufferVertex;
+    struct {
+        GLfloat padding[4];
+        BufferVertex vertices[4];
+    } payload = {
+        { 0, 0, 0, 0 },
+        {
+            { -0.5f, -0.5f, { 255, 0, 0, 255 } },
+            {  0.5f, -0.5f, { 255, 0, 0, 255 } },
+            { -0.5f,  0.5f, { 255, 0, 0, 255 } },
+            {  0.5f,  0.5f, { 255, 0, 0, 255 } }
+        }
+    };
+    oglContext_s *contexts[2];
+    oglSurfaceDescriptor_s surf;
+    unsigned int colorBuf[8 * 8], depthBuf[8 * 8];
+    unsigned char stencilBuf[8 * 8], px[4];
+    GLuint buffer;
+    int i, pass;
+
+    contexts[0] = oglCreateContext(NULL, NULL);
+    contexts[1] = oglCreateContext(contexts[0], NULL);
+    init_rgba8_surface(&surf, 8, 8, colorBuf, depthBuf, stencilBuf);
+    egliSetCurrentContext(contexts[0]);
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(payload), &payload, GL_DYNAMIC_DRAW);
+
+    for (i = 0; i < 2; ++i)
+    {
+        oglSetBuffers(contexts[i], &surf, &surf);
+        egliSetCurrentContext(contexts[i]);
+        glViewport(0, 0, 8, 8);
+        glDisable(GL_DITHER);
+        glBindBuffer(GL_ARRAY_BUFFER, buffer);
+        glVertexPointer(2, GL_FLOAT, sizeof(BufferVertex), (const GLvoid *)(uintptr_t)16);
+        glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(BufferVertex), (const GLvoid *)(uintptr_t)24);
+        glClientActiveTexture(GL_TEXTURE1);
+        glTexCoordPointer(2, GL_FLOAT, sizeof(BufferVertex), (const GLvoid *)(uintptr_t)16);
+        glClientActiveTexture(GL_TEXTURE0);
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_COLOR_ARRAY);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+
+    /* A buffer can supply vertex attributes even when replaced through the
+     * element target or from another context in its sharing group. */
+    for (pass = 0; pass < 2; ++pass)
+    {
+        GLenum target = pass == 0 ? GL_ELEMENT_ARRAY_BUFFER : GL_ARRAY_BUFFER;
+        oglBufObj_s *object;
+        egliSetCurrentContext(contexts[pass]);
+        for (i = 0; i < 4; ++i)
+        {
+            payload.vertices[i].x = (i & 1) ? 1.0f : -1.0f;
+            payload.vertices[i].y = (i & 2) ? 1.0f : -1.0f;
+            payload.vertices[i].color[0] = 0;
+            payload.vertices[i].color[1] = pass == 0 ? 255 : 0;
+            payload.vertices[i].color[2] = pass == 0 ? 0 : 255;
+        }
+        glBindBuffer(target, buffer);
+        glBufferData(target, sizeof(payload), &payload, GL_DYNAMIC_DRAW);
+        CHECK(glGetError() == GL_NO_ERROR);
+        object = oglGetBufObj(contexts[pass]->bufObjManager, buffer);
+
+        for (i = 0; i < 2; ++i)
+        {
+            _grVertexArray *arrays = contexts[i]->gerbera->vertexArray;
+            int addressesValid = arrays[GR_VERTEXARRAY_POSITION].data == (char *)object->buffer + 16 &&
+                                 arrays[GR_VERTEXARRAY_COLOR].data == (char *)object->buffer + 24;
+            CHECK(addressesValid);
+            /* Avoid dereferencing freed storage when this regression fails. */
+            if (!addressesValid)
+                continue;
+            egliSetCurrentContext(contexts[i]);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            CHECK(px[0] == 0 && px[1] == (pass == 0 ? 255 : 0) &&
+                  px[2] == (pass == 0 ? 0 : 255) && px[3] == 255);
+            CHECK(glGetError() == GL_NO_ERROR);
+        }
+    }
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, 0, NULL, GL_DYNAMIC_DRAW);
+    for (i = 0; i < 2; ++i)
+    {
+        CHECK(contexts[i]->gerbera->vertexArray[GR_VERTEXARRAY_POSITION].data == NULL);
+        CHECK(contexts[i]->gerbera->vertexArray[GR_VERTEXARRAY_COLOR].data == NULL);
+    }
+
+    /* Deletion detaches arrays in both contexts, including a client texture
+     * unit that is not active. Reusing the name must not revive those arrays. */
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(payload), &payload, GL_DYNAMIC_DRAW);
+    glDeleteBuffers(1, &buffer);
+    for (i = 0; i < 2; ++i)
+    {
+        GLint binding = -1;
+        /* The original retains saved pointer/binding queries after deletion. */
+        GLvoid *pointer = (GLvoid *)(uintptr_t)1;
+        egliSetCurrentContext(contexts[i]);
+        glGetIntegerv(GL_VERTEX_ARRAY_BUFFER_BINDING, &binding);
+        CHECK(binding == (GLint)buffer);
+        glGetPointerv(GL_VERTEX_ARRAY_POINTER, &pointer);
+        CHECK(pointer == (GLvoid *)(uintptr_t)16);
+        CHECK(contexts[i]->gerbera->vertexArray[GR_VERTEXARRAY_POSITION].data == NULL);
+        CHECK(contexts[i]->gerbera->vertexArray[GR_VERTEXARRAY_COLOR].data == NULL);
+        glClientActiveTexture(GL_TEXTURE1);
+        glGetIntegerv(GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING, &binding);
+        CHECK(binding == (GLint)buffer);
+        glGetPointerv(GL_TEXTURE_COORD_ARRAY_POINTER, &pointer);
+        CHECK(pointer == (GLvoid *)(uintptr_t)16);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(payload), &payload, GL_DYNAMIC_DRAW);
+    for (i = 0; i < 2; ++i)
+    {
+        CHECK(contexts[i]->gerbera->vertexArray[GR_VERTEXARRAY_POSITION].data == NULL);
+        CHECK(contexts[i]->gerbera->vertexArray[GR_VERTEXARRAY_TEXCOORD0 + 1].data == NULL);
+    }
+    CHECK(glGetError() == GL_NO_ERROR);
+    glDeleteBuffers(1, &buffer);
+    egliSetCurrentContext(NULL);
+    oglDestroyContext(contexts[1]);
+    oglDestroyContext(contexts[0]);
+}
+
 int main(void)
 {
     test_error_and_descriptor();
     test_matrix_stack();
     test_tex_manager();
     test_bufobj_manager();
+    test_object_name_hash_wrap();
     test_getters();
     test_ogl_util();
     test_ogl_context();
@@ -1392,6 +1597,7 @@ int main(void)
     test_gl_clear_and_readpixels();
     test_gl_rendering_pipeline();
     test_gl_textures_and_drawtex();
+    test_gl_buffer_storage_lifetime();
 
     printf("opengl tests: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

@@ -1225,10 +1225,10 @@ void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z)
                 int shiftS = 21 - tex->mipmap[0].log2Dim[0];
                 int shiftT = 21 - tex->mipmap[0].log2Dim[1];
 
-                txMin[i] = tex->cropRect.x0 << shiftS;
-                txMax[i] = tex->cropRect.x1 << shiftS;
-                tyMin[i] = tex->cropRect.y1 << shiftT;
-                tyMax[i] = tex->cropRect.y0 << shiftT;
+                txMin[i] = (int)((unsigned int)tex->cropRect.x0 << shiftS);
+                txMax[i] = (int)((unsigned int)tex->cropRect.x1 << shiftS);
+                tyMin[i] = (int)((unsigned int)tex->cropRect.y1 << shiftT);
+                tyMax[i] = (int)((unsigned int)tex->cropRect.y0 << shiftT);
             }
         }
 
@@ -1440,7 +1440,8 @@ void grRenderTextureRect(Gerbera_s *state, int x0, int y0, int w, int h, int z)
                 {
                     int g = state->activeGradientIndex[i];
 
-                    pixelPipe->reference[g] += pixelPipe->yAdder[g] * ry0;
+                    pixelPipe->reference[g] = (int)((unsigned int)pixelPipe->reference[g]
+                        + (unsigned int)pixelPipe->yAdder[g] * (unsigned int)ry0);
                 }
                 grExecutePixelPipeline(state);
             }

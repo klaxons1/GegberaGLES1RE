@@ -41,9 +41,9 @@ void XNormal3_setb(int *pD, HGint8 vx, HGint8 vy, HGint8 vz)
 
 void XNormal3_sets(int *pD, HGint16 vx, HGint16 vy, HGint16 vz)
 {
-    pD[0] = vx << 6;
-    pD[1] = vy << 6;
-    pD[2] = vz << 6;
+    pD[0] = (int)vx * 64;
+    pD[1] = (int)vy * 64;
+    pD[2] = (int)vz * 64;
 }
 
 void XNormal3_setx(int *pD, int vx, int vy, int vz)
@@ -122,9 +122,9 @@ void XNormal3_normalize(int *pD, int *pA)
         }
         else
         {
-            nx <<= e;
-            ny <<= e;
-            nz <<= e;
+            nx = (int)((unsigned int)nx << e);
+            ny = (int)((unsigned int)ny << e);
+            nz = (int)((unsigned int)nz << e);
         }
         if (am < 0)
             imAssert("(int)am >= 0", "INormal3.c", 0x72u);

@@ -5,9 +5,15 @@
  * grState.h; the fragment has no assert sites. */
 #include "gerbera/grState.h"
 
+/* The original multiplies high, shifts the 32-bit word left, then uses SAR. */
+static int texCoordProduct(int a, int b, unsigned int lsh, unsigned int rsh)
+{
+    return (int)((unsigned int)hgMul64h(a, b) << lsh) >> rsh;
+}
+
 void ITCTransform_copy(_ITCTransform *pD, _IMatrix4x4 *pM)
 {
-    int cl = 0;
+    unsigned int cl = 0;
     int e;
     int ci;
     int ri;
@@ -26,11 +32,11 @@ void ITCTransform_copy(_ITCTransform *pD, _IMatrix4x4 *pM)
             if (pD->m[ci][ri] != 0)
             {
                 if (pD->m[ci][ri] == 0x20000000 && e == 8)
-                    cl |= 2 << (8 * ci + 2 * ri);
+                    cl |= 2u << (8 * ci + 2 * ri);
                 else if (pD->m[ci][ri] == -536870912 && e == 8)
-                    cl |= 3 << (8 * ci + 2 * ri);
+                    cl |= 3u << (8 * ci + 2 * ri);
                 else
-                    cl |= 1 << (8 * ci + 2 * ri);
+                    cl |= 1u << (8 * ci + 2 * ri);
             }
         }
     }
@@ -86,16 +92,16 @@ void ITCTransform_mulxv2(int *pO, _ITCTransform *pT, int *st)
     if ((pT->cl & 0xC3CC) != 0)
     {
         m[0] = pT->im[0];
-        m[0] += hgMul64h(pT->m[0][0], st[0]) << pT->lsh[0][0] >> pT->rsh[0][0];
-        m[0] += hgMul64h(pT->m[1][0], st[1]) << pT->lsh[1][0] >> pT->rsh[1][0];
+        m[0] += texCoordProduct(pT->m[0][0], st[0], pT->lsh[0][0], pT->rsh[0][0]);
+        m[0] += texCoordProduct(pT->m[1][0], st[1], pT->lsh[1][0], pT->rsh[1][0]);
         m[5] = m[0];
         m[0] = pT->im[1];
-        m[0] += hgMul64h(pT->m[0][1], st[0]) << pT->lsh[0][1] >> pT->rsh[0][1];
-        m[0] += hgMul64h(pT->m[1][1], st[1]) << pT->lsh[1][1] >> pT->rsh[1][1];
+        m[0] += texCoordProduct(pT->m[0][1], st[0], pT->lsh[0][1], pT->rsh[0][1]);
+        m[0] += texCoordProduct(pT->m[1][1], st[1], pT->lsh[1][1], pT->rsh[1][1]);
         m[6] = m[0];
         m[0] = pT->im[3];
-        m[0] += hgMul64h(pT->m[0][3], st[0]) << pT->lsh[0][3] >> pT->rsh[0][3];
-        m[0] += hgMul64h(pT->m[1][3], st[1]) << pT->lsh[1][3] >> pT->rsh[1][3];
+        m[0] += texCoordProduct(pT->m[0][3], st[0], pT->lsh[0][3], pT->rsh[0][3]);
+        m[0] += texCoordProduct(pT->m[1][3], st[1], pT->lsh[1][3], pT->rsh[1][3]);
         m[8] = m[0];
     }
     else
@@ -103,16 +109,16 @@ void ITCTransform_mulxv2(int *pO, _ITCTransform *pT, int *st)
         m[4] = st[0];
         m[2] = pT->im[0];
         if ((pT->cl & 3) == 2)
-            m[4] = m[2] + 32 * m[4];
+            m[4] = (int)((unsigned int)m[2] + 32u * (unsigned int)m[4]);
         else
-            m[4] = m[2] + (hgMul64h(pT->m[0][0], m[4]) << pT->lsh[0][0] >> pT->rsh[0][0]);
+            m[4] = m[2] + texCoordProduct(pT->m[0][0], m[4], pT->lsh[0][0], pT->rsh[0][0]);
         m[5] = m[4];
         m[3] = st[1];
         m[1] = pT->im[1];
         if ((pT->cl & 0xC00) == 0x800)
-            m[3] = m[1] + 32 * m[3];
+            m[3] = (int)((unsigned int)m[1] + 32u * (unsigned int)m[3]);
         else
-            m[3] = m[1] + (hgMul64h(pT->m[1][1], m[3]) << pT->lsh[1][1] >> pT->rsh[1][1]);
+            m[3] = m[1] + texCoordProduct(pT->m[1][1], m[3], pT->lsh[1][1], pT->rsh[1][1]);
         m[6] = m[3];
         m[8] = pT->im[3];
     }
@@ -134,17 +140,17 @@ void ITCTransform_mulxv4(int *pO, _ITCTransform *pT, int *strq)
     {
         m[4] = strq[0];
         if ((pT->cl & 3) == 2)
-            m[4] *= 32;
+            m[4] = (int)((unsigned int)m[4] * 32u);
         else
-            m[4] = hgMul64h(pT->m[0][0], m[4]) << pT->lsh[0][0] >> pT->rsh[0][0];
+            m[4] = texCoordProduct(pT->m[0][0], m[4], pT->lsh[0][0], pT->rsh[0][0]);
         m[5] = m[4];
         m[3] = strq[1];
         if ((pT->cl & 0xC00) == 0x800)
-            m[3] *= 32;
+            m[3] = (int)((unsigned int)m[3] * 32u);
         else
-            m[3] = hgMul64h(pT->m[1][1], m[3]) << pT->lsh[1][1] >> pT->rsh[1][1];
+            m[3] = texCoordProduct(pT->m[1][1], m[3], pT->lsh[1][1], pT->rsh[1][1]);
         m[6] = m[3];
-        m[8] = 32 * strq[3];
+        m[8] = (int)(32u * (unsigned int)strq[3]);
     }
     else
     {
@@ -157,7 +163,7 @@ void ITCTransform_mulxv4(int *pO, _ITCTransform *pT, int *strq)
             if (j != 2)
             {
                 for (ci = 0; ci < 4; ++ci)
-                    acc += hgMul64h(pT->m[ci][j], strq[ci]) << pT->lsh[ci][j] >> pT->rsh[ci][j];
+                    acc += texCoordProduct(pT->m[ci][j], strq[ci], pT->lsh[ci][j], pT->rsh[ci][j]);
                 m[j + 5] = acc;
             }
         }
@@ -225,7 +231,7 @@ void ITCTransform_mulfv2(int *pO, _ITCTransform *pT, int *st)
                     int lsh = hgClamp32_0_x(ex, 31);
                     int rsh = hgClamp32_0_x(-ex, 31);
 
-                    acc += hgMul64h(pT->m[ci][j], IScalar_getMantissa(st[ci])) << lsh >> rsh;
+                    acc += texCoordProduct(pT->m[ci][j], IScalar_getMantissa(st[ci]), lsh, rsh);
                 }
                 e[j + 11] = acc;
             }
@@ -243,7 +249,7 @@ void ITCTransform_mulfv2(int *pO, _ITCTransform *pT, int *st)
             int lsh = hgClamp32_0_x(ex, 31);
             int rsh = hgClamp32_0_x(-ex, 31);
 
-            e[j + 11] = pT->im[j] + (hgMul64h(pT->m[0][5 * j], mant) << lsh >> rsh);
+            e[j + 11] = pT->im[j] + texCoordProduct(pT->m[j][j], mant, lsh, rsh);
         }
         e[14] = pT->im[3];
     }
@@ -278,7 +284,7 @@ void ITCTransform_mulfv4(int *pO, _ITCTransform *pT, int *strq)
                     int lsh = hgClamp32_0_x(ex, 31);
                     int rsh = hgClamp32_0_x(-ex, 31);
 
-                    acc += hgMul64h(pT->m[ci][j], IScalar_getMantissa(strq[ci])) << lsh >> rsh;
+                    acc += texCoordProduct(pT->m[ci][j], IScalar_getMantissa(strq[ci]), lsh, rsh);
                 }
             }
             e[j + 11] = acc;
@@ -304,7 +310,7 @@ void ITCTransform_mulfv4(int *pO, _ITCTransform *pT, int *strq)
 
                     lsh = hgClamp32_0_x(ex, 31);
                     rsh = hgClamp32_0_x(-ex, 31);
-                    e[j + 11] = hgMul64h(pT->m[0][5 * j], mant) << lsh >> rsh;
+                    e[j + 11] = texCoordProduct(pT->m[j][j], mant, lsh, rsh);
                 }
             }
         }

@@ -227,7 +227,7 @@ void grSetClearDepth(Gerbera_s *state, int depth)
 {
     GR_API_CHECK(state != NULL, 455);
     GR_API_CHECK(depth >= 0, 456);
-    state->clearDepth = (int)hgMulu64h(2 * depth, 0xFFFFFFFF);
+    state->clearDepth = (int)hgMulu64h(2u * (unsigned int)depth, 0xFFFFFFFFu);
 }
 
 void grSetClearStencil(Gerbera_s *state, unsigned int s)
@@ -623,7 +623,8 @@ void grSetStencilMask(Gerbera_s *state, unsigned int mask)
     GR_API_CHECK(state != NULL, 1115);
     if (state->stencilWriteMask != mask)
     {
-        state->stencilWriteMask = mask;
+        /* The original compares the full argument, then stores one byte. */
+        state->stencilWriteMask = (unsigned char)mask;
         state->pixelPipelineDirty = 1;
     }
 }
