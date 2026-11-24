@@ -37,6 +37,7 @@ static eglState_s state;
 static unsigned int oldPixels[16 * 16], newPixels[16 * 16];
 static oglSurfaceDescriptor_s installedDraw, installedRead;
 static int updates;
+static int resizeFails;
 
 typedef struct MockHeapVtable_s {
     void *(*alloc)(void *, int);
@@ -88,6 +89,8 @@ int sym_CFbsBitmap_Resize(void *bitmap, const SymTSize *size)
 {
     MockBitmap *bmp = (MockBitmap *)bitmap;
     CHECK(bmp->locks == 0);
+    if (resizeFails)
+        return -4;
     bmp->size = *size;
     bmp->data = newPixels;
     ++bmp->resizes;
@@ -123,6 +126,12 @@ int sym_CFbsBitmap_ScanLineLength(int width, int mode)
 {
     CHECK(mode == EGL_SYMBIAN_ECOLOR16MA);
     return width * 4;
+}
+
+int sym_TDisplayModeUtils_NumDisplayModeBitsPerPixel(int mode)
+{
+    CHECK(mode == EGL_SYMBIAN_ECOLOR16MA);
+    return 32;
 }
 
 void oglSetBuffers(oglContext_s *context, const oglSurfaceDescriptor_s *draw,
@@ -239,6 +248,20 @@ int main(void)
     CHECK(window.surface.colorBuffer == newPixels);
     CHECK(window.surface.colorBufferStride == 32);
     CHECK(bitmap.resizes == 1 && bitmap.size.iWidth == 8);
+
+    /* Resize failure leaves storage unlocked and reports BAD_ALLOC. */
+    windowSize.iWidth = 14;
+    resizeFails = 1;
+    CHECK(grLockSurface(GR_SURFACE_DRAW) == 0);
+    CHECK(state.errorCode == EGL_BAD_ALLOC && bitmap.locks == 0);
+    CHECK(bitmap.size.iWidth == 8 && window.surface.width == 12);
+    CHECK(window.surface.colorBuffer == newPixels && window.surface.colorBufferStride == 32);
+    resizeFails = 0;
+
+    /* An incompatible destination sets the error before any heap lock. */
+    window.surface.configID = 1;
+    CHECK(egliBlitToPixmap(&window.surface, (eglNativePixmap_s *)&bitmap) == 0);
+    CHECK(state.errorCode == EGL_BAD_MATCH && bitmap.locks == 0);
 
     /* Pixmap storage can move independently before it is locked for reading. */
     memset(&pixmap, 0, sizeof(pixmap));

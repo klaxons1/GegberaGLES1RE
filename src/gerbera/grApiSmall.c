@@ -133,8 +133,8 @@ void grSetViewport(Gerbera_s *state, int x0, int x1, int y0, int y1)
     GR_API_CHECK(x1 - x0 <= GR_MAX_VIEWPORT_DIMENSION, 224);
     GR_API_CHECK(y1 - y0 <= GR_MAX_VIEWPORT_DIMENSION, 225);
     grSetRectangle(&state->viewportRectangle, x0, x1, y0, y1);
-    state->viewportOffset.normal[0] = 16 * x0 + 8 * (x1 - x0) + 8;
-    state->viewportOffset.normal[1] = 16 * y0 + 8 * (y1 - y0) + 8;
+    state->viewportOffset.normal[0] = (int)(16u * (unsigned int)x0 + 8u * (unsigned int)(x1 - x0) + 8u);
+    state->viewportOffset.normal[1] = (int)(16u * (unsigned int)y0 + 8u * (unsigned int)(y1 - y0) + 8u);
     state->viewportScale.normal[0] = imLsl32OF(x1 - x0, 6);
     state->viewportScale.normal[1] = imLsl32OF(y0 - y1, 6);
     grUpdateScissor(state);

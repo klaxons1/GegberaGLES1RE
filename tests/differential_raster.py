@@ -67,6 +67,8 @@ def native_adapter(lib, name, inputs, output_words):
 
 
 def run(suite):
+    run_gradient_boundary_cases(suite)
+    run_depth_offset_cases(suite)
     if suite.arch == "arm":
         return run_arm(suite)
     lib, oracle, rng = suite.lib, suite.oracle, suite.rng
@@ -208,43 +210,7 @@ def run(suite):
         suite.compare("grrDownsample", (fmt, width, height, src.hex()),
                       bytes(dst)[:dst_size + 16], expected)
 
-    for i in range(suite.samples):
-        unit = i % 2
-        log_s, log_t = rng.randrange(11), rng.randrange(11)
-        min_filter, mag_filter = (i // 2) % 8, (i // 16) % 2
-        levels = max(log_s, log_t) + 1
-        mask = (1 + (i // 32) % 3) << (6 + 2 * unit)
-        adders = [rng.choice((-1, 0, 1)) * (1 << rng.randrange(27)) for _ in range(4)]
-        inputs = [unit, log_s, log_t, min_filter, mag_filter, (i // 3) % 3, i % 3,
-                  0x20 if min_filter != mag_filter else 0, levels,
-                  rng.randint(-2097152, 2097152), rng.randint(-4, 10),
-                  rng.randint(-2097152, 2097152), rng.randint(-4, 10),
-                  *adders, rng.choice((0, 4096)), rng.choice((0, 4096)), mask]
-        oracle.reset()
-        state = oracle.alloc(0x1800)
-        pipe = oracle.alloc(1024, b"\x5A" * 1024)
-        pixels = oracle.alloc(44)
-        palette = oracle.alloc(4)
-        texture_data = bytearray(208)
-        for level in range(11):
-            struct.pack_into("<Ihh", texture_data, 16 * level,
-                             pixels + 4 * level, max(0, log_s - level), max(0, log_t - level))
-        struct.pack_into("<IhBB", texture_data, 176, palette, levels, 0, inputs[7])
-        texture_data[204:208] = bytes((inputs[5], inputs[6], min_filter, mag_filter))
-        texture = oracle.alloc(208, bytes(texture_data))
-        coords = oracle.alloc(16, words(inputs[9:13]))
-        oracle.write(state + 0x88, words([pipe]))
-        oracle.write(state + 0x1DC + 32 * unit, words([texture]))
-        oracle.write(state + 0x1644, words([mask]))
-        gradient = 6 + 2 * unit
-        oracle.write(pipe + 232 + 4 * gradient, words([adders[0], adders[2]]))
-        oracle.write(pipe + 272 + 4 * gradient, words([adders[1], adders[3]]))
-        call("grSetupTextureUnit", [state, unit, coords, inputs[17], inputs[18]])
-        record = unpack(oracle.read(pipe + 64 * unit, 36))
-        expected = ((record[1] - pixels) // 4, *record[3:9], int(record[2] == palette))
-        expected += unpack(oracle.read(pipe + 192, 120))
-        actual = native_adapter(lib, "differential_raster_texture", inputs, 38)
-        suite.compare("grSetupTextureUnit", inputs, actual, expected)
+    run_texture_unit_cases(suite)
 
     # Stop at the pixel-pipeline boundary. Compare the rasterizer's exact
     # coverage and interpolated red input, independently of pixel shading.
@@ -320,6 +286,8 @@ def run(suite):
 
     run_signature_cases(suite, descriptors)
     run_triangle_gradient_cases(suite)
+    from differential_jit_x86 import run as run_x86_jit
+    run_x86_jit(suite, descriptors)
 
 
 def run_triangle_gradient_cases(suite):
@@ -490,6 +458,124 @@ def run_signature_cases(suite, descriptors, targets=TARGETS, state_bias=0):
                           (count, oracle.readback(program, program_capacity * instruction_bytes)))
 
 
+def run_gradient_boundary_cases(suite):
+    lib, oracle = suite.lib, suite.oracle
+    targets = ((0x15D0C, 0x15E54), (0x15E54, 0x15F24)) if suite.arch == "arm" else (
+        TARGETS["grSetupGradient"], TARGETS["grComputeDeltas"])
+    for mode, name in enumerate(("grSetupGradient", "grComputeDeltas")):
+        suite.register(name, *targets[mode])
+        for shift in (0, 17, 18, 31):
+            for g01, g02 in ((-2147483648, 1), (1, -2147483648),
+                              (-2147483648, -2147483648), (2147483647, -2147483648)):
+                for origin in (0, 4096):
+                    context = (origin, origin, 16384, 0, 0, 16384, shift)
+                    inputs = (mode, *context, 6, g01, g02, -2147483648)
+                    oracle.reset()
+                    pipe = oracle.alloc(1024, b"\x5A" * 1024)
+                    info = oracle.alloc(32, words((pipe, *context)))
+                    oracle.watch(pipe + 192, 120, "boundary gradients")
+                    arguments = [info, 6, g01, g02]
+                    if mode == 0:
+                        arguments.append(-2147483648)
+                    oracle.call(targets[mode][0], arguments)
+                    actual = native_adapter(lib, "differential_raster_gradient", inputs, 30)
+                    suite.compare(name, inputs, actual, unpack(oracle.readback(pipe + 192, 120)))
+
+
+def run_depth_offset_cases(suite):
+    oracle = suite.oracle
+    target = (0x1618C, 0x16208) if suite.arch == "arm" else (0x4247B0, 0x424890)
+    suite.register("grComputeDepthOffset", *target)
+    bias = -8 if suite.arch == "arm" else 0
+    hook = None
+    if suite.arch == "arm":
+        # ARM inlines this helper in triangle setup. Enter with its state
+        # stack slot populated, and stop immediately after the reference write.
+        hook = oracle.add_hook(target[1], lambda machine: machine.return_from_call())
+    try:
+        for units, factor, reference, xadd, yadd in (
+                (-1, 0, 0, 0, 0), (2147483647, 0, 1, 0, 0),
+                (-2147483648, 0, -2147483648, 0, 0), (-65536, 0, 0, 0, 0),
+                (2147483647, 2147483647, 2147483647, 65536, 0),
+                (0, 2147483647, 1, -2147483648, 65536),
+                (-2147483648, -2147483648, -1, 2147483647, -65536),
+                (65536, -65536, 2147483647, -65536, 65536)):
+            for depth_bytes in (0, 1, 2, 4):
+                oracle.reset()
+                state = oracle.alloc(0x2000)
+                pipe = oracle.alloc(1024)
+                oracle.write(state + 0x88 + bias, words((pipe,)))
+                oracle.write(state + 0x98 + bias, words((factor, units)))
+                oracle.write(state + 0x1CE2 + bias, bytes((depth_bytes,)))
+                oracle.write(pipe + 192, words((reference,)))
+                oracle.write(pipe + 232, words((xadd,)))
+                oracle.write(pipe + 272, words((yadd,)))
+                oracle.watch(pipe + 192, 4, "depth offset reference")
+                arguments = [0] * 25 + [state] if suite.arch == "arm" else [state]
+                oracle.call(target[0], arguments)
+                inputs = (units, factor, depth_bytes, reference, xadd, yadd)
+                actual = native_adapter(suite.lib, "differential_raster_depth_offset", inputs, 1)
+                suite.compare("grComputeDepthOffset", inputs, actual, unpack(oracle.readback(pipe + 192, 4)))
+    finally:
+        if hook is not None:
+            oracle.remove_hook(hook)
+
+
+def run_texture_unit_cases(suite):
+    lib, oracle, rng = suite.lib, suite.oracle, suite.rng
+    target = (0x155F8, 0x15964) if suite.arch == "arm" else TARGETS["grSetupTextureUnit"]
+    state_bias = -8 if suite.arch == "arm" else 0
+    suite.register("grSetupTextureUnit", *target)
+    for i in range(max(2, suite.samples)):
+        unit = i % 2
+        log_s, log_t = rng.randrange(11), rng.randrange(11)
+        min_filter, mag_filter = (i // 2) % 8, (i // 16) % 2
+        levels = max(log_s, log_t) + 1
+        mask = (1 + (i // 32) % 3) << (6 + 2 * unit)
+        adders = [rng.choice((-1, 0, 1)) * (1 << rng.randrange(27)) for _ in range(4)]
+        inputs = [unit, log_s, log_t, min_filter, mag_filter, (i // 3) % 3, i % 3,
+                  0x20 if min_filter != mag_filter else 0, levels,
+                  rng.randint(-2097152, 2097152), rng.randint(-4, 10),
+                  rng.randint(-2097152, 2097152), rng.randint(-4, 10),
+                  *adders, rng.choice((0, 4096)), rng.choice((0, 4096)), mask]
+        if i < 2:
+            # ClassiCube terrain reached an exactly INT_MIN gradient reference.
+            log_s = log_t = 1
+            min_filter = mag_filter = 0
+            levels = 2
+            adders = [-2147483648, 0, 0, 0]
+            mask = 3 << (6 + 2 * unit)
+            inputs = [unit, 1, 1, 0, 0, 1, 1, 0, 2,
+                      0, 0, 0, 0, *adders, 4096, 0, mask]
+        oracle.reset()
+        state = oracle.alloc(0x1800)
+        pipe = oracle.alloc(1024, b"\x5A" * 1024)
+        pixels = oracle.alloc(44)
+        palette = oracle.alloc(4)
+        texture_data = bytearray(208)
+        for level in range(11):
+            struct.pack_into("<Ihh", texture_data, 16 * level,
+                             pixels + 4 * level, max(0, log_s - level), max(0, log_t - level))
+        struct.pack_into("<IhBB", texture_data, 176, palette, levels, 0, inputs[7])
+        texture_data[204:208] = bytes((inputs[5], inputs[6], min_filter, mag_filter))
+        texture = oracle.alloc(208, bytes(texture_data))
+        coords = oracle.alloc(16, words(inputs[9:13]))
+        oracle.write(state + 0x88 + state_bias, words([pipe]))
+        oracle.write(state + 0x1DC + state_bias + 32 * unit, words([texture]))
+        oracle.write(state + 0x1644 + state_bias, words([mask]))
+        gradient = 6 + 2 * unit
+        oracle.write(pipe + 232 + 4 * gradient, words([adders[0], adders[2]]))
+        oracle.write(pipe + 272 + 4 * gradient, words([adders[1], adders[3]]))
+        oracle.watch(pipe + 64 * unit, 36, "texture unit")
+        oracle.watch(pipe + 192, 120, "texture gradients")
+        oracle.call(target[0], [state, unit, coords, inputs[17], inputs[18]])
+        record = unpack(oracle.readback(pipe + 64 * unit, 36))
+        expected = ((record[1] - pixels) // 4, *record[3:9], int(record[2] == palette))
+        expected += unpack(oracle.readback(pipe + 192, 120))
+        actual = native_adapter(lib, "differential_raster_texture", inputs, 38)
+        suite.compare("grSetupTextureUnit", inputs, actual, expected)
+
+
 def run_arm(suite):
     lib, oracle = suite.lib, suite.oracle
     for name, (start, end) in ARM_TARGETS.items():
@@ -507,11 +593,15 @@ def run_arm(suite):
         lib.grrGetTextureFormatDescriptor(actual, fmt)
         suite.compare("grrGetTextureFormatDescriptor", fmt, bytes(actual), expected)
         descriptors.append(expected)
+    run_texture_unit_cases(suite)
     run_signature_cases(suite, descriptors, ARM_TARGETS, -8)
     run_compiled_span_cases(suite, descriptors)
+    run_pixel_math_cases(suite, descriptors)
+    run_pixel_sampling_cases(suite, descriptors)
+    run_pixel_blend_cases(suite, descriptors)
 
 
-def compare_compiled_pipeline(suite, program, native_program, description):
+def compare_compiled_pipeline(suite, program, native_program, description, instruction_budget=20000000):
     # Enter after the original setjmp wrapper: all allocation, optimization,
     # register allocation and ARM emission execute inside the bounded arena.
     oracle, lib = suite.oracle, suite.lib
@@ -527,8 +617,8 @@ def compare_compiled_pipeline(suite, program, native_program, description):
     backend = oracle.call(ARM_TARGETS["HCARMBackend_create"][0], [])
     length = oracle.call(ARM_TARGETS["compileInternal"][0],
                          [manager, output, 0, program, backend, hc_opt_all, mask, mutable, parameters],
-                         instruction_budget=100000000 if description == ("span", 15) else 20000000,
-                         trace_blocks=False)
+                         instruction_budget=100000000 if description == ("span", 15) else instruction_budget,
+                         trace_blocks=False, predicate_range=ARM_TARGETS["compileInternal"])
     code, = unpack(oracle.read(output, 4))
     if length > output_capacity or not arena <= code <= arena + arena_bytes - length:
         raise ValueError("original compiler output exceeds its bounded arena")
@@ -591,19 +681,20 @@ def run_compiled_span_cases(suite, descriptors):
         compare_pixel_span(suite, signature, code, mode)
 
 
-def compare_pixel_span(suite, signature, code, mode):
+def compare_pixel_span(suite, signature, code, mode, inputs=None, gradients=None, compiler_description=None,
+                       sampling=None, initial=None):
     oracle, lib = suite.oracle, suite.lib
     references = [0x10000000, 0, 80 << 16, 40 << 16, 180 << 16, 64 << 16, 0, 0, 0, 0]
     x_adders = [0x01000000, 0, 7 << 16, 9 << 16, -(11 << 16), 31 << 16, 0, 0, 0, 0]
     y_adders = [0x02000000, 0, 4 << 16, 3 << 16, 2 << 16, 5 << 16, 0, 0, 0, 0]
-    gradients = references + x_adders + y_adders
+    gradients = list(gradients) if gradients is not None else references + x_adders + y_adders
     texture_record = signature[56:100]
-    if texture_record[16]:
+    if inputs is None and texture_record[16]:
         shift = 31 if texture_record[21] == 0 else 20
         gradients[6], gradients[7] = -(1 << (shift - 1)), 1 << (shift - 2)
         gradients[16], gradients[17] = 3 << (shift - 1), 0
         gradients[26], gradients[27] = 0, 3 << (shift - 2)
-    initial = (words([0x8F3A716C + i for i in range(8)]) + b"\xA5" * 8,
+    initial = initial or (words([0x8F3A716C + i for i in range(8)]) + b"\xA5" * 8,
                struct.pack("<8H", *([0x2000, 0xFFFF] * 4)) + b"\xA5" * 8,
                bytes((1, 2, 3, 4, 4, 3, 2, 1)) + b"\xA5" * 8)
     buffers = [oracle.alloc(len(data), data) for data in initial]
@@ -612,9 +703,19 @@ def compare_pixel_span(suite, signature, code, mode):
     stack = oracle.alloc(16384)
     pipe = stack + 64  # HCARMBackend scratch space before pixel parameters.
     spans = oracle.alloc(8, words([4 << 16, 1 | (2 << 16)]))
-    if texture_record[16]:
-        texels = oracle.alloc(16, words([0xFF204060, 0xFF80A0C0, 0xFF10D070, 0xFFF03090]))
-        oracle.write(pipe + 4, words([texels, 0, texture_record[19], 1, 1, shift, shift, 1]))
+    for unit in range(2):
+        texture_record = signature[56 + 44 * unit:100 + 44 * unit]
+        if not texture_record[16]:
+            continue
+        sample = inputs[4 * unit:4 * unit + 4] if inputs is not None else [0xFF204060, 0xFF80A0C0, 0xFF10D070, 0xFFF03090]
+        texels = oracle.alloc(16, words(sample))
+        shift_s = 31 if texture_record[21] == 0 else 20
+        shift_t = 31 if texture_record[22] == 0 else 20
+        env_color = inputs[8 + unit] if inputs is not None else 0
+        sample_parameters = sampling[6 * unit:6 * unit + 6] if sampling is not None else [1, 1, shift_s, shift_t, 1, texture_record[19]]
+        s_mask, t_mask, shift_s, shift_t, width_log, linear = sample_parameters
+        oracle.write(pipe + 64 * unit, words([env_color, texels, 0, linear,
+                                             s_mask, t_mask, shift_s, shift_t, width_log]))
     emitted_results = []
     saved_registers = (ARM.UC_ARM_REG_R4, ARM.UC_ARM_REG_R5, ARM.UC_ARM_REG_R6, ARM.UC_ARM_REG_R7,
                        ARM.UC_ARM_REG_R8, ARM.UC_ARM_REG_R9, ARM.UC_ARM_REG_R10, ARM.UC_ARM_REG_R11)
@@ -624,7 +725,10 @@ def compare_pixel_span(suite, signature, code, mode):
     for emitted in code:
         for address, data in zip(buffers, initial):
             oracle.write(address, data)
-        oracle.write(pipe + 132, words([16, 8, 4, 0, 64, 3, 3, 255, 255]))
+        fog_color = inputs[10] if inputs is not None else 0
+        if signature[41]:
+            fog_color &= 255
+        oracle.write(pipe + 132, words([16, 8, 4, fog_color, 64, 3, 3, 255, 255]))
         oracle.write(pipe + 168, words([*buffers, 2, spans, 0]))
         oracle.write(pipe + 192, words(gradients))
         entry = oracle.install_code(emitted)
@@ -636,10 +740,235 @@ def compare_pixel_span(suite, signature, code, mode):
                   (emitted_results[0][1], emitted_results[1][1]), (expected_abi, expected_abi))
     suite.compare("compiledPixelSpan", (mode, "emitted code"), emitted_results[1], emitted_results[0])
     if emitted_results[1] == emitted_results[0]:
-        suite.confirm_code_semantics("compileInternal", ("span", mode))
+        suite.confirm_code_semantics("compileInternal", compiler_description or ("span", mode))
     actual = [buffer(data) for data in initial]
     lib.differential_raster_span.argtypes = [C.c_void_p] * 5
     lib.differential_raster_span.restype = None
-    lib.differential_raster_span(buffer(signature), buffer(words(gradients)), *actual)
+    if sampling is not None:
+        lib.differential_raster_span_sample.argtypes = [C.c_void_p] * 7
+        lib.differential_raster_span_sample.restype = None
+        lib.differential_raster_span_sample(buffer(signature), buffer(words(gradients)),
+                                            *actual, buffer(words(inputs)), buffer(words(sampling)))
+    elif inputs is None:
+        lib.differential_raster_span(buffer(signature), buffer(words(gradients)), *actual)
+    else:
+        lib.differential_raster_span_inputs.argtypes = [C.c_void_p] * 6
+        lib.differential_raster_span_inputs.restype = None
+        lib.differential_raster_span_inputs(buffer(signature), buffer(words(gradients)),
+                                            *actual, buffer(words(inputs)))
     suite.compare("compiledPixelSpan", (mode, "hosted pixels"), tuple(bytes(data) for data in actual),
                   emitted_results[0][0])
+    for address in buffers:
+        oracle.unwatch(address)
+
+
+def pixel_texture_record(descriptors, fmt=2, mode=0, function=0, scale=0, operands=0):
+    """Build the bytecode's texture state, retaining ordinary env modes for C."""
+    record = bytearray(44)
+    record[:16] = descriptors[fmt]
+    record[16] = record[17] = 1
+    record[27] = record[31] = record[35] = 2
+    record[40] = record[41] = 1
+    color, alpha = fmt != 0, fmt not in (1, 3, 15)
+    if mode == 5:
+        record[36], record[37] = function, function if function < 6 else 0
+        record[38], record[39] = scale if isinstance(scale, tuple) else (scale, scale)
+        for arg, source in enumerate((0, 3, 1)):
+            record[24 + 4 * arg] = record[25 + 4 * arg] = source
+        if operands:
+            for arg in range(3):
+                record[24 + 4 * arg] = (arg + operands) % 4
+                record[25 + 4 * arg] = (arg + operands + 1) % 4
+                record[26 + 4 * arg] = (arg + operands) % 4
+                record[27 + 4 * arg] = 2 + (arg + operands) % 2
+    elif mode == 0:
+        record[24] = record[25] = 3
+        record[36], record[37] = int(not color), int(not alpha)
+    elif mode == 1:
+        record[25], record[37] = 3, 1
+        record[36] = 4 if fmt in (2, 16, 17) else 1
+        record[28], record[34] = 3, 2
+    elif mode == 2:
+        record[24], record[28], record[36] = (1, 3, 4) if color else (3, 0, 1)
+        record[25], record[37] = 3, int(not alpha)
+    elif mode == 3:
+        record[24], record[25] = 0 if color else 3, 0 if alpha else 3
+        record[36] = record[37] = 1
+    elif mode == 4:
+        record[24] = record[25] = 3
+        record[36], record[37] = 2 if color else 1, int(not alpha)
+    return bytes(record)
+
+
+def run_pixel_math_cases(suite, descriptors):
+    """Reuse each original compiled program over boundary and channel corpora."""
+    oracle, lib = suite.oracle, suite.lib
+    configurations = []
+    # All ordinary environments, including formats with missing color/alpha.
+    for mode in range(5):
+        for fmt in (2, 0, 1, 3, 4, 15, 16, 17):
+            configurations.append((f"env-{mode}-format-{fmt}", [(fmt, mode, 0, 0, 0)], 0, False))
+    for function in range(8):
+        for scale in range(3):
+            configurations.append((f"combine-{function}-scale-{1 << scale}", [(2, 5, function, scale, 0)], 0, False))
+    for scale in ((0, 2), (2, 0)):
+        configurations.append((f"dot3-rgba-scales-{scale}", [(2, 5, 7, scale, 0)], 0, False))
+    for operands in range(1, 5):
+        configurations.append((f"operands-{operands}", [(2, 5, 4, 0, operands)], 0, False))
+    for fog in (0xFFFFFFFF, 0x00D08020):
+        for general in (False, True):
+            textures = [(2, 3, 0, 0, 0)] if general else []
+            configurations.append((f"fog-{fog:08x}-general-{general}", textures, fog, True))
+    for function in (0, 3, 4, 7):
+        configurations.append((f"two-units-{function}", [(2, 0, 0, 0, 0), (2, 5, function, 1, 2)], 0, False))
+    # Keep the confirmed arithmetic regressions in short --samples 16 runs.
+    priority = ("env-0-format-2", "fog-ffffffff-general-False", "combine-6-scale-1",
+                "env-1-format-2", "env-2-format-2", "combine-4-scale-1",
+                "combine-3-scale-1", "env-4-format-2", "two-units-0",
+                "dot3-rgba-scales-(0, 2)", "fog-00d08020-general-True",
+                "combine-0-scale-1", "env-1-format-0", "env-1-format-3",
+                "env-1-format-4", "two-units-7")
+    configurations.sort(key=lambda config: priority.index(config[0])
+                        if config[0] in priority else len(priority))
+    boundary_pairs = ((1, 128), (128, 1), (54, 54), (0, 128), (0, 255), (255, 0),
+                      (127, 128), (128, 127), (254, 255), (255, 254), (255, 255),
+                      (0, 0), (127, 127), (128, 128))
+    for name, textures, fog_color, fog_enabled in configurations[:suite.samples]:
+        signature = bytearray(144)
+        signature[:16] = descriptors[2]
+        for index, value in ((16, 1), (17, 15), (40, fog_enabled),
+                             (41, fog_color == 0xFFFFFFFF), (42, 1), (47, 1)):
+            signature[index] = value
+        formats, modes = [2, 2], [0, 0]
+        for unit, config in enumerate(textures):
+            signature[56 + 44 * unit:100 + 44 * unit] = pixel_texture_record(descriptors, *config)
+            formats[unit], modes[unit] = config[:2]
+        signature = bytes(signature)
+        oracle.reset()
+        sig = oracle.alloc(144, signature)
+        program = oracle.alloc(32768)
+        oracle.watch(program, 32768, "generated HC instructions")
+        count = oracle.call(ARM_TARGETS["grExecuteProgram"][0], [program, sig, 4096],
+                            instruction_budget=2000000)
+        native_program = buffer(bytes(32768))
+        native_count = lib.grExecuteProgram(native_program, buffer(signature), 4096)
+        description = ("pixel math", name)
+        suite.compare("grExecuteProgram", description, (native_count, bytes(native_program)),
+                      (count, oracle.readback(program, 32768)))
+        code = compare_compiled_pipeline(suite, program, bytes(native_program), description)
+        for case in range(len(boundary_pairs) + 4):
+            if case < len(boundary_pairs):
+                source, sample = boundary_pairs[case]
+                primary = [source] * 4
+                samples = [sample * 0x01010101, (255 - sample) * 0x01010101]
+                env = [0xFFFFFFFF, 0x80808080]
+                fog_weight = sample
+            else:
+                primary = [suite.rng.randrange(256) for _ in range(4)]
+                samples = [suite.rng.getrandbits(32) for _ in range(2)]
+                env = [suite.rng.getrandbits(32) for _ in range(2)]
+                fog_weight = suite.rng.randrange(256)
+            inputs = [samples[0]] * 4 + [samples[1]] * 4 + env + [fog_color] + formats + modes
+            gradients = [0, fog_weight << 16, *[value << 16 for value in primary], 0, 0, 0, 0] + [0] * 20
+            compare_pixel_span(suite, signature, code, (name, case), inputs, gradients, description)
+
+
+def compile_pixel_case(suite, signature, description, instruction_budget=20000000):
+    oracle, lib = suite.oracle, suite.lib
+    oracle.reset()
+    sig, program = oracle.alloc(144, signature), oracle.alloc(32768)
+    oracle.watch(program, 32768, "generated HC instructions")
+    count = oracle.call(ARM_TARGETS["grExecuteProgram"][0], [program, sig, 4096],
+                        instruction_budget=2000000)
+    native_program = buffer(bytes(32768))
+    native_count = lib.grExecuteProgram(native_program, buffer(signature), 4096)
+    suite.compare("grExecuteProgram", description, (native_count, bytes(native_program)),
+                  (count, oracle.readback(program, 32768)))
+    return compare_compiled_pipeline(suite, program, bytes(native_program), description,
+                                     instruction_budget=instruction_budget)
+
+
+def run_pixel_sampling_cases(suite, descriptors):
+    # Signature filters are (mag, min); the runtime selection is per primitive.
+    configurations = [(wrap, wrap, linear, linear, 2, False)
+                      for wrap in range(3) for linear in range(2)]
+    configurations += [(0, 1, 0, 1, 2, False), (1, 2, 1, 0, 2, False),
+                       (0, 0, 0, 1, 2, True), (2, 1, 1, 0, 2, True)]
+    configurations += [(0, 0, 1, 1, fmt, False) for fmt in (0, 4, 16, 17)]
+    if suite.samples < 256:
+        # These retain every sampler branch; larger runs cross formats and filters.
+        configurations = [(1, 1, 1, 1, 2, False), (0, 1, 0, 1, 2, False),
+                          (2, 1, 1, 0, 2, True)]
+    coordinates = ((-257, 128), (-128, 384), (0, 0), (1, 255),
+                   (127, 129), (128, 128), (255, 257), (511, 768))
+    for configuration in configurations[:suite.samples]:
+        wrap_s, wrap_t, mag, minimum, fmt, two_units = configuration
+        signature = bytearray(144)
+        signature[:16] = descriptors[2]
+        for index, value in ((16, 1), (17, 15), (42, 1), (47, 1)):
+            signature[index] = value
+        for unit in range(1 + two_units):
+            texture = bytearray(pixel_texture_record(descriptors, fmt=fmt, mode=3 if unit == 0 else 0))
+            texture[17] = 0  # Axes can have different sizes and shifts.
+            texture[19:23] = bytes((mag if unit == 0 else 0, minimum if unit == 0 else 0,
+                                    wrap_s, wrap_t))
+            signature[56 + 44 * unit:100 + 44 * unit] = texture
+        signature = bytes(signature)
+        description = ("sampling", configuration)
+        codes = compile_pixel_case(suite, signature, description, instruction_budget=100000000)
+        for linear in sorted({mag, minimum}):
+            # These are the dimensions and shifts of the selected mip level.
+            for log_s, log_t in ((1, 1), (0, 2), (2, 0), (0, 0)):
+                mask_s, mask_t = (1 << log_s) - 1, (1 << log_t) - 1
+                shift_s = (32, 21, 31)[wrap_s] - log_s if log_s else 0
+                shift_t = (32, 21, 31)[wrap_t] - log_t if log_t else 0
+                sampling = ([mask_s, mask_t, shift_s, shift_t, log_s, linear]
+                            + [mask_s, mask_t, shift_s, shift_t, log_s, 0])
+                for case, (s, t) in enumerate(coordinates):
+                    # Match grSetupTextureUnit: an axis of size one is constant zero.
+                    raw_s = s * (1 << shift_s) // 256 if mask_s else 0
+                    raw_t = t * (1 << shift_t) // 256 if mask_t else 0
+                    gradients = [0, 0, 32 << 16, 64 << 16, 128 << 16, 255 << 16,
+                                 raw_s, raw_t, raw_t if mask_s else 0, raw_s if mask_t else 0] + [0] * 20
+                    inputs = [0x01204060, 0x7F80A0C0, 0x8010D070, 0xFFF03090,
+                              0xFF8001FE, 0x0100FF7F, 0x7FFE8001, 0x80017FFF,
+                              0, 0, 0, fmt, fmt, 3, 0]
+                    compare_pixel_span(suite, signature, codes,
+                                       (description, linear, log_s, log_t, case), inputs,
+                                       gradients, description, sampling=sampling)
+        if wrap_s == wrap_t == 1:
+            # grSetupTextureUnit permits shift zero for large clamp coordinates.
+            # The original ADD wraps INT_MAX before clamping the neighboring tap.
+            for raw_s, raw_t in ((0x7FFFFFFF, 0), (0, 0x7FFFFFFF),
+                                 (0x7FFFFFFF, 0x7FFFFFFF), (-0x80000000, 0)):
+                gradients = [0, 0, 32 << 16, 64 << 16, 128 << 16, 255 << 16,
+                             raw_s, raw_t, 0, 0] + [0] * 20
+                compare_pixel_span(suite, signature, codes, (description, "shift zero", raw_s, raw_t),
+                                   inputs, gradients, description, sampling=[1, 1, 0, 0, 1, mag] * 2)
+
+
+def run_pixel_blend_cases(suite, descriptors):
+    # Exercise missing/quantized destination alpha and packed framebuffer colors.
+    configurations = [(fmt, 4, 5) for fmt in (1, 15, 16, 17)]
+    configurations += [(15, 6, 7), (15, 10, 1), (16, 4, 1), (17, 7, 6)]
+    if suite.samples < 256:
+        # Cover both fast and general blending without destination alpha.
+        configurations = configurations[:2]
+    colors = ((0, 1, 255, 0), (1, 128, 254, 1), (255, 128, 0, 127),
+              (54, 54, 54, 128), (32, 128, 224, 254), (255, 255, 255, 255))
+    initial = (words([0xFF00FF00, 0x00FF00FF, 0xFFFFFFFF, 0,
+                      0x7F80FF01, 0x807F01FF, 0x01010101, 0xFEFEFEFE]) + b"\xA5" * 8,
+               bytes(24), bytes(16))
+    for fmt, source, destination in configurations[:suite.samples]:
+        signature = bytearray(144)
+        signature[:16] = descriptors[fmt]
+        for index, value in ((16, 1), (17, 15), (27, 1), (28, source),
+                             (29, destination), (42, 1), (47, 1)):
+            signature[index] = value
+        signature = bytes(signature)
+        description = ("blend surface", fmt, source, destination)
+        codes = compile_pixel_case(suite, signature, description)
+        for case, rgba in enumerate(colors):
+            gradients = [0, 0, *[value << 16 for value in rgba], 0, 0, 0, 0] + [0] * 20
+            compare_pixel_span(suite, signature, codes, (description, case),
+                               [0] * 11 + [2, 2, 0, 0], gradients, description, initial=initial)

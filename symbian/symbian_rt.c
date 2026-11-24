@@ -2,22 +2,12 @@
  *
  * Routes aligned word copies and zero-fills directly to Symbian's XIP ROM
  * euser.dll cache-line burst routines (wordmove / memmove / memclr), and
- * eliminates any dependency on estlib.dll or drtaeabi.dll.
+ * eliminates any dependency on estlib.dll.
  */
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include "symbian_os.h"
-#include "gerbera/egl/eglInternal.h"
-
-void sym_OnThreadDetach(void)
-{
-    void *tls = sym_DllTls();
-    if ((uintptr_t)tls > 3u)
-        egliDestroyState();
-    else if (tls != NULL)
-        sym_DllFreeTls();
-}
 
 void abort(void)
 {

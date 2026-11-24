@@ -29,8 +29,9 @@ static void raster_compile_jump(void *storage, int value)
     longjmp(*(jmp_buf *)storage, value);
 }
 
-int differential_raster_compile(void *instructions, unsigned int optimizationMask,
-                                void *bytes, int capacity, unsigned char *parameterMask)
+static int raster_compile(void *instructions, unsigned int optimizationMask,
+                          void *bytes, int capacity, unsigned char *parameterMask,
+                          HCBackend_s *backend)
 {
     static union { uint64_t alignment; unsigned char bytes[1024 * 1024]; } arena;
     HCSetjmpConfig_s config;
@@ -40,25 +41,46 @@ int differential_raster_compile(void *instructions, unsigned int optimizationMas
     config.longjmp = raster_compile_jump;
     config.jmpbufSize = (unsigned int)((sizeof(jmp_buf) + 15u) & ~15u);
     length = HC_compile(arena.bytes, sizeof(arena.bytes), &config, &output,
-                        (HCInstr_s *)instructions, HCARMBackend_create(), optimizationMask,
+                        (HCInstr_s *)instructions, backend, optimizationMask,
                         parameterMask, (unsigned char *)g_mutableParamsMask, 78);
     if (length >= 0 && length <= capacity)
         memcpy(bytes, output, (size_t)length);
     return length;
 }
 
+int differential_raster_compile(void *instructions, unsigned int optimizationMask,
+                                void *bytes, int capacity, unsigned char *parameterMask)
+{
+    return raster_compile(instructions, optimizationMask, bytes, capacity, parameterMask,
+                          HCARMBackend_create());
+}
+
+int differential_raster_compile_x86(void *instructions, unsigned int optimizationMask,
+                                    void *bytes, int capacity, unsigned char *parameterMask)
+{
+    return raster_compile(instructions, optimizationMask, bytes, capacity, parameterMask,
+                          HCX86Backend_create());
+}
+
+typedef struct SpanInput
+{
+    uint32_t texels[2][4], envColor[2], fogColor, textureFormat[2], envMode[2];
+} SpanInput;
+
 static void raster_pixel_marker(void *argument)
 {
     (void)argument;
 }
 
-void differential_raster_span(const _grSignature *signature, const int *gradients,
-                              void *color, void *depth, void *stencil)
+void differential_raster_span_sample(const _grSignature *signature, const int *gradients,
+                                     void *color, void *depth, void *stencil,
+                                     const SpanInput *inputs, const int *sampling)
 {
     Gerbera_s state;
     _grPixelPipe pipe;
     _grPipelineCache cache;
-    _grTexture texture;
+    _grTexture texture[2];
+    int unit, operand;
     static const uint32_t texels[4] = { 0xFF204060u, 0xFF80A0C0u, 0xFF10D070u, 0xFFF03090u };
     unsigned int spans[2] = { 4u << 16, 1u | (2u << 16) };
     memset(&state, 0, sizeof(state));
@@ -86,22 +108,50 @@ void differential_raster_span(const _grSignature *signature, const int *gradient
     state.capabilities[GR_CAPABILITY_STENCIL_TEST] = signature->stencilTest;
     state.capabilities[GR_CAPABILITY_SMOOTH_SHADING] = 1;
     state.activeGradientMask = 63;
-    if (signature->texture[0][16])
+    state.capabilities[GR_CAPABILITY_FOG] = signature->fogEnabled;
+    state.fogColor = inputs ? inputs->fogColor : 0;
+    for (unit = 0; unit < 2; ++unit)
     {
-        const unsigned char *record = signature->texture[0];
-        texture.mipmap[0].texFormat = GR_TEXTUREFORMAT_RGBA8;
-        texture.wrapMode[0] = record[21];
-        texture.wrapMode[1] = record[22];
-        state.textureUnit[0].texture = &texture;
-        state.textureUnit[0].envMode = GR_TEXENVMODE_REPLACE;
-        state.useTexUnit[0] = 1;
-        state.activeGradientMask |= 0xC0;
-        pipe.textureUnit[0].pixels = (void *)texels;
-        pipe.textureUnit[0].sMask = pipe.textureUnit[0].tMask = 1;
-        pipe.textureUnit[0].log2DimS = 1;
-        pipe.textureUnit[0].linear = record[19];
-        pipe.textureUnit[0].rShift[0] = record[21] == GR_WRAPMODE_REPEAT ? 31 : 20;
-        pipe.textureUnit[0].rShift[1] = record[22] == GR_WRAPMODE_REPEAT ? 31 : 20;
+        const unsigned char *record = signature->texture[unit];
+        _grTextureUnitState *env = &state.textureUnit[2 * unit];
+        _grPixelPipeTextureUnit *sample = &pipe.textureUnit[unit];
+        if (!record[16])
+            continue;
+        texture[unit].mipmap[0].texFormat = inputs ? inputs->textureFormat[unit] : GR_TEXTUREFORMAT_RGBA8;
+        texture[unit].wrapMode[0] = record[21];
+        texture[unit].wrapMode[1] = record[22];
+        env->texture = &texture[unit];
+        env->envColor = inputs ? inputs->envColor[unit] : 0;
+        env->envMode = inputs ? inputs->envMode[unit] : GR_TEXENVMODE_REPLACE;
+        env->envFuncRGB = record[36];
+        env->envFuncAlpha = record[37];
+        env->envScaleRGB = 1u << record[38];
+        env->envScaleAlpha = 1u << record[39];
+        for (operand = 0; operand < 3; ++operand)
+        {
+            env->envSrcRGB[operand] = record[24 + 4 * operand];
+            env->envSrcAlpha[operand] = record[25 + 4 * operand];
+            env->envOpRGB[operand] = record[26 + 4 * operand];
+            env->envOpAlpha[operand] = record[27 + 4 * operand];
+        }
+        state.useTexUnit[unit] = 1;
+        state.activeGradientMask |= 0xC0 << (2 * unit);
+        sample->pixels = (void *)(inputs ? inputs->texels[unit] : texels);
+        sample->sMask = sample->tMask = 1;
+        sample->log2DimS = 1;
+        sample->linear = record[19];
+        sample->rShift[0] = record[21] == GR_WRAPMODE_REPEAT ? 31 : 20;
+        sample->rShift[1] = record[22] == GR_WRAPMODE_REPEAT ? 31 : 20;
+        if (sampling != NULL)
+        {
+            const int *parameters = sampling + 6 * unit;
+            sample->sMask = parameters[0];
+            sample->tMask = parameters[1];
+            sample->rShift[0] = parameters[2];
+            sample->rShift[1] = parameters[3];
+            sample->log2DimS = parameters[4];
+            sample->linear = parameters[5];
+        }
     }
     state.drawSurface.buffers[0].data = color;
     state.drawSurface.buffers[1].data = depth;
@@ -123,6 +173,19 @@ void differential_raster_span(const _grSignature *signature, const int *gradient
     cache.arenaSize = 1;
     state.pipelineCache = &cache;
     grExecutePixelPipeline(&state);
+}
+
+void differential_raster_span_inputs(const _grSignature *signature, const int *gradients,
+                                     void *color, void *depth, void *stencil,
+                                     const SpanInput *inputs)
+{
+    differential_raster_span_sample(signature, gradients, color, depth, stencil, inputs, NULL);
+}
+
+void differential_raster_span(const _grSignature *signature, const int *gradients,
+                              void *color, void *depth, void *stencil)
+{
+    differential_raster_span_inputs(signature, gradients, color, depth, stencil, NULL);
 }
 
 void differential_raster_signature(const SignatureInput *in,
@@ -193,6 +256,23 @@ void differential_raster_gradient(const int32_t *in, uint32_t *out)
     memcpy(out, pipe.reference, 40);
     memcpy(out + 10, pipe.xAdder, 40);
     memcpy(out + 20, pipe.yAdder, 40);
+}
+
+void differential_raster_depth_offset(const int32_t *in, uint32_t *out)
+{
+    Gerbera_s state;
+    _grPixelPipe pipe;
+    memset(&state, 0, sizeof(state));
+    memset(&pipe, 0, sizeof(pipe));
+    state.pixelPipeline = &pipe;
+    state.depthOffsetUnits = in[0];
+    state.depthOffsetFactor = in[1];
+    state.drawSurface.depthBytes = (unsigned char)in[2];
+    pipe.reference[0] = in[3];
+    pipe.xAdder[0] = in[4];
+    pipe.yAdder[0] = in[5];
+    grComputeDepthOffset(&state);
+    out[0] = (uint32_t)pipe.reference[0];
 }
 
 void differential_raster_triangle_gradients(const uint32_t *in,

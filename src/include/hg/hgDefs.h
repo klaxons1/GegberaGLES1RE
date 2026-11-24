@@ -11,6 +11,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Preserve target-specific behavior where the supplied ARM and x86 drivers
+ * differ. Tests and cross builds can select either reference explicitly. */
+#ifndef GERBERA_ARM_REFERENCE
+#if defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64) || \
+    (defined(__SYMBIAN32__) && !defined(__i386__) && !defined(__x86_64__) && \
+     !defined(_M_IX86) && !defined(_M_X64))
+#define GERBERA_ARM_REFERENCE 1
+#else
+#define GERBERA_ARM_REFERENCE 0
+#endif
+#endif
+
 /* ------------------------------------------------------------------ */
 /* fixed width integer types                                          */
 /* ------------------------------------------------------------------ */

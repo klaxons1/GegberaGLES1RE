@@ -1,11 +1,6 @@
 /* grrClear.c - the render-side clear family (port of the decompiled
  * grrClear.inl) plus the flush side grFlushBufferClears (grApiFast.inl).
  *
- * grLockSurface/grReleaseSurface are egl material (eglSymbian.inl 482/518);
- * they are stubbed until the egl module ports - the reference surface lock
- * only refreshes the render target and locks the CFbsBitmap heap, neither
- * of which exists in this reconstruction yet.
- *
  * Assert sites keep the original file/line strings. The fill dispatch goes
  * through the DLL tables (fillFunctions / off_479274): entries 0/1/3 are
  * the 1/2/4-byte fills, entry 2 is unreferenced (the decompile shows NULL,

@@ -2,6 +2,12 @@
 #define _POSIX_C_SOURCE 200809L
 #include <signal.h>
 #include <unistd.h>
+#include "hg/hgDefs.h"
+
+int differential_arm_reference(void)
+{
+    return GERBERA_ARM_REFERENCE;
+}
 
 static char last_call[256];
 static volatile sig_atomic_t last_call_length;

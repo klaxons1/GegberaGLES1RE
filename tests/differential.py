@@ -338,7 +338,8 @@ class Original:
         self.uc.reg_write(x86.UC_X86_REG_ESP, stack + 4)
         self.uc.reg_write(x86.UC_X86_REG_EIP, address)
 
-    def call(self, address, args, return64=False, instruction_budget=200000):
+    def call(self, address, args, return64=False, instruction_budget=200000,
+             initial_registers=None, trace_blocks=True):
         if time.monotonic() > self.deadline:
             raise OracleError("time budget exhausted; reduce --samples or select --module")
         for register in (x86.UC_X86_REG_EAX, x86.UC_X86_REG_EBX, x86.UC_X86_REG_ECX,
@@ -353,16 +354,30 @@ class Original:
         self.uc.mem_write(stack, bytes(4096))
         self.uc.mem_write(stack, struct.pack("<" + "I" * len(words), *words))
         self.uc.reg_write(x86.UC_X86_REG_ESP, stack)
+        for register, value in (initial_registers or {}).items():
+            if register not in (x86.UC_X86_REG_EBX, x86.UC_X86_REG_ESI,
+                                x86.UC_X86_REG_EDI, x86.UC_X86_REG_EBP):
+                raise ValueError("only callee-saved x86 registers may be seeded")
+            self.uc.reg_write(register, value & 0xFFFFFFFF)
         self.previous_branch = None
         self.previous_indirect = False
         self.direct_calls[address] = self.direct_calls.get(address, 0) + 1
+        suspended = self.block_hook is not None and not trace_blocks
+        if suspended:
+            self.remove_hook(self.block_hook)
+            self.block_hook = None
         try:
             self.uc.emu_start(address, self.RETURN, count=instruction_budget)
         except unicorn.UcError as error:
             pc = self.uc.reg_read(x86.UC_X86_REG_EIP)
             raise OracleError(f"original at 0x{pc:x}, entry 0x{address:x}: {error}") from error
+        finally:
+            if suspended:
+                self.block_hook = self.uc.hook_add(unicorn.UC_HOOK_BLOCK, self._block)
+                self.previous_branch = None
         if self.uc.reg_read(x86.UC_X86_REG_EIP) != self.RETURN:
-            raise OracleError(f"instruction budget exhausted at entry 0x{address:x}")
+            pc = self.uc.reg_read(x86.UC_X86_REG_EIP)
+            raise OracleError(f"instruction budget exhausted at 0x{pc:x}, entry 0x{address:x}")
         value = self.uc.reg_read(x86.UC_X86_REG_EAX)
         if return64:
             value |= self.uc.reg_read(x86.UC_X86_REG_EDX) << 32
@@ -431,6 +446,20 @@ class OriginalARM(Original):
             self.remove_hook(self.predicate_hook)
             self.predicate_library.differential_arm_coverage_destroy(self.predicate_state)
             self.predicate_state = None
+
+    def set_predicate_range(self, begin, end):
+        """Keep measured entry predicates without instrumenting unrelated callees."""
+        handle = ctypes.c_size_t()
+        callback = self.predicate_library.differential_arm_coverage_callback
+        status = self.unicorn_library.uc_hook_add(
+            self.uc._uch, ctypes.byref(handle), unicorn.UC_HOOK_CODE,
+            ctypes.cast(callback, ctypes.c_void_p), ctypes.c_void_p(self.predicate_state),
+            ctypes.c_uint64(begin), ctypes.c_uint64(end - 1))
+        if status:
+            raise OracleError(f"could not scope native ARM coverage: {status}")
+        self.uc._callbacks[handle.value] = callback
+        self.remove_hook(self.predicate_hook)
+        self.predicate_hook = handle.value
 
     def register_predicate(self, instruction):
         if len(instruction.bytes) == 4:
@@ -544,7 +573,7 @@ class OriginalARM(Original):
         self.uc.reg_write(arm.UC_ARM_REG_PC, destination)
 
     def call(self, address, args, return64=False, instruction_budget=200000,
-             initial_registers=None, trace_blocks=True):
+             initial_registers=None, trace_blocks=True, predicate_range=None):
         if time.monotonic() > self.deadline:
             raise OracleError("ARM time budget exhausted; reduce --samples or select --module")
         for register in range(arm.UC_ARM_REG_R0, arm.UC_ARM_REG_R12 + 1):
@@ -566,6 +595,9 @@ class OriginalARM(Original):
             self.uc.reg_write(register, value & 0xFFFFFFFF)
         self.previous_branch, self.previous_indirect = None, False
         self.direct_calls[address & ~1] = self.direct_calls.get(address & ~1, 0) + 1
+        scoped = predicate_range is not None and getattr(self, "predicate_state", None)
+        if scoped:
+            self.set_predicate_range(*predicate_range)
         suspended = self.block_hook is not None and not trace_blocks
         if suspended:
             self.remove_hook(self.block_hook)
@@ -576,6 +608,8 @@ class OriginalARM(Original):
             pc = self.uc.reg_read(arm.UC_ARM_REG_PC)
             raise OracleError(f"original ARM at 0x{pc:x}, entry 0x{address:x}: {error}") from error
         finally:
+            if scoped:
+                self.set_predicate_range(self.base, self.base + self.code_size)
             if suspended:
                 self.block_hook = self.uc.hook_add(unicorn.UC_HOOK_BLOCK, self._block)
                 self.previous_branch = None
@@ -599,6 +633,11 @@ class Suite:
         library.differential_set_timeout.restype = None
         library.differential_set_timeout(math.ceil(args.seconds))
         self.lib = NativeLibrary(library)
+        reference = self.lib.differential_arm_reference
+        reference.argtypes = []
+        reference.restype = ctypes.c_int
+        self.arm_reference = bool(reference())
+        print("Recovered target semantics: " + ("ARM" if self.arm_reference else "x86"), flush=True)
         self.arch = args.arch
         oracle_type = OriginalARM if self.arch == "arm" else Original
         self.oracle = oracle_type(args.original_arm if self.arch == "arm" else args.original,
@@ -762,7 +801,8 @@ def main():
                         help="original target; both runs ARM first (default)")
     parser.add_argument("--library", type=Path, default=root / "build/differential/libgerbera_diff.so")
     parser.add_argument("--module", action="append", choices=("numeric", "vertex", "raster", "texture", "clipper", "gl", "egl"))
-    parser.add_argument("--samples", type=int, default=128)
+    parser.add_argument("--samples", type=int, default=128,
+                        help="cases per input family; 256+ also expands texture/filter/blend combinations")
     parser.add_argument("--seed", type=int, default=0x474C4553)
     parser.add_argument("--seconds", type=float, default=60)
     parser.add_argument("--max-failures", type=int, default=10)

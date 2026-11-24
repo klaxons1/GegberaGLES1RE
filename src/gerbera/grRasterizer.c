@@ -49,11 +49,14 @@ void grSetupGradient(_grGradientInfo *info, int gradient, int g01, int g02,
         HGint64 yAdd64a;
         HGint64 yAdd64b;
 
-        xAdd64a = hgAsr64(hgMadd64(xAdd64, info->v02syPerArea, -g01),
+        /* ARM RSB wraps before the signed long multiply, including INT_MIN. */
+        xAdd64a = hgAsr64(hgMadd64(xAdd64, info->v02syPerArea,
+                                  (int)(0u - (unsigned int)g01)),
                           info->shift + 14);
         xAdd32 = hgGet64l(xAdd64a);
         xAdd64b = hgMul64x32(xAdd64a, info->v0sx);
-        yAdd64a = hgAsr64(hgMadd64(yAdd64, info->v01sxPerArea, -g02),
+        yAdd64a = hgAsr64(hgMadd64(yAdd64, info->v01sxPerArea,
+                                  (int)(0u - (unsigned int)g02)),
                           info->shift + 14);
         yAdd32 = hgGet64l(yAdd64a);
         yAdd64b = hgMul64x32(yAdd64a, info->v0sy);
@@ -85,9 +88,11 @@ void grComputeDeltas(_grGradientInfo *info, int gradient, int g01, int g02)
         HGint64 syDelta = hgMul64(info->v01syPerArea, g02);
         HGint64 sxDelta;
 
-        syDelta = hgMadd64(syDelta, info->v02syPerArea, -g01);
+        syDelta = hgMadd64(syDelta, info->v02syPerArea,
+                           (int)(0u - (unsigned int)g01));
         sxDelta = hgMul64(info->v02sxPerArea, g01);
-        sxDelta = hgMadd64(sxDelta, info->v01sxPerArea, -g02);
+        sxDelta = hgMadd64(sxDelta, info->v01sxPerArea,
+                           (int)(0u - (unsigned int)g02));
         if (info->shift + 14 >= 32)
         {
             int sh = info->shift - 18;

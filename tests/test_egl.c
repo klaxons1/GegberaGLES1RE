@@ -47,17 +47,20 @@ static void test_preinit_and_lifecycle(void)
 
     /* Uninitialized queries & error sentinel tags in TLS */
     CHECK(eglGetCurrentContext() == EGL_NO_CONTEXT);
+    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
+    CHECK(eglGetError() == EGL_SUCCESS);
     CHECK(eglGetCurrentSurface(EGL_DRAW) == EGL_NO_SURFACE);
+    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
     CHECK(eglGetCurrentSurface(EGL_READ) == EGL_NO_SURFACE);
+    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
+    CHECK(eglGetCurrentSurface(0xDEAD) == EGL_NO_SURFACE);
+    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
     CHECK(eglGetCurrentDisplay() == EGL_NO_DISPLAY);
+    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
 
     CHECK(eglQueryString(dpy, EGL_VENDOR) == NULL);
     CHECK(eglGetError() == EGL_NOT_INITIALIZED);
     /* Reading eglGetError resets TLS sentinel to EGL_SUCCESS */
-    CHECK(eglGetError() == EGL_SUCCESS);
-
-    CHECK(eglInitialize(EGL_NO_DISPLAY, &major, &minor) == EGL_FALSE);
-    CHECK(eglGetError() == EGL_BAD_DISPLAY);
     CHECK(eglGetError() == EGL_SUCCESS);
 
     CHECK(eglGetConfigs(dpy, NULL, 0, &numCfg) == EGL_FALSE);
@@ -94,6 +97,14 @@ static void test_preinit_and_lifecycle(void)
     CHECK(eglGetError() == EGL_NOT_INITIALIZED);
     CHECK(eglQueryContext(dpy, 1, EGL_CONFIG_ID, &val) == EGL_FALSE);
     CHECK(eglGetError() == EGL_NOT_INITIALIZED);
+
+    /* An invalid first display still creates the original's global state. */
+    CHECK(eglInitialize(EGL_NO_DISPLAY, &major, &minor) == EGL_FALSE);
+    CHECK(eglGetError() == EGL_BAD_DISPLAY);
+    CHECK(eglGetCurrentContext() == EGL_NO_CONTEXT);
+    CHECK(eglGetError() == EGL_SUCCESS);
+    CHECK(major == 0 && minor == 0);
+    CHECK(eglTerminate(dpy) == EGL_TRUE);
 
     /* Initialize EGL 1.1 */
     CHECK(eglInitialize(dpy, &major, &minor) == EGL_TRUE);
@@ -608,6 +619,24 @@ static void test_window_and_pixmap_surfaces(void)
     CHECK(copyTargetPixels[0] == 0xFF00FFFFu);
     CHECK(copyTargetPixels[96 * 80 - 1] == 0xFF00FFFFu);
 
+    /* Exact target dimensions are checked before any copy, even if larger. */
+    {
+        const int sizes[][2] = {{95, 80}, {97, 80}, {96, 79}, {96, 81}};
+        unsigned int i;
+        for (i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i)
+        {
+            copyTarget.width = sizes[i][0];
+            copyTarget.height = sizes[i][1];
+            copyTargetPixels[0] = 0x12345678u;
+            CHECK(eglCopyBuffers(dpy, winSurf, &copyTarget) == EGL_FALSE);
+            CHECK(eglGetError() == EGL_BAD_MATCH);
+            CHECK(copyTargetPixels[0] == 0x12345678u);
+            CHECK(copyTarget.locked == 0);
+        }
+        copyTarget.width = 96;
+        copyTarget.height = 80;
+    }
+
     /* Mismatched pixmap displayMode fails eglCopyBuffers with EGL_BAD_MATCH */
     copyTarget.displayMode = EGL_SYMBIAN_ECOLOR64K;
     CHECK(eglCopyBuffers(dpy, winSurf, &copyTarget) == EGL_FALSE);
@@ -637,10 +666,20 @@ static void test_window_and_pixmap_surfaces(void)
     CHECK(pixCtx != EGL_NO_CONTEXT);
     CHECK(eglMakeCurrent(dpy, pixSurf, pixSurf, pixCtx) == EGL_TRUE);
 
+    /* A mapped but noncurrent surface is rejected before target validation. */
+    CHECK(eglCopyBuffers(dpy, winSurf, NULL) == EGL_FALSE);
+    CHECK(eglGetError() == EGL_BAD_SURFACE);
+    CHECK(eglCopyBuffers(dpy, winSurf, &copyTarget) == EGL_FALSE);
+    CHECK(eglGetError() == EGL_BAD_SURFACE);
+
     /* Clear pixmap to yellow (R=255, G=255, B=0, A=255 -> BGRA 0xFFFFFF00) */
     glClearColor(1.0f, 1.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     CHECK(eglWaitGL() == EGL_TRUE);
+    /* Original eglWaitGL does not flush the deferred clear. */
+    CHECK(pixmapPixels[0] == 0);
+    CHECK(pixmapPixels[32 * 32 - 1] == 0);
+    glFinish();
     CHECK(pixmapPixels[0] == 0xFFFFFF00u);
     CHECK(pixmapPixels[32 * 32 - 1] == 0xFFFFFF00u);
     CHECK(nativePix.locked == 0);

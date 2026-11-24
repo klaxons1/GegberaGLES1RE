@@ -58,10 +58,15 @@ OPERATIONS = (
     ("glEnable", 0xD96C, 0xD990, 0x413030, 0x413060),
     ("glDisable", 0xD990, 0xD9B4, 0x413060, 0x413090),
     ("glIsEnabled", 0xDAD8, 0xDB30, 0x413230, 0x413311),
+    ("glFrontFace", 0xF5EC, 0xF65C, 0x4152E0, 0x41536B),
+    ("glCullFace", 0xF65C, 0xF6F0, 0x415370, 0x415419),
+    ("glViewport", 0xF430, 0xF4FC, 0x4150A0, 0x4151A4),
+    ("glScissor", 0xF4FC, 0xF5EC, 0x4151B0, 0x4152D4),
 )
 INDEX = {entry[0]: i for i, entry in enumerate(OPERATIONS)}
 # Canonical offsets follow ARM. The x86 core has an eight-byte prefix.
-CORE_RANGES = ((3, 4), (8, 9), (20, 1), (24, 5), (30, 2), (50, 1), (52, 55), (308, 160),
+CORE_RANGES = ((3, 4), (8, 9), (20, 1), (24, 5), (30, 2), (33, 1), (50, 1), (52, 55),
+               (220, 88), (308, 160),
                (472, 28), (504, 28), (532, 20), (594, 2), (5520, 56),
                (5576, 12), (5712, 208 * 8))
 
@@ -82,7 +87,7 @@ def enum_command(name, first, second, value):
     return command(name, first, second, (value,))
 
 
-def seeds(arm=False):
+def seeds(arm=False, reference_arm=False):
     fog, materials, lights, environment = [], [], [], []
     for suffix in ("f", "fv", "x", "xv"):
         for pname, values in ((0xB62, (0.5,)), (0xB63, (-2,)), (0xB64, (8,)),
@@ -177,7 +182,24 @@ def seeds(arm=False):
         for name in ("glEnable", "glEnable", "glDisable", "glDisable"):
             capabilities += [command(name, cap), command("glIsEnabled", cap),
                              command("glGetBooleanv", cap), command("glGetError")]
-    return [fog, materials, lights, environment, invalid, arrays, capabilities]
+    raster = []
+    front_modes = [0x900, 0x901, 0x902, 0xFFFFFFFF]
+    # ARM accepts byte aliases that the x86 binary rejects. Exercise those
+    # inputs only against the reference selected when compiling the source.
+    if arm == reference_arm:
+        front_modes += [0, 1, 0x1900, 0x1901, 0xFFFFF900, 0xFFFFF901]
+    for front in front_modes:
+        raster += [command("glFrontFace", front), command("glGetIntegerv", 0xB46), command("glGetError")]
+        for face in (0x404, 0x405, 0x408, 0):
+            raster += [command("glCullFace", face), command("glGetIntegerv", 0xB45), command("glGetError")]
+    for name, token in (("glViewport", 0xBA2), ("glScissor", 0xC10)):
+        for x, y in ((0, 0), (-10, 25), (31, -19),
+                     (0x7FFFFFFF, -0x80000000), (-0x80000000, 0x7FFFFFFF)):
+            for width, height in ((0, 0), (96, 64), (2048, 2048), (4096, 8192),
+                                  (0x7FFFFFFF, 0x7FFFFFFF), (-1, 32), (32, -1)):
+                inputs = tuple(v & 0xFFFFFFFF for v in (x, y, width, height)) + (0,) * 4
+                raster += [(INDEX[name], inputs), command("glGetIntegerv", token), command("glGetError")]
+    return [fog, materials, lights, environment, invalid, arrays, capabilities, raster]
 
 
 def run(suite):
@@ -203,6 +225,8 @@ def run(suite):
     lib.diff_gl_state_step.restype = C.c_uint32
     lib.diff_gl_state_snapshot.argtypes = [C.c_void_p, C.c_void_p]
     lib.diff_gl_state_snapshot.restype = None
+    lib.diff_gl_state_surface.argtypes = [C.c_void_p, C.c_int, C.c_int]
+    lib.diff_gl_state_surface.restype = None
     # Matrix run configures the common session functions; keep this module also
     # usable independently by configuring them here.
     lib.diff_gl_matrix_create.argtypes = [C.c_uint, C.c_void_p]
@@ -215,11 +239,13 @@ def run(suite):
     oracle.call(0x2D87C if arm else 0x4616D0, [destination, source])
     identity = oracle.read(destination, 80)
     defaults = oracle.read(0x350F4 if arm else 0x471A74, GETTER_BYTES)
-    for case, sequence in enumerate(seeds(arm)):
+    for case, sequence in enumerate(seeds(arm, suite.arm_reference)):
         oracle.reset()
         core = oracle.alloc(0x3000)
+        oracle.write(core + (0x1CE0 if arm else 0x1CE8), words([96, 64]))
         context = bytearray(CONTEXT_BYTES)
         struct.pack_into("<I", context, 0, core)
+        struct.pack_into("<ii", context, 108, 96, 64)
         context[GETTER_OFFSET:GETTER_OFFSET + GETTER_BYTES] = defaults
         stacks = []
         for i in range(STACK_COUNT):
@@ -232,9 +258,12 @@ def run(suite):
         oracle.watch(core, 0x3000, "state.core")
         oracle.watch(output, 64, "state.output-with-canaries")
         hook = oracle.add_hook(0xB59C if arm else 0x4085B0, lambda m: m.return_from_call(ctx))
+        surface_hooks = [oracle.add_hook(address, lambda m: m.return_from_call(0))
+                         for address in ((0xB074, 0xAEF8) if arm else (0x406890, 0x4069B0))]
         session = lib.diff_gl_matrix_create(0xA5, C.create_string_buffer(identity, 80))
         if not session:
             raise ValueError("state fixture allocation failed")
+        lib.diff_gl_state_surface(session, 96, 64)
         native_snapshot, native_core = C.create_string_buffer(SNAPSHOT_BYTES), C.create_string_buffer(0x3000)
         try:
             for step, (operation, inputs) in enumerate(sequence):
@@ -243,7 +272,7 @@ def run(suite):
                 oracle.write(arguments, data)
                 oracle.write(output, bytes([0xA5]) * 64)
                 native_output = C.create_string_buffer(bytes([0xA5]) * 64, 64)
-                if operation in (38, 39, 41, 42, 43):
+                if operation in (38, 39, 41, 42, 43, 51, 52):
                     args = inputs[:4]
                 elif operation in (40, 44):
                     args = inputs[:3]
@@ -287,3 +316,5 @@ def run(suite):
         finally:
             lib.diff_gl_matrix_destroy(session)
             oracle.remove_hook(hook)
+            for surface_hook in surface_hooks:
+                oracle.remove_hook(surface_hook)

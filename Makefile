@@ -79,7 +79,7 @@ src/gerbera/grrTexture.c \
 
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 
-TEST_SRC := tests/test_hg.c tests/test_imath.c tests/test_geometry.c tests/test_core.c tests/test_opengl.c tests/test_egl.c tests/test_symbian_surface.c
+TEST_SRC := tests/test_hg.c tests/test_imath.c tests/test_geometry.c tests/test_core.c tests/test_opengl.c tests/test_egl.c tests/test_symbian_surface.c tests/test_symbian_state.c tests/test_egl_threads.c
 
 ifeq ($(shell uname -s),Darwin)
 TEST_GC_LDFLAGS := -Wl,-dead_strip
@@ -87,7 +87,7 @@ else
 TEST_GC_LDFLAGS := -Wl,--gc-sections
 endif
 
-.PHONY: all test check differential differential-build differential-coverage win32 symbian clean
+.PHONY: all test check differential differential-build differential-coverage symbian-entry-check native-dispatch-check win32 symbian clean
 all: $(BUILD)/libgerbera.a
 
 win32:
@@ -95,6 +95,9 @@ win32:
 
 symbian:
 	./symbian/build_symbian.sh
+
+symbian-entry-check: differential-build
+	GERBERA_DIFFERENTIAL_LIBRARY=$(BUILD)/differential/libgerbera_diff.so $(PYTHON) tests/test_symbian_entry.py
 
 $(BUILD)/%.o: %.c Makefile
 	@mkdir -p $(dir $@)
@@ -127,11 +130,19 @@ $(BUILD)/test_egl: $(BUILD)/libgerbera.a tests/test_egl.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) tests/test_egl.c $(BUILD)/libgerbera.a -lm -o $@
 
-$(BUILD)/test_symbian_surface: tests/test_symbian_surface.c src/gerbera/egl/eglSymbian.c src/gerbera/egl/eglUtil.c src/hg/hgInt32.c
+$(BUILD)/test_symbian_surface: tests/test_symbian_surface.c src/gerbera/egl/eglSymbian.c src/gerbera/egl/eglUtil.c src/hg/hgInt32.c symbian/include/symbian_os.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DNDEBUG -ffunction-sections -fdata-sections -Wno-attributes -idirafter symbian/include tests/test_symbian_surface.c src/hg/hgInt32.c $(TEST_GC_LDFLAGS) -o $@
 
-test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_geometry $(BUILD)/test_core $(BUILD)/test_opengl $(BUILD)/test_egl $(BUILD)/test_symbian_surface
+$(BUILD)/test_symbian_state: tests/test_symbian_state.c src/gerbera/egl/eglSymbian.c src/gerbera/egl/eglUtil.c symbian/include/symbian_os.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DNDEBUG -ffunction-sections -fdata-sections -Wno-attributes -idirafter symbian/include tests/test_symbian_state.c $(TEST_GC_LDFLAGS) -o $@
+
+$(BUILD)/test_egl_threads: tests/test_egl_threads.c $(BUILD)/libgerbera.a
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -pthread tests/test_egl_threads.c $(BUILD)/libgerbera.a -lm -o $@
+
+test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_geometry $(BUILD)/test_core $(BUILD)/test_opengl $(BUILD)/test_egl $(BUILD)/test_symbian_surface $(BUILD)/test_symbian_state $(BUILD)/test_egl_threads
 	$(BUILD)/test_hg
 	$(BUILD)/test_imath
 	$(BUILD)/test_geometry
@@ -139,6 +150,8 @@ test: $(BUILD)/test_hg $(BUILD)/test_imath $(BUILD)/test_geometry $(BUILD)/test_
 	$(BUILD)/test_opengl
 	$(BUILD)/test_egl
 	$(BUILD)/test_symbian_surface
+	$(BUILD)/test_symbian_state
+	$(BUILD)/test_egl_threads
 
 # Optional original/source checks require Python with unicorn, capstone and pefile.
 PYTHON ?= python3
@@ -159,6 +172,10 @@ differential: differential-build
 	$(PYTHON) tests/differential.py --library $(BUILD)/differential/libgerbera_diff.so $(DIFF_ARGS)
 
 check: test differential
+
+# Cross-target dispatch ABI checks; requires Clang, ld.lld and Unicorn.
+native-dispatch-check: differential-build
+	GERBERA_DIFFERENTIAL_LIBRARY=$(BUILD)/differential/libgerbera_diff.so $(PYTHON) tests/test_native_dispatch.py
 
 # Optional recovered-C coverage, measured during the same binary comparisons.
 COVERAGE_CC ?= clang
