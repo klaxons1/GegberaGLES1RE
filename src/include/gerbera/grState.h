@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include "hg/hgDefs.h"
 #include "gerbera/grDefs.h"
+#include "gerbera/grCcsoft.h"
 #include "gerbera/grTexture.h"
 #include "gerbera/hc/hcOpcode.h"
 #include "hg/hgInt32.h"
@@ -1060,6 +1061,11 @@ struct Gerbera_s
     _XColor3 baseColor;             /* ambientLightSum*material.ambient+emission
                                      * (grUpdateLights) */
     int baseColorDirty;
+
+#if defined(GERBERA_CCSOFT)
+    /* grCcsoft.c span selection (ccsoft.key 0: the JIT renders) */
+    grCcsoftState ccsoft;
+#endif
 };
 
 /* --- grApiSmall.inl: transform stack / user clip planes -------------------- */

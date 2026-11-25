@@ -20,7 +20,7 @@ else
 TEST_GC_LDFLAGS := -Wl,--gc-sections
 endif
 
-.PHONY: all test check differential differential-build differential-harness-check differential-coverage symbian-entry-check native-dispatch-check library-sources win32 symbian symbian-rgb565 clean
+.PHONY: all test check differential differential-build differential-harness-check differential-coverage symbian-entry-check native-dispatch-check library-sources win32 symbian symbian-rgb565 symbian-ccsoft clean
 all: $(BUILD)/libgerbera.a
 
 library-sources:
@@ -34,6 +34,9 @@ symbian:
 
 symbian-rgb565:
 	GERBERA_FRAMEBUFFER_BPP=16 ./symbian/build_symbian.sh
+
+symbian-ccsoft:
+	GERBERA_CCSOFT=1 ./symbian/build_symbian.sh
 
 symbian-entry-check: differential-build
 	GERBERA_DIFFERENTIAL_LIBRARY=$(DIFF_LIB) $(PYTHON) tests/test_symbian_entry.py

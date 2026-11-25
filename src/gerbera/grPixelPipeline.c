@@ -8,6 +8,7 @@
  */
 #include "gerbera/grState.h"
 #include "gerbera/grDefs.h"
+#include "gerbera/grCcsoft.h"
 #include "gerbera/grRGBA.h"
 #include "gerbera/hc/hcCompiler.h"
 #include "hg/hgFill.h"
@@ -918,6 +919,11 @@ void grExecutePixelPipeline(Gerbera_s *state)
     if (state->pixelPipeline == NULL &&
         grAssert("state->renderStack->pixelPipelineStack", "grPixelPipeline.h", 154) != 0)
         grDie(0);
+#if defined(GERBERA_CCSOFT)
+    /* GERBERA_CCSOFT: specialised C spans for the common states */
+    if (grCcsoftExecute(state))
+        return;
+#endif
 #if defined(GR_NATIVE_JIT)
     /* Native 32-bit JIT execution. EPOC ARM (docs/libgles_cm.dll.epoc):
      * r0 = renderStack + 14644, with [r0..r0+63] reserved for HCARMBackend
@@ -1698,6 +1704,9 @@ void grEnsureValidPixelPipeline(Gerbera_s *state)
     unsigned int magic0 = GR_STACK_CHECK_MAGIC0;
     unsigned int magic1 = GR_STACK_CHECK_MAGIC1;
 
+#if defined(GERBERA_CCSOFT)
+    state->ccsoft.key = 0;
+#endif
     grEvaluatePixelPipeline(state, &signature);
     grCompressSignature(&compressed, &signature);
     entry = grCacheFind(state->pipelineCache, &compressed, &gradientMask);
@@ -1801,6 +1810,9 @@ void grEnsureValidPixelPipeline(Gerbera_s *state)
         state->activeGradientMask = (int)gradientMask;
         state->pixelPipelineCode = (grPixelPipelineCode_fn)entry;
     }
+#if defined(GERBERA_CCSOFT)
+    grCcsoftClassify(state);
+#endif
     if ((magic0 != (unsigned int)GR_STACK_CHECK_MAGIC0 ||
          magic1 != (unsigned int)GR_STACK_CHECK_MAGIC1) &&
         grAssert(

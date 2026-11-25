@@ -13,7 +13,20 @@ ELF2E32="${TOOLS_DIR}/elf2e32_bin"
 # GERBERA_FRAMEBUFFER_BPP=16 builds the RGB565 variant: window surfaces always
 # render into EColor64K back buffers (window configs are RGB565 only) and
 # R8G8B8(A8) window requests are given the RGB565 config.
-FB_BPP="${GERBERA_FRAMEBUFFER_BPP:-32}"
+#
+# GERBERA_CCSOFT=1 builds the RGB565 variant with the CCsoftgl-style C span
+# renderers (src/gerbera/grCcsoft.c): common RGB565 pixel states are drawn by
+# compile-time specialised C spans, bit-exact with the JIT, and the rest by the
+# JIT. It implies GERBERA_FRAMEBUFFER_BPP=16 (the spans only draw RGB565).
+CCSOFT="${GERBERA_CCSOFT:-0}"
+case "${CCSOFT}" in
+    0) FB_BPP="${GERBERA_FRAMEBUFFER_BPP:-32}" ;;
+    1) FB_BPP="${GERBERA_FRAMEBUFFER_BPP:-16}"
+       if [[ "${FB_BPP}" != 16 ]]; then
+           echo "GERBERA_CCSOFT=1 needs GERBERA_FRAMEBUFFER_BPP=16" >&2; exit 2
+       fi ;;
+    *) echo "GERBERA_CCSOFT must be 0 or 1" >&2; exit 2 ;;
+esac
 case "${FB_BPP}" in
     32) BUILD_DIR="/tmp/gerbera_symbian_build"; OUT_DIR="${REPO_ROOT}/symbian/out"
         ZIP_NAME="Gerbera-GLES1-Symbian-EKA2-ARMv5.zip"; FB_DEFINES=() ;;
@@ -21,6 +34,10 @@ case "${FB_BPP}" in
         ZIP_NAME="Gerbera-GLES1-Symbian-EKA2-ARMv5-RGB565.zip"; FB_DEFINES=(-DGERBERA_RGB565) ;;
     *) echo "GERBERA_FRAMEBUFFER_BPP must be 16 or 32" >&2; exit 2 ;;
 esac
+if [[ "${CCSOFT}" == 1 ]]; then
+    BUILD_DIR="/tmp/gerbera_symbian_build_ccsoft"; OUT_DIR="${REPO_ROOT}/symbian/out/ccsoft"
+    ZIP_NAME="Gerbera-GLES1-Symbian-EKA2-ARMv5-RGB565-CCSOFT.zip"; FB_DEFINES+=(-DGERBERA_CCSOFT)
+fi
 
 # Bootstrap missing compiler and image-conversion tools.
 if [[ ! -x "${GCC_DIR}/bin/arm-none-symbianelf-gcc" ]]; then
