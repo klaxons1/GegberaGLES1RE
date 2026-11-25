@@ -1,0 +1,71 @@
+diff --git a/src/gerbera/hc/hcCompiler.c b/src/gerbera/hc/hcCompiler.c
+index 7bcf3ec..6df132c 100644
+--- a/src/gerbera/hc/hcCompiler.c
++++ b/src/gerbera/hc/hcCompiler.c
+@@ -1758,16 +1758,20 @@ static int irTraceShiftedByte(HCInstr_s *lst, int *defPos, unsigned char *defCnt
+     return 0;
+ }
+ 
+-static void peepholeIdentityRepackStore(HCInstr_s *lst)
++static void peepholeIdentityRepackStore(HCArena_s *mgr, HCInstr_s *lst)
+ {
+     int nRegs = scanNumRegs(lst).numRegs;
+     unsigned char *defCnt;
+     int *defPos;
+     int i, nInstr = 0;
++    HCMark_s mark;
+     if (nRegs <= 0) return;
+-    defCnt = (unsigned char *)calloc((size_t)nRegs, 1);
+-    defPos = (int *)malloc(sizeof(int) * (size_t)nRegs);
+-    if (!defCnt || !defPos) { free(defCnt); free(defPos); return; }
++    /* scratch from the compiler arena (the freestanding Symbian build has no
++     * malloc); an overflow takes the arena's usual longjmp escape */
++    mark = HCArena_mark(mgr);
++    defPos = (int *)HCArena_allocBottom(mgr, sizeof(int) * (unsigned int)nRegs);
++    defCnt = (unsigned char *)HCArena_allocBottom(mgr, (unsigned int)nRegs);
++    memset(defCnt, 0, (size_t)nRegs);
+     for (i = 0; i < 100000; ++i) {
+         int op = HC_getOpcodeOper(&lst[i]);
+         int def = HC_getDef(&lst[i]);
+@@ -1827,7 +1831,7 @@ static void peepholeIdentityRepackStore(HCInstr_s *lst)
+         /* Replace store value with original source word. */
+         HC_setOpcodeDst(ins, base);
+     }
+-    free(defCnt); free(defPos);
++    HCArena_release(mgr, &mark);
+ }
+ 
+ static void peepholeFills(HCArena_s *mgr, HCInstr_s *lst)
+@@ -4468,7 +4472,7 @@ static int compileInternal(HCArena_s *mgr, void **output, HCInstr_s *emuDst,
+         {
+             peephole(lst);
+             cseInvariantR0Loads(lst);
+-            peepholeIdentityRepackStore(lst);
++            peepholeIdentityRepackStore(mgr, lst);
+         }
+         if ((optimizationMask & HC_OPT_SHIFTS) != 0)
+         {
+@@ -4483,7 +4487,7 @@ static int compileInternal(HCArena_s *mgr, void **output, HCInstr_s *emuDst,
+             deadCodeElimination(mgr, lst);
+         if ((optimizationMask & HC_OPT_PEEPHOLE) != 0)
+         {
+-            peepholeIdentityRepackStore(lst);
++            peepholeIdentityRepackStore(mgr, lst);
+             if ((optimizationMask & HC_OPT_DEAD_CODE) != 0)
+                 deadCodeElimination(mgr, lst);
+         }
+@@ -4532,7 +4536,7 @@ static int compileInternal(HCArena_s *mgr, void **output, HCInstr_s *emuDst,
+ 
+         if ((optimizationMask & HC_OPT_PEEPHOLE) != 0)
+         {
+-            peepholeIdentityRepackStore(lst);
++            peepholeIdentityRepackStore(mgr, lst);
+             if ((optimizationMask & HC_OPT_DEAD_CODE) != 0)
+                 deadCodeElimination(mgr, lst);
+         }
+diff --git a/symbian/out/Gerbera-GLES1-Symbian-EKA2-ARMv6.zip b/symbian/out/Gerbera-GLES1-Symbian-EKA2-ARMv6.zip
+index 23bf078..310f7ff 100644
+Binary files a/symbian/out/Gerbera-GLES1-Symbian-EKA2-ARMv6.zip and b/symbian/out/Gerbera-GLES1-Symbian-EKA2-ARMv6.zip differ
+diff --git a/symbian/out/libgles_cm.dll b/symbian/out/libgles_cm.dll
+index f6fc395..5438407 100644
+Binary files a/symbian/out/libgles_cm.dll and b/symbian/out/libgles_cm.dll differ
