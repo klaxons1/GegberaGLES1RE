@@ -1,0 +1,301 @@
+CC3DBench
+phone 20014dd0 cpu 192000 kHz
+C scene 0: avg 857 min 549 max 1892 us
+C present 8773
+C scene 1: avg 3072 min 2716 max 4028 us
+C present 7058
+C scene 2: avg 4199 min 4119 max 4364 us
+C present 6612
+C scene 3: avg 8397 min 7720 max 9185 us
+C present 7083
+C scene 4: avg 10068 min 9338 max 11230 us
+C present 7188
+C scene 5: avg 11535 min 11169 max 12359 us
+C present 7369
+C scene 6: avg 4983 min 4760 max 5340 us
+C present 6934
+C scene 7: avg 1288 min 1251 max 1525 us
+C present 6597
+C scene 8: avg 6026 min 5920 max 6439 us
+C present 6564
+C scene 9: avg 7177 min 6988 max 7690 us
+C present 6593
+C scene 10: avg 5487 min 5401 max 5645 us
+C present 6671
+C scene 11: avg 7981 min 7751 max 8331 us
+C present 6577
+C scene 12: avg 3797 min 3570 max 5798 us
+C present 6780
+C scene 13: avg 6699 min 6561 max 7110 us
+C present 6518
+C scene 14: avg 9175 min 8972 max 9521 us
+C present 6415
+C scene 15: avg 13415 min 13092 max 13824 us
+C present 6433
+C scene 16: avg 9994 min 9796 max 10223 us
+C present 6976
+C scene 17: avg 18504 min 18280 max 19042 us
+C present 6785
+C scene 18: avg 15718 min 15472 max 16174 us
+C present 6863
+C scene 19: avg 19914 min 18432 max 26153 us
+C present 6734
+C scene 20: avg 7829 min 7690 max 8117 us
+C present 6598
+C scene 21: avg 33572 min 33203 max 34118 us
+C present 6745
+C scene 22: avg 7253 min 7110 max 7598 us
+C present 7156
+C scene 23: avg 14487 min 14251 max 14923 us
+C present 6713
+C scene 24: avg 20658 min 20385 max 21057 us
+C present 6705
+C scene 25: avg 15798 min 14343 max 19805 us
+C present 7018
+C scene 26: avg 1937 min 1831 max 1983 us
+C present 6589
+C scene 27: avg 1146 min 1068 max 1251 us
+C present 7108
+C scene 28: avg 962 min 946 max 1007 us
+C present 7092
+C scene 29: avg 14461 min 14251 max 14862 us
+C present 7226
+C scene 30: avg 14596 min 14221 max 15075 us
+C present 7209
+C scene 31: avg 15025 min 14587 max 15655 us
+C present 7249
+C scene 32: avg 14501 min 14129 max 14923 us
+C present 7245
+C scene 33: avg 20991 min 20324 max 21606 us
+C present 7051
+C scene 34: avg 21672 min 20538 max 28411 us
+C present 7260
+C scene 35: avg 21394 min 20660 max 22369 us
+C present 7095
+C scene 36: avg 3700 min 3540 max 4394 us
+C present 6667
+C scene 37: avg 3985 min 3753 max 4455 us
+C present 6610
+C scene 38: avg 20699 min 20233 max 21240 us
+C present 6682
+C scene 39: avg 5952 min 5737 max 6927 us
+C present 6797
+C scene 40: avg 9643 min 9490 max 10223 us
+C present 6583
+C scene 41: avg 6068 min 5859 max 6927 us
+C present 7098
+C scene 42: avg 9656 min 9460 max 10070 us
+C present 6690
+C scene 43: avg 9721 min 9521 max 10253 us
+C present 7259
+C scene 44: avg 8391 min 8209 max 8972 us
+C present 6581
+C scene 45: avg 6890 min 6744 max 7110 us
+C present 6680
+C scene 46: avg 6913 min 6774 max 7324 us
+C present 6646
+C scene 47: avg 20017 min 19622 max 22308 us
+C present 6598
+C scene 48: avg 2438 min 2380 max 2624 us
+C present 6730
+C scene 49: avg 2874 min 2807 max 3509 us
+C present 6526
+C scene 50: avg 12813 min 12329 max 13488 us
+C present 7024
+C scene 51: avg 14720 min 14312 max 15075 us
+C present 7283
+C scene 52: avg 15645 min 15228 max 15899 us
+C present 7264
+C scene 53: avg 21663 min 21179 max 22003 us
+C present 7129
+C scene 54: avg 22145 min 21606 max 23132 us
+C present 7087
+C scene 55: avg 21995 min 21514 max 22491 us
+C present 7123
+C scene 56: avg 21956 min 21423 max 22521 us
+C present 7106
+C scene 57: avg 21941 min 21331 max 23986 us
+C present 7098
+C scene 58: avg 21825 min 21301 max 22521 us
+C present 7116
+C scene 59: avg 14728 min 14404 max 15441 us
+C present 7152
+C scene 60: avg 22817 min 22338 max 23162 us
+C present 7074
+C scene 61: avg 29332 min 29083 max 29907 us
+C present 6718
+C scene 62: avg 35979 min 35736 max 36865 us
+C present 6728
+C scene 63: avg 32149 min 31616 max 32714 us
+C present 6764
+C scene 64: avg 34387 min 32165 max 60394 us
+C present 6810
+C scene 65: avg 25544 min 25146 max 28228 us
+C present 7056
+C scene 66: avg 41556 min 36285 max 76629 us
+C present 6915
+C scene 67: avg 20089 min 19042 max 23620 us
+C present 6907
+C scene 68: avg 7671 min 7019 max 10894 us
+C present 6741
+C scene 69: avg 25542 min 25024 max 26245 us
+C present 6484
+C scene 70: avg 25033 min 24444 max 26947 us
+C present 6658
+C scene 71: avg 27030 min 26489 max 27435 us
+C present 6646
+C scene 72: avg 39969 min 38940 max 40954 us
+C present 6747
+GLES requested 16 bit, config 24 bit:
+GL scene 0: avg 13657 min 5950 max 15716 us
+GL scene 1: avg 28976 min 27221 max 50598 us
+GL scene 2: avg 42964 min 39978 max 79620 us
+GL scene 3: avg 33004 min 27923 max 41259 us
+GL scene 4: avg 43590 min 37322 max 58685 us
+GL scene 5: avg 45293 min 41992 max 73699 us
+GL scene 6: avg 36681 min 35278 max 43762 us
+GL scene 7: avg 17018 min 15869 max 25421 us
+GL scene 8: avg 29691 min 27343 max 40985 us
+GL scene 9: avg 35979 min 32653 max 60699 us
+GL scene 10: avg 32357 min 30151 max 58380 us
+GL scene 11: avg 37366 min 33813 max 69030 us
+GL scene 12: avg 22649 min 21057 max 37841 us
+GL scene 13: avg 28819 min 25177 max 49621 us
+GL scene 14: avg 70699 min 67199 max 91583 us
+GL scene 15: avg 119939 min 118011 max 133636 us
+GL scene 16: avg 48480 min 47912 max 50323 us
+GL scene 17: avg 85235 min 84381 max 88287 us
+GL scene 18: avg 80583 min 78430 max 106445 us
+GL scene 19: avg 85559 min 81512 max 111145 us
+GL scene 20: avg 36571 min 35675 max 41748 us
+GL scene 21: avg 100753 min 98022 max 108093 us
+GL scene 22: avg 34451 min 33752 max 38146 us
+GL scene 23: avg 35350 min 34210 max 43060 us
+GL scene 24: avg 34360 min 34088 max 34545 us
+GL scene 25: avg 51288 min 50567 max 53649 us
+GL scene 26: avg 23496 min 22949 max 24291 us
+GL scene 27: avg 21186 min 20629 max 26153 us
+GL scene 28: avg 16168 min 15808 max 17852 us
+GL scene 29: avg 46145 min 45532 max 49041 us
+GL scene 30: avg 46927 min 46661 max 47576 us
+GL scene 31: avg 52798 min 48706 max 63903 us
+GL scene 32: avg 46430 min 46081 max 47424 us
+GL scene 33: avg 47753 min 44769 max 84899 us
+GL scene 34: avg 45432 min 44830 max 46875 us
+GL scene 35: avg 45667 min 44860 max 48370 us
+GL scene 36: avg 26917 min 25360 max 45776 us
+GL scene 37: avg 26366 min 26153 max 26641 us
+GL scene 38: avg 62829 min 56213 max 137237 us
+GL scene 39: avg 31386 min 29571 max 54565 us
+GL scene 40: avg 39702 min 36987 max 75836 us
+GL scene 41: avg 28010 min 27618 max 28503 us
+GL scene 42: avg 33422 min 33172 max 34027 us
+GL scene 43: avg 37530 min 36529 max 38726 us
+GL scene 44: avg 36117 min 35675 max 36590 us
+GL scene 45: avg 49022 min 48614 max 49957 us
+GL scene 46: avg 53533 min 53314 max 54138 us
+GL scene 47: avg 61580 min 58319 max 105224 us
+GL scene 48: avg 22082 min 21606 max 23834 us
+GL scene 49: avg 29389 min 29113 max 30578 us
+GL scene 50: avg 40362 min 39825 max 41076 us
+GL scene 51: avg 48348 min 47912 max 49804 us
+GL scene 52: avg 54740 min 54382 max 55511 us
+GL scene 53: avg 45625 min 45318 max 46234 us
+GL scene 54: avg 47071 min 46752 max 47607 us
+GL scene 55: avg 51070 min 50933 max 51391 us
+GL scene 56: avg 49680 min 49468 max 50170 us
+GL scene 57: avg 46487 min 45959 max 48736 us
+GL scene 58: avg 47223 min 46722 max 49530 us
+GL scene 59: avg 48831 min 48492 max 49835 us
+GL scene 60: avg 49800 min 49499 max 50384 us
+GL scene 61: avg 52047 min 51879 max 52581 us
+GL scene 62: avg 66964 min 66589 max 67749 us
+GL scene 63: avg 56573 min 56030 max 59967 us
+GL scene 64: avg 58721 min 58410 max 59661 us
+GL scene 65: avg 50223 min 48645 max 69488 us
+GL scene 66: avg 66371 min 66101 max 67474 us
+GL scene 67: avg 66503 min 66223 max 66894 us
+GL scene 68: avg 40647 min 40283 max 41473 us
+GL scene 69: avg 118291 min 117767 max 120117 us
+GL scene 70: avg 57288 min 54351 max 96313 us
+GL scene 71: avg 55947 min 53100 max 93475 us
+GL scene 72: avg 72463 min 72204 max 73150 us
+GLES requested 16 bit, config 24 bit:
+spot mode 1: render avg 49362 min 48797 max 69274 present 0 us
+spot mode 2: render avg 21892 min 21545 max 22735 present 7112 us
+spot mode 3: render avg 21942 min 21545 max 22796 present 7113 us
+results: test, GLES ms, CC3D ms
+Screen clear, 13.6, 9.6
+Textured fill, 28.9, 10.1
+Half-transparent fill, 42.9, 10.8
+3k flat triangles, 33.0, 15.4
+3k textured triangles, 43.5, 17.2
+Perspective mesh, 45.2, 18.9
+Textured floor, 36.6, 11.9
+Flat fill, 17.0, 7.8
+Tinted fill, 29.6, 12.5
+Additive fill, 35.9, 13.7
+Cutout texture, 32.3, 12.1
+Multiply fill, 37.3, 14.5
+Replace texture env, 22.6, 10.5
+Add texture env, 28.8, 13.2
+4 layer overdraw, 70.6, 15.5
+4 transparent layers, 119.9, 19.8
+Depth, front to back, 48.4, 16.9
+Depth, back to front, 85.2, 25.2
+Depth always, 80.5, 22.5
+Depth without writes, 85.5, 26.6
+1k triangles, 36.5, 14.4
+10k triangles, 100.7, 40.3
+3k tiny triangles, 34.4, 14.4
+Gray vertex colours, 35.3, 21.2
+RGB vertex colours, 34.3, 27.3
+Triangle strip, 51.2, 22.8
+Lines, 23.4, 8.5
+Points, 21.1, 8.2
+Large points, 16.1, 8.0
+1 light, 46.1, 21.6
+3 lights, 46.9, 21.8
+8 lights, 52.7, 22.2
+Specular light, 46.4, 21.7
+Linear fog, 47.7, 28.0
+Exponential fog, 45.4, 28.9
+Exp squared fog, 45.6, 28.4
+16 pixel texture, 26.9, 10.3
+256 pixel texture, 26.3, 10.5
+Linear filter, 62.8, 27.3
+Clamped texture, 31.3, 12.7
+2 textures, 39.7, 16.2
+Backface culling, 28.0, 13.1
+Off-screen geometry, 33.4, 16.3
+Near plane clip, 37.5, 16.9
+Animated mesh, 36.1, 14.9
+300 draw calls, 49.0, 13.5
+300 texture binds, 53.5, 13.5
+Sprites, 61.5, 26.6
+Scissor, 22.0, 9.1
+Texture upload, 29.3, 9.4
+Game scene, 40.3, 19.8
+Lit 3k vertices, 48.3, 22.0
+8 lights, 3k vertices, 54.7, 22.9
+Coloured light, 45.6, 28.7
+3 coloured lights, 47.0, 29.2
+Point light, 51.0, 29.1
+Spot light, 49.6, 29.0
+Material, 46.4, 29.0
+Colour material, 47.2, 28.9
+3 specular lights, 48.8, 21.8
+Lit fog, 49.8, 29.8
+Texture x vertex RGB, 52.0, 36.0
+Vertex RGBA blend, 66.9, 42.7
+Vertex RGB add, 56.5, 38.9
+Vertex RGB multiply, 58.7, 41.1
+Vertex alpha only, 50.2, 32.6
+Texture + vertex alpha, 66.3, 48.4
+Lit half-transparent, 66.5, 26.9
+25% alpha fill, 40.6, 14.4
+4 layers at 25%, 118.2, 32.0
+Premultiplied sprites, 57.2, 31.6
+Alpha additive, 55.9, 33.6
+Particles, 72.4, 46.7
+DONE
