@@ -35,6 +35,22 @@ python symbian/emu/hotspot.py $E --scene 23 --ccsoft 0 jit
 
 `--dither 1` turns on GL_DITHER in every scene.
 
+`build_emu.sh` also takes three settings:
+- `EMU_SRC_ROOT=DIR` compiles the Gerbera sources of another checkout, for
+  example a branch in a `git worktree`.
+- `EMU_MARCH=armv6j` changes the target architecture (the default is
+  `armv5t`).
+- `GERBERA_FRAMEBUFFER_BPP=32` (with `GERBERA_CCSOFT=0`) builds the 32-bit
+  variant.
+
+For example, to compare another branch at ARMv6:
+
+```sh
+git worktree add --detach /tmp/other <commit>
+EMU_SRC_ROOT=/tmp/other EMU_MARCH=armv6j GERBERA_CCSOFT=0 \
+    ./symbian/emu/build_emu.sh build/emu/other.elf
+```
+
 ## CCsoft spans (GERBERA_CCSOFT) vs the JIT
 
 Measured with 73 scenes at 4 frames, comparing mean instructions per frame:

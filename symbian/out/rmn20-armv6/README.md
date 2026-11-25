@@ -34,6 +34,22 @@ unchanged.
   `rev`, `usat`, etc.).
 - Not yet tested on a phone.
 
+## Speed (emulated CC3DBench, `symbian/emu`)
+
+I compiled the same sources, at the same ARMv6 target, into the CC3DBench
+emulator harness. It ran 73 scenes × 4 frames, and the table shows mean ARM
+instructions per frame. Every frame CRC is identical to our JIT, so this build
+renders bit-exactly the same images.
+
+| Build | Instructions | vs our JIT |
+|---|---|---|
+| Our JIT (ARMv5, `symbian/out`, `symbian/out/rgb565`) | 794M | 1.00× |
+| **This build** (rmn20 JIT, ARMv6) | 741M | **1.07×** |
+| Our CCSOFT spans (ARMv5, `symbian/out/ccsoft`) | 608M | 1.30× |
+
+Scene by scene, this build gains 10–16% on fill-bound scenes (blending,
+overdraw, sprites, two textures) and 1–2% on geometry-bound ones.
+
 ## Contents
 
 - `libgles_cm.dll`: goes to `sys/bin/` on the phone.

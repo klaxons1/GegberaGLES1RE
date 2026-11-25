@@ -9,14 +9,25 @@
 # hosted (malloc) branch, because there is no window server in the emulator.
 #
 #   GERBERA_FRAMEBUFFER_BPP=16 (default) and GERBERA_CCSOFT=1 (default) mirror
-#   the Symbian variants; GERBERA_CCSOFT=0 builds the plain RGB565 variant.
+#   the Symbian variants; GERBERA_CCSOFT=0 builds the plain RGB565 variant and
+#   GERBERA_FRAMEBUFFER_BPP=32 GERBERA_CCSOFT=0 the default 32-bit one.
+#   EMU_SRC_ROOT=DIR compiles the Gerbera sources of another checkout (for
+#   example another branch in a git worktree) and EMU_MARCH=armv6j changes
+#   the target architecture (default armv5t, as the Symbian DLL).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOLS_DIR="${SYMBIAN_TOOLS_DIR:-/tmp/symbian_tools}"
 CC="${TOOLS_DIR}/gcc/bin/arm-none-symbianelf-gcc"
-LIBGCC="$("${CC}" -march=armv5t -mfloat-abi=soft -print-libgcc-file-name)"
+SRC_ROOT="$(cd "${EMU_SRC_ROOT:-${REPO_ROOT}}" && pwd)"
+MARCH="${EMU_MARCH:-armv5t}"
+FB_BPP="${GERBERA_FRAMEBUFFER_BPP:-16}"
+LIBGCC="$("${CC}" -march="${MARCH}" -mfloat-abi=soft -print-libgcc-file-name)"
 CCSOFT="${GERBERA_CCSOFT:-1}"
+if [[ "${FB_BPP}" != 16 && "${FB_BPP}" != 32 ]] || [[ "${FB_BPP}" == 32 && "${CCSOFT}" == 1 ]]; then
+    echo "GERBERA_FRAMEBUFFER_BPP must be 16 or 32 (32 needs GERBERA_CCSOFT=0)" >&2
+    exit 2
+fi
 OUT="${1:-${REPO_ROOT}/build/emu/cc3d_emu_ccsoft${CCSOFT}.elf}"
 BUILD_DIR="$(dirname "${OUT}")"
 mkdir -p "${BUILD_DIR}"
@@ -36,7 +47,10 @@ if [[ ! -x "${CC}" ]]; then
     exit 2
 fi
 
-DEFINES=(-DGERBERA_RGB565)
+DEFINES=()
+if [[ "${FB_BPP}" == 16 ]]; then
+    DEFINES+=(-DGERBERA_RGB565)
+fi
 if [[ "${CCSOFT}" == "1" ]]; then
     DEFINES+=(-DGERBERA_CCSOFT -DGERBERA_CCSOFT_TOGGLE)
 fi
@@ -44,13 +58,13 @@ fi
 # Same as COMMON_FLAGS in symbian/build_symbian.sh, minus the Symbian
 # platform macros (defined per section in the unity file below).
 FLAGS=(
-    -std=c99 -march=armv5t -mtune=arm1136jf-s -marm -mfloat-abi=soft
+    -std=c99 -march="${MARCH}" -mtune=arm1136jf-s -marm -mfloat-abi=soft
     -fno-pic -fno-PIE -fvisibility=hidden -fdata-sections -ffunction-sections
     -fno-builtin-printf -fno-builtin-fprintf -fno-strict-aliasing
     -fno-asynchronous-unwind-tables -fomit-frame-pointer -DNDEBUG
     "${DEFINES[@]}"
-    -I"${REPO_ROOT}" -I"${REPO_ROOT}/symbian/include" -I"${REPO_ROOT}/src/include"
-    -I"${REPO_ROOT}/symbian/emu" -I"${REPO_ROOT}/symbian/emu/cc3d"
+    -I"${SRC_ROOT}" -I"${SRC_ROOT}/symbian/include" -I"${SRC_ROOT}/src/include"
+    -I"${REPO_ROOT}" -I"${REPO_ROOT}/symbian/emu" -I"${REPO_ROOT}/symbian/emu/cc3d"
 )
 
 UNITY="${BUILD_DIR}/cc3d_emu_unity.c"
@@ -65,8 +79,8 @@ UNITY="${BUILD_DIR}/cc3d_emu_unity.c"
     while IFS= read -r src; do
         case "$(basename "${src}")" in hcX86Backend.c) continue ;; esac
         case "${src}" in */egl/*) continue ;; esac
-        echo "#include \"${src#${REPO_ROOT}/}\""
-    done < <(find "${REPO_ROOT}/src" -name '*.c' | sort)
+        echo "#include \"${src}\""
+    done < <(find "${SRC_ROOT}/src" -name '*.c' | sort)
     echo '#undef __SYMBIAN32__'
     echo '#undef __EPOC32__'
     echo '/* hosted EGL glue: single-threaded emulator, plain statics for TLS */'
@@ -74,8 +88,8 @@ UNITY="${BUILD_DIR}/cc3d_emu_unity.c"
     echo '#include <stddef.h>'
     echo 'void *malloc(size_t); void free(void *);'
     while IFS= read -r src; do
-        echo "#include \"${src#${REPO_ROOT}/}\""
-    done < <(find "${REPO_ROOT}/src/gerbera/egl" -name '*.c' | sort)
+        echo "#include \"${src}\""
+    done < <(find "${SRC_ROOT}/src/gerbera/egl" -name '*.c' | sort)
     echo '#undef __thread'
     echo '#include "symbian/emu/cc3d/suite.c"'
     echo '#include "symbian/emu/cc3d_gl.c"'
@@ -84,7 +98,7 @@ UNITY="${BUILD_DIR}/cc3d_emu_unity.c"
 "${CC}" "${FLAGS[@]}" -O2 -finline-functions -fgcse-after-reload -fpredictive-commoning \
     -funswitch-loops -fwhole-program -w -c "${UNITY}" -o "${BUILD_DIR}/unity.o"
 "${CC}" "${FLAGS[@]}" -O2 -ffreestanding -fno-builtin -c "${REPO_ROOT}/symbian/emu/emu_rt.c" -o "${BUILD_DIR}/emu_rt.o"
-"${CC}" -march=armv5t -marm -c "${REPO_ROOT}/symbian/emu/start.S" -o "${BUILD_DIR}/start.o"
+"${CC}" -march="${MARCH}" -marm -c "${REPO_ROOT}/symbian/emu/start.S" -o "${BUILD_DIR}/start.o"
 # The symbianelf driver leaves absolute relocations for elf2e32, so link the
 # flat image with lld (zig ld.lld) instead.
 "${ZIG}" ld.lld -static --gc-sections -T "${REPO_ROOT}/symbian/emu/emu.ld" -Map="${OUT%.elf}.map" \
