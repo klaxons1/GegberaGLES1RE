@@ -1,0 +1,2497 @@
+diff --git a/src/gerbera/hc/hcARMBackend.c b/src/gerbera/hc/hcARMBackend.c
+index 96bb1b1..f7845f0 100644
+--- a/src/gerbera/hc/hcARMBackend.c
++++ b/src/gerbera/hc/hcARMBackend.c
+@@ -11,6 +11,7 @@
+ #include "gerbera/hc/hcBackendInfo.h"
+ #include "gerbera/hc/hcMemory.h"
+ #include "gerbera/hc/hcOpcode.h"
++#include "gerbera/hc/hcARMSched.h"
+ 
+ #include <stddef.h>
+ #include <string.h>
+@@ -78,8 +79,17 @@ typedef struct ArmEmitCtx_s
+     unsigned int *code;
+     int count;
+     unsigned int regMask;
++    int *usatHints;      /* ARM11 work: USAT words foldable with their LSR source */
++    int nUsatHints;
+ } ArmEmitCtx_s;
+ 
++#define ARM_MAX_USAT_HINTS 64
++
++/* HC_sched_disable bits (hcCompiler.c): 4 = machine peepholes, 8 = ARM11 scheduler,
++ * 16 = range-based USAT shift folding hints, 32 = register renaming,
++ * 64 = redundant frame load forwarding. */
++#include "gerbera/hc/hcSchedule.h"
++
+ /* Scratch register state for MUL Rd==Rm==Rs temporary allocation (sub_23B4C). */
+ typedef struct ArmLabelNode_s
+ {
+@@ -735,6 +745,109 @@ static int armIsProvablyLE(HCInstr_s *instrs, int pc, void *info, int reg, unsig
+     return 0;
+ }
+ 
++/* Upper bound of an unsigned value (0xFFFFFFFF = unknown), following the
++ * UD chain through simple arithmetic (ARM11 work). */
++static unsigned int armRangeMax(HCInstr_s *instrs, int pc, void *info, int reg, int depth)
++{
++    void *ud;
++    int defPc;
++    HCInstr_s *def;
++    int op, hasImm;
++    unsigned int a, b;
++
++    if (depth > 6)
++        return 0xFFFFFFFFu;
++    ud = HC_getUDChain(info, pc, reg);
++    if (ud == NULL || HCChain_getLength(ud) != 1)
++        return 0xFFFFFFFFu;
++    defPc = HCChain_getValue(ud, 0);
++    if (defPc < 0 || defPc >= pc)
++        return 0xFFFFFFFFu;
++    def = &instrs[defPc];
++    op = HC_getOpcodeOper(def);
++    hasImm = (def->instr0 & 0x100u) != 0;
++    switch (op)
++    {
++    case HCOP_LBU: return 0xFFu;
++    case HCOP_LWU: return 0xFFFFu;
++    case HCOP_LSR:
++        if (hasImm)
++            return def->instr1 >= 32u ? 0u : (0xFFFFFFFFu >> def->instr1);
++        return 0xFFFFFFFFu;
++    case HCOP_AND:
++        if (hasImm)
++            return def->instr1;
++        a = armRangeMax(instrs, defPc, info, (int)(def->instr0 >> 21), depth + 1);
++        b = armRangeMax(instrs, defPc, info, (int)(def->instr1 & 0x7FFu), depth + 1);
++        return a < b ? a : b;
++    case HCOP_MOV:
++        if (hasImm)
++            return def->instr1;
++        return armRangeMax(instrs, defPc, info, (int)(def->instr0 >> 21), depth + 1);
++    case HCOP_MINU:
++    case HCOP_MINS:
++        if (hasImm && (int)def->instr1 >= 0)
++        {
++            a = armRangeMax(instrs, defPc, info, (int)(def->instr0 >> 21), depth + 1);
++            if (op == HCOP_MINU || a <= 0x7FFFFFFFu)
++                return a < def->instr1 ? a : def->instr1;
++        }
++        return 0xFFFFFFFFu;
++    case HCOP_ADD:
++    case HCOP_OR:
++    case HCOP_XOR:
++    case HCOP_MULU:
++    case HCOP_MULS:
++    {
++        unsigned long long r;
++        a = armRangeMax(instrs, defPc, info, (int)(def->instr0 >> 21), depth + 1);
++        b = hasImm ? def->instr1 : armRangeMax(instrs, defPc, info, (int)(def->instr1 & 0x7FFu), depth + 1);
++        if (op == HCOP_MULU || op == HCOP_MULS)
++            r = (unsigned long long)a * b;
++        else
++            r = (unsigned long long)a + b;  /* OR/XOR bounded by the sum */
++        return r > 0xFFFFFFFFull ? 0xFFFFFFFFu : (unsigned int)r;
++    }
++    case HCOP_LSL:
++        if (hasImm)
++        {
++            unsigned long long r;
++            a = armRangeMax(instrs, defPc, info, (int)(def->instr0 >> 21), depth + 1);
++            r = (unsigned long long)a << (def->instr1 & 31u);
++            return r > 0xFFFFFFFFull ? 0xFFFFFFFFu : (unsigned int)r;
++        }
++        return 0xFFFFFFFFu;
++    default:
++        return 0xFFFFFFFFu;
++    }
++}
++
++/* USAT source defined by LSR #k (k>=1) of a value below 2^31: record the
++ * word so the machine-code pass can fold the shift into USAT ..., ASR #k. */
++static void armNoteUsatHint(ArmEmitCtx_s *ctx, HCInstr_s *instrs, int pc, void *info, int s0)
++{
++    void *ud;
++    int defPc;
++    HCInstr_s *def;
++
++    if (ctx->usatHints == NULL || ctx->nUsatHints >= ARM_MAX_USAT_HINTS
++        || (HC_sched_disable & 16u) != 0)
++        return;
++    ud = HC_getUDChain(info, pc, s0);
++    if (ud == NULL || HCChain_getLength(ud) != 1)
++        return;
++    defPc = HCChain_getValue(ud, 0);
++    if (defPc < 0 || defPc >= pc)
++        return;
++    def = &instrs[defPc];
++    if (HC_getOpcodeOper(def) != HCOP_LSR || (def->instr0 & 0x100u) == 0
++        || def->instr1 < 1u || def->instr1 > 31u)
++        return;
++    if (armRangeMax(instrs, defPc, info, (int)(def->instr0 >> 21), 0) > 0x7FFFFFFFu)
++        return;
++    ctx->usatHints[ctx->nUsatHints++] = ctx->count;
++}
++
+ /* sub_24734: MAXS, MAXU, MINS, MINU. */
+ static void armGenMinMax(ArmEmitCtx_s *ctx, HCInstr_s *instr,
+                          HCInstr_s *instrs, int pc, void *info)
+@@ -779,6 +892,7 @@ static void armGenMinMax(ArmEmitCtx_s *ctx, HCInstr_s *instr,
+                                         0xFFFFFFFFu, 2);
+                     return;
+                 }
++                armNoteUsatHint(ctx, instrs, pc, info, s0);
+                 armEmitUSat(ctx, dst, satImm, s0);
+                 return;
+             }
+@@ -938,6 +1052,8 @@ static int HCARMBackend_codegen(void *mgrVoid, void **destination,
+     ctx.code = (unsigned int *)(*destination);
+     ctx.count = 0;
+     ctx.regMask = 0;
++    ctx.usatHints = (int *)HCArena_allocTop(mgr, (unsigned int)(ARM_MAX_USAT_HINTS * sizeof(int)));
++    ctx.nUsatHints = 0;
+ 
+     bytesEmitted = 8;
+     armGrowCodeBuf(mgr, &allocated, 8);
+@@ -1252,6 +1368,42 @@ static int HCARMBackend_codegen(void *mgrVoid, void **destination,
+     /* Epilogue: LDMFD sp!, {r0-r12, pc} (0xE8BD9FFF). */
+     armEmitBlockMem(&ctx, 14, 20, 13, 0x9FFFu, 1, 1, 1);
+ 
++    /* ARM11 machine-code peepholes + list scheduling (labels still symbolic). */
++    if ((HC_sched_disable & 12u) != 12u)
++    {
++        int nLabels = 0;
++        int *labelIds;
++        int *labelOffs;
++        int scratchSize = ctx.count * 64 + 16384;
++        void *scratch;
++        ArmLabelNode_s *cur;
++        int newCount;
++
++        for (cur = labelHead; cur != NULL; cur = cur->next)
++            ++nLabels;
++        labelIds = (int *)HCArena_allocTop(mgr, (unsigned int)((nLabels + 1) * sizeof(int)));
++        labelOffs = (int *)HCArena_allocTop(mgr, (unsigned int)((nLabels + 1) * sizeof(int)));
++        scratch = HCArena_allocTop(mgr, (unsigned int)scratchSize);
++        nLabels = 0;
++        for (cur = labelHead; cur != NULL; cur = cur->next)
++        {
++            labelIds[nLabels] = cur->label;
++            labelOffs[nLabels] = cur->offset;
++            ++nLabels;
++        }
++        newCount = HCARM_optimizeCode(scratch, scratchSize, ctx.code, ctx.count,
++                                      labelIds, labelOffs, nLabels,
++                                      ctx.usatHints, ctx.nUsatHints,
++                                      ((HC_sched_disable & 4u) ? 0u : HCARM_OPT_PEEPHOLE)
++                                      | ((HC_sched_disable & 8u) ? 0u : HCARM_OPT_SCHEDULE)
++                                      | ((HC_sched_disable & 32u) ? 0u : HCARM_OPT_RENAME)
++                                      | ((HC_sched_disable & 64u) ? 0u : HCARM_OPT_FORWARD));
++        nLabels = 0;
++        for (cur = labelHead; cur != NULL; cur = cur->next)
++            cur->offset = labelOffs[nLabels++];
++        ctx.count = newCount;
++    }
++
+     /* Patch 24-bit signed word offsets into all emitted `B<cond>` words. */
+     for (j = 0; j < ctx.count; ++j)
+     {
+diff --git a/src/gerbera/hc/hcARMSched.c b/src/gerbera/hc/hcARMSched.c
+new file mode 100644
+index 0000000..290ae8a
+--- /dev/null
++++ b/src/gerbera/hc/hcARMSched.c
+@@ -0,0 +1,1115 @@
++/* hcARMSched.c - machine-code level optimisation of HC ARM backend output
++ * for the ARM1136JF-S (ARM11, ARMv6) pipeline.
++ *
++ * Not part of the original Gerbera compiler (ARM11 performance work).
++ *
++ * Runs on the emitted A32 words of one compiled pixel pipeline, before the
++ * branch displacements are patched (branch words still hold label ids):
++ *
++ *  1. decode every word into register reads (normal / early / late),
++ *     writes, flag use, memory access and ARM11 issue/latency figures;
++ *  2. split basic blocks at labels and branches and compute register
++ *     liveness over the control-flow graph;
++ *  3. ARMv6 peepholes that need liveness:
++ *       LSR t,s,#8|16|24 ; AND d,t,#255      -> UXTB d,s,ROR #n
++ *       LSR t,s,#k ; USAT d,#n,t (s < 2^31)  -> USAT d,#n,s,ASR #k
++ *       ALU x,... ; CMP x,#0 ; B{EQ,NE,MI,PL} -> ALUS x,... ; B..
++ *  4. list scheduling of every block for the ARM11 interlocks (3-cycle
++ *     loads, 4-cycle MUL/MLA, operands needed early by the barrel shifter
++ *     and the address generator), keeping every register, flag and memory
++ *     dependence;
++ *  5. compaction of removed words and remapping of the label offsets.
++ */
++#include "gerbera/hc/hcARMSched.h"
++
++#include <string.h>
++
++#define AS_NOP 0xE1A00000u /* MOV r0, r0 - removal marker (never emitted otherwise) */
++
++enum { ARMK_ALU = 0, ARMK_LOAD, ARMK_STORE, ARMK_BRANCH, ARMK_BARRIER };
++
++/* register field layouts (for renaming) */
++enum { ARMF_NONE = 0, ARMF_DP, ARMF_MUL, ARMF_MEDIA, ARMF_MEM };
++
++typedef struct ArmIns_s
++{
++    unsigned int w;
++    unsigned short rd;      /* normal reads */
++    unsigned short early;   /* reads needed one cycle early (shifter / address) */
++    unsigned short late;    /* reads needed one cycle late (store data / accumulator) */
++    unsigned short def;     /* written registers */
++    unsigned char rflags, wflags, kind, issue, lat, cond;
++    unsigned char fmt;      /* register field layout, see F_* */
++    signed char memBase;
++    int memImm;             /* >= 0 immediate offset, -1 register / writeback */
++} ArmIns_s;
++
++static void armDecode(ArmIns_s *d, unsigned int w)
++{
++    unsigned int cond = w >> 28;
++    unsigned int rn = (w >> 16) & 15u, rdd = (w >> 12) & 15u, rs = (w >> 8) & 15u, rm = w & 15u;
++
++    memset(d, 0, sizeof(*d));
++    d->w = w;
++    d->cond = (unsigned char)cond;
++    d->issue = 1;
++    d->lat = 1;
++    d->memBase = -1;
++    d->memImm = -1;
++    d->kind = ARMK_ALU;
++
++    if (cond == 15u)
++    {
++        d->kind = ARMK_BARRIER;
++        return;
++    }
++    if ((w & 0x0E000000u) == 0x0A000000u)            /* B / BL */
++    {
++        d->kind = ARMK_BRANCH;
++        if (cond != 14u)
++            d->rflags = 1;
++        return;
++    }
++    if ((w & 0x0E000000u) == 0x08000000u)            /* LDM / STM */
++    {
++        d->kind = ARMK_BARRIER;
++        return;
++    }
++    if ((w & 0x0FC000F0u) == 0x00000090u)            /* MUL / MLA */
++    {
++        d->fmt = ARMF_MUL;
++        d->def = (unsigned short)(1u << rn);
++        d->rd = (unsigned short)((1u << rm) | (1u << rs));
++        if (w & 0x00200000u)
++            d->late = (unsigned short)(1u << rdd);
++        if (w & 0x00100000u)
++            d->wflags = 1;
++        d->issue = 2;
++        d->lat = 4;
++    }
++    else if ((w & 0x0FF00090u) == 0x01000080u)       /* SMLAxy */
++    {
++        d->fmt = ARMF_MUL;
++        d->def = (unsigned short)(1u << rn);
++        d->rd = (unsigned short)((1u << rm) | (1u << rs));
++        d->late = (unsigned short)(1u << rdd);
++        d->lat = 3;
++    }
++    else if ((w & 0x0FF00090u) == 0x01600080u)       /* SMULxy */
++    {
++        d->fmt = ARMF_MUL;
++        d->def = (unsigned short)(1u << rn);
++        d->rd = (unsigned short)((1u << rm) | (1u << rs));
++        d->lat = 3;
++    }
++    else if ((w & 0x0FA00030u) == 0x06A00010u)       /* SSAT / USAT */
++    {
++        d->fmt = ARMF_MEDIA;
++        d->def = (unsigned short)(1u << rdd);
++        if ((w & 0x00000FC0u) != 0)
++            d->early = (unsigned short)(1u << rm);
++        else
++            d->rd = (unsigned short)(1u << rm);
++        d->lat = 2;
++    }
++    else if ((w & 0x0F8000F0u) == 0x06800070u)       /* xXTx / xXTAx */
++    {
++        d->fmt = ARMF_MEDIA;
++        d->def = (unsigned short)(1u << rdd);
++        if ((w & 0x00000C00u) != 0)
++            d->early = (unsigned short)(1u << rm);
++        else
++            d->rd = (unsigned short)(1u << rm);
++        if (rn != 15u)
++            d->rd |= (unsigned short)(1u << rn);
++        d->lat = 1;
++    }
++    else if ((w & 0x0E000090u) == 0x00000090u && (w & 0x60u) != 0)  /* LDRH/STRH/LDRSB/LDRSH */
++    {
++        int load = (w & 0x00100000u) != 0;
++        int wb = (w & 0x00200000u) != 0 || (w & 0x01000000u) == 0;
++        d->fmt = (unsigned char)(wb ? ARMF_NONE : ARMF_MEM);
++        d->kind = load ? ARMK_LOAD : ARMK_STORE;
++        d->early = (unsigned short)(1u << rn);
++        if ((w & 0x00400000u) == 0)
++            d->early |= (unsigned short)(1u << rm);
++        else if (!wb)
++            d->memImm = (int)(((w >> 4) & 0xF0u) | (w & 0xFu)) * ((w & 0x00800000u) ? 1 : -1) + 0x10000;
++        d->memBase = (signed char)rn;
++        if (load)
++        {
++            d->def = (unsigned short)(1u << rdd);
++            d->lat = 3;
++        }
++        else
++            d->late = (unsigned short)(1u << rdd);
++        if (wb)
++            d->def |= (unsigned short)(1u << rn);
++        if (rdd == 15u)
++            d->kind = ARMK_BARRIER;
++    }
++    else if ((w & 0x0C000000u) == 0x04000000u)       /* LDR / STR / LDRB / STRB */
++    {
++        int load = (w & 0x00100000u) != 0;
++        int wb = (w & 0x00200000u) != 0 || (w & 0x01000000u) == 0;
++        if ((w & 0x02000000u) != 0 && (w & 0x10u) != 0)
++        {
++            d->kind = ARMK_BARRIER;                     /* media space, unknown */
++            return;
++        }
++        d->fmt = (unsigned char)(wb ? ARMF_NONE : ARMF_MEM);
++        d->kind = load ? ARMK_LOAD : ARMK_STORE;
++        d->early = (unsigned short)(1u << rn);
++        if ((w & 0x02000000u) != 0)
++            d->early |= (unsigned short)(1u << rm);
++        else if (!wb)
++            d->memImm = (int)(w & 0xFFFu) * ((w & 0x00800000u) ? 1 : -1) + 0x10000;
++        d->memBase = (signed char)rn;
++        if (load)
++        {
++            d->def = (unsigned short)(1u << rdd);
++            d->lat = 3;
++        }
++        else
++            d->late = (unsigned short)(1u << rdd);
++        if (wb)
++            d->def |= (unsigned short)(1u << rn);
++        if (rdd == 15u || rn == 15u)
++            d->kind = ARMK_BARRIER;
++    }
++    else if ((w & 0x0C000000u) == 0x00000000u
++             && !((w & 0x01900000u) == 0x01000000u))  /* data processing */
++    {
++        unsigned int op = (w >> 21) & 15u;
++        int setS = (w & 0x00100000u) != 0;
++        d->fmt = ARMF_DP;
++        if (w & 0x02000000u)
++        {
++            /* immediate operand */
++        }
++        else if (w & 0x10u)
++        {
++            if (w & 0x80u)
++            {
++                d->kind = ARMK_BARRIER;                 /* other extension space */
++                return;
++            }
++            d->early = (unsigned short)((1u << rm) | (1u << rs));
++            d->issue = 2;
++            d->lat = 2;
++        }
++        else
++        {
++            unsigned int amt = (w >> 7) & 31u, st = (w >> 5) & 3u;
++            if (amt == 0 && st == 3u)
++                d->rflags = 1;                       /* RRX */
++            if (amt != 0 || st != 0)
++                d->early = (unsigned short)(1u << rm);
++            else
++                d->rd = (unsigned short)(1u << rm);
++        }
++        if (op != 13u && op != 15u)
++            d->rd |= (unsigned short)(1u << rn);
++        if (op >= 8u && op <= 11u)
++            d->wflags = 1;
++        else
++            d->def = (unsigned short)(1u << rdd);
++        if (setS)
++            d->wflags = 1;
++        if (op == 5u || op == 6u || op == 7u)
++            d->rflags = 1;
++        if ((d->def & 0x8000u) != 0 || rn == 15u || ((d->rd | d->early) & 0x8000u) != 0)
++            d->kind = ARMK_BARRIER;
++    }
++    else
++    {
++        d->kind = ARMK_BARRIER;
++        return;
++    }
++
++    if (cond != 14u)
++    {
++        d->rflags = 1;
++        d->rd |= d->def;                             /* conditional write keeps the old value */
++    }
++    if ((d->def & 1u) != 0 && d->kind != ARMK_BARRIER)
++        d->kind = ARMK_BARRIER;                         /* r0 is the frame pointer */
++}
++
++static unsigned short insReads(const ArmIns_s *d)
++{
++    return (unsigned short)(d->rd | d->early | d->late);
++}
++
++/* --- blocks and liveness ------------------------------------------------- */
++
++typedef struct ArmBlock_s
++{
++    int start, end;          /* [start, end) */
++    int succ[2];
++    unsigned short use, def, liveIn, liveOut;
++} ArmBlock_s;
++
++static int labelTarget(const int *labelIds, const int *labelOffsets, int nLabels, int id)
++{
++    int i;
++    for (i = 0; i < nLabels; ++i)
++        if (labelIds[i] == id)
++            return labelOffsets[i];
++    return -1;
++}
++
++static int findBlock(const ArmBlock_s *blocks, int nBlocks, int offset)
++{
++    int b;
++    for (b = 0; b < nBlocks; ++b)
++        if (blocks[b].start == offset || (blocks[b].start <= offset && offset < blocks[b].end))
++            return b;
++    return -1;
++}
++
++/* --- list scheduler ------------------------------------------------------ */
++
++#define SCHED_MAX 128
++
++static int memConflict(const ArmIns_s *a, const ArmIns_s *b)
++{
++    if (a->kind != ARMK_LOAD && a->kind != ARMK_STORE)
++        return 0;
++    if (b->kind != ARMK_LOAD && b->kind != ARMK_STORE)
++        return 0;
++    if (a->kind == ARMK_LOAD && b->kind == ARMK_LOAD)
++        return 0;
++    /* r0 frame slots never alias the colour / depth / stencil / texture
++     * memory reached through other base registers. */
++    if ((a->memBase == 0) != (b->memBase == 0))
++        return 0;
++    if (a->memBase == 0 && a->memImm >= 0 && b->memImm >= 0)
++        return a->memImm == b->memImm;
++    return 1;
++}
++
++static int depLatency(const ArmIns_s *p, const ArmIns_s *s)
++{
++    int lat = 1;
++    unsigned short raw = p->def;
++    if (raw & s->early)
++        lat = p->lat + 1;
++    else if (raw & s->rd)
++        lat = p->lat;
++    else if (raw & s->late)
++        lat = p->lat > 1 ? p->lat - 1 : 1;
++    if (p->wflags && s->rflags && lat < 1)
++        lat = 1;
++    return lat;
++}
++
++typedef struct SchedWork_s
++{
++    unsigned char adj[SCHED_MAX][SCHED_MAX / 8];
++    int npred[SCHED_MAX], height[SCHED_MAX], ready[SCHED_MAX], order[SCHED_MAX];
++    unsigned char done[SCHED_MAX];
++    ArmIns_s tmp[SCHED_MAX];
++} SchedWork_s;
++
++#define ADJ(i, j) (W->adj[i][(j) >> 3] & (1u << ((j) & 7)))
++
++static void scheduleBlock(SchedWork_s *W, ArmIns_s *ins, int start, int end)
++{
++    int n = end - start;
++    int i, j, cyc, step;
++
++    if (n < 3 || n > SCHED_MAX)
++        return;
++    memset(W->adj, 0, sizeof(W->adj));
++    for (i = 0; i < n; ++i)
++    {
++        W->npred[i] = 0;
++        W->ready[i] = 0;
++        W->done[i] = 0;
++    }
++    for (j = 0; j < n; ++j)
++    {
++        const ArmIns_s *sj = &ins[start + j];
++        for (i = 0; i < j; ++i)
++        {
++            const ArmIns_s *p = &ins[start + i];
++            int dep = 0;
++            if (p->def & insReads(sj)) dep = 1;             /* RAW */
++            if (insReads(p) & sj->def) dep = 1;             /* WAR */
++            if (p->def & sj->def) dep = 1;                  /* WAW */
++            if ((p->wflags && (sj->rflags || sj->wflags)) || (p->rflags && sj->wflags)) dep = 1;
++            if (memConflict(p, sj)) dep = 1;
++            if (p->kind == ARMK_BARRIER || sj->kind == ARMK_BARRIER || sj->kind == ARMK_BRANCH) dep = 1;
++            if (dep)
++            {
++                W->adj[i][j >> 3] |= (unsigned char)(1u << (j & 7));
++                W->npred[j]++;
++            }
++        }
++    }
++    for (i = n - 1; i >= 0; --i)
++    {
++        int h = ins[start + i].issue;
++        for (j = i + 1; j < n; ++j)
++        {
++            if (ADJ(i, j))
++            {
++                int l = depLatency(&ins[start + i], &ins[start + j]);
++                if (l + W->height[j] > h)
++                    h = l + W->height[j];
++            }
++        }
++        W->height[i] = h;
++    }
++    cyc = 0;
++    for (step = 0; step < n; ++step)
++    {
++        int best = -1, bestStart = 0;
++        for (i = 0; i < n; ++i)
++        {
++            int st;
++            if (W->done[i] || W->npred[i] != 0)
++                continue;
++            st = W->ready[i] > cyc ? W->ready[i] : cyc;
++            if (best < 0 || st < bestStart
++                || (st == bestStart && W->height[i] > W->height[best]))
++            {
++                best = i;
++                bestStart = st;
++            }
++        }
++        W->done[best] = 1;
++        W->order[step] = best;
++        cyc = bestStart + ins[start + best].issue;
++        for (j = 0; j < n; ++j)
++        {
++            if (ADJ(best, j))
++            {
++                int r = bestStart + depLatency(&ins[start + best], &ins[start + j]);
++                if (r > W->ready[j])
++                    W->ready[j] = r;
++                W->npred[j]--;
++            }
++        }
++    }
++    for (i = 0; i < n; ++i)
++        W->tmp[i] = ins[start + W->order[i]];
++    memcpy(&ins[start], W->tmp, (size_t)n * sizeof(ArmIns_s));
++}
++
++/* --- peepholes ----------------------------------------------------------- */
++
++static int isPlainAL(const ArmIns_s *d)
++{
++    return d->cond == 14u && d->kind == ARMK_ALU;
++}
++
++/* next reader of register r after index i inside [i+1, end); returns index or
++ * -1, and sets *redef when r (or src) is redefined first. */
++static int deadAfter(const ArmIns_s *ins, int from, int end, unsigned short liveOut, int r)
++{
++    int k;
++    for (k = from; k < end; ++k)
++    {
++        if (insReads(&ins[k]) & (1u << r))
++            return 0;
++        if (ins[k].def & (1u << r))
++            return ins[k].cond == 14u;
++    }
++    return (liveOut & (1u << r)) == 0;
++}
++
++static void peepholeBlock(ArmIns_s *ins, int start, int end, unsigned short liveOut,
++                          const int *usatHints, int nUsatHints, const int *origIndex)
++{
++    int i, k;
++    for (i = start; i < end; ++i)
++    {
++        ArmIns_s *a = &ins[i];
++        unsigned int w = a->w;
++        unsigned int t, s, amt;
++        /* MOV t, s, LSR #amt */
++        if (!isPlainAL(a) || (w & 0x0FEF0070u) != 0x01A00020u)
++            continue;
++        t = (w >> 12) & 15u;
++        s = w & 15u;
++        amt = (w >> 7) & 31u;
++        if (amt == 0)
++            continue;
++        for (k = i + 1; k < end; ++k)
++        {
++            ArmIns_s *b = &ins[k];
++            if (insReads(b) & (1u << t))
++            {
++                unsigned int bw = b->w;
++                if (b->cond != 14u)
++                    break;
++                /* AND d, t, #255 -> UXTB d, s, ROR #amt */
++                if ((bw & 0x0FFF0FFFu) == (0x020000FFu | (t << 16))
++                    && (amt == 8 || amt == 16 || amt == 24)
++                    && (((bw >> 12) & 15u) == t || deadAfter(ins, k + 1, end, liveOut, (int)t)))
++                {
++                    unsigned int d = (bw >> 12) & 15u;
++                    armDecode(b, 0xE6EF0070u | (d << 12) | ((amt / 8u) << 10) | s);
++                    armDecode(a, AS_NOP);
++                }
++                /* USAT d, #n, t (hinted: t = s >> amt with s < 2^31) -> USAT d, #n, s, ASR #amt */
++                else if ((bw & 0x0FE00FF0u) == 0x06E00010u && (bw & 15u) == t
++                         && (((bw >> 12) & 15u) == t || deadAfter(ins, k + 1, end, liveOut, (int)t)))
++                {
++                    int h, hinted = 0;
++                    for (h = 0; h < nUsatHints; ++h)
++                        if (usatHints[h] == origIndex[k])
++                            hinted = 1;
++                    if (hinted)
++                    {
++                        armDecode(b, (bw & 0xFFFFF000u) | (amt << 7) | 0x50u | s);
++                        armDecode(a, AS_NOP);
++                    }
++                }
++                /* MOV d, t, LSL #amt -> BIC d, s, #(2^amt - 1) */
++                else if (amt <= 8u && (bw & 0x0FFF0FFFu) == (0x01A00000u | (amt << 7) | t)
++                         && (((bw >> 12) & 15u) == t || deadAfter(ins, k + 1, end, liveOut, (int)t)))
++                {
++                    unsigned int d = (bw >> 12) & 15u;
++                    armDecode(b, 0xE3C00000u | (s << 16) | (d << 12) | ((1u << amt) - 1u));
++                    armDecode(a, AS_NOP);
++                }
++                break;
++            }
++            if (ins[k].def & ((1u << t) | (1u << s)))
++                break;
++            if (ins[k].kind == ARMK_BARRIER || ins[k].kind == ARMK_BRANCH)
++                break;
++        }
++    }
++
++    /* MUL t, a, b ; ADD d, t, c  ->  MLA d, a, b, c (placed at the ADD when a, b
++     * survive until there, otherwise at the MUL when c and d are untouched) */
++    for (i = start; i < end; ++i)
++    {
++        ArmIns_s *m = &ins[i];
++        unsigned int t, ra, rb;
++        unsigned short defs = 0, reads = 0;
++        if (m->cond != 14u || (m->w & 0x0FF0F0F0u) != 0x00000090u)
++            continue;
++        t = (m->w >> 16) & 15u;
++        ra = m->w & 15u;
++        rb = (m->w >> 8) & 15u;
++        for (k = i + 1; k < end; ++k)
++        {
++            ArmIns_s *b = &ins[k];
++            if (b->w == AS_NOP)
++                continue;
++            if (insReads(b) & (1u << t))
++            {
++                unsigned int bw = b->w, rn = (bw >> 16) & 15u, rm = bw & 15u, c, d;
++                if (b->cond == 14u && (bw & 0x0FF00FF0u) == 0x00800000u && (rn == t) != (rm == t)
++                    && rn != 15u && rm != 15u)
++                {
++                    c = (rn == t) ? rm : rn;
++                    d = (bw >> 12) & 15u;
++                    if (d == t || deadAfter(ins, k + 1, end, liveOut, (int)t))
++                    {
++                        unsigned int mla = 0xE0200090u | (d << 16) | (c << 12) | (rb << 8) | ra;
++                        if (t != ra && t != rb && (defs & ((1u << ra) | (1u << rb))) == 0)
++                        {
++                            armDecode(b, mla);
++                            armDecode(m, AS_NOP);
++                        }
++                        else if (c != t && (defs & (1u << c)) == 0
++                                 && ((defs | reads) & (1u << d)) == 0)
++                        {
++                            armDecode(m, mla);
++                            armDecode(b, AS_NOP);
++                        }
++                    }
++                }
++                break;
++            }
++            defs |= b->def;
++            reads |= insReads(b);
++            if (b->def & (1u << t))
++                break;
++            if (b->kind == ARMK_BARRIER || b->kind == ARMK_BRANCH)
++                break;
++        }
++    }
++
++    /* CMP x, #0 ; B{EQ,NE,MI,PL} -> set S on the last writer of x */
++    if (end - start >= 2)
++    {
++        ArmIns_s *br = &ins[end - 1];
++        ArmIns_s *cmp = &ins[end - 2];
++        if (br->kind == ARMK_BRANCH && (br->cond <= 1u || br->cond == 4u || br->cond == 5u)
++            && (cmp->w & 0x0FF0FFFFu) == 0x03500000u && cmp->cond == 14u)
++        {
++            unsigned int x = (cmp->w >> 16) & 15u;
++            for (k = end - 3; k >= start; --k)
++            {
++                ArmIns_s *p = &ins[k];
++                if (p->w == AS_NOP)
++                    continue;
++                if (p->wflags || p->rflags || p->kind == ARMK_BARRIER)
++                    break;
++                if (p->def & (1u << x))
++                {
++                    unsigned int op = (p->w >> 21) & 15u;
++                    if (isPlainAL(p) && (p->w & 0x0C000000u) == 0 && op != 10u && op != 8u
++                        && op != 9u && op != 11u && (p->w & 0x0FC000F0u) != 0x00000090u
++                        && p->def == (1u << x))
++                    {
++                        armDecode(p, p->w | 0x00100000u);
++                        armDecode(cmp, AS_NOP);
++                    }
++                    break;
++                }
++            }
++        }
++    }
++}
++
++/* --- register renaming ------------------------------------------------------
++ * Post-allocation renaming of block-local live ranges onto registers that
++ * are free over the range, so that reused spill/temporary registers do not
++ * serialise the scheduler (anti and output dependences). */
++
++static unsigned int setField(unsigned int w, int shift, unsigned int from, unsigned int to)
++{
++    if (((w >> shift) & 15u) == from)
++        w = (w & ~(15u << shift)) | (to << shift);
++    return w;
++}
++
++/* rewrite the read operands equal to 'from' */
++static int renameReads(ArmIns_s *d, unsigned int from, unsigned int to)
++{
++    unsigned int w = d->w;
++    switch (d->fmt)
++    {
++    case ARMF_DP:
++    {
++        unsigned int op = (w >> 21) & 15u;
++        if (op != 13u && op != 15u)
++            w = setField(w, 16, from, to);
++        if ((w & 0x02000000u) == 0)
++        {
++            w = setField(w, 0, from, to);
++            if (w & 0x10u)
++                w = setField(w, 8, from, to);
++        }
++        break;
++    }
++    case ARMF_MUL:
++        w = setField(w, 0, from, to);
++        w = setField(w, 8, from, to);
++        if ((w & 0x0FC000F0u) != 0x00000090u || (w & 0x00200000u))
++            if ((w & 0x0FF00090u) != 0x01600080u)
++                w = setField(w, 12, from, to);
++        break;
++    case ARMF_MEDIA:
++        w = setField(w, 0, from, to);
++        if ((w & 0x0F8000F0u) == 0x06800070u && ((w >> 16) & 15u) != 15u)
++            w = setField(w, 16, from, to);
++        break;
++    case ARMF_MEM:
++        w = setField(w, 16, from, to);
++        if (d->kind == ARMK_STORE)
++            w = setField(w, 12, from, to);
++        if ((w & 0x0C000000u) == 0x04000000u ? (w & 0x02000000u) != 0 : (w & 0x00400000u) == 0)
++            w = setField(w, 0, from, to);
++        break;
++    default:
++        return 0;
++    }
++    armDecode(d, w);
++    return 1;
++}
++
++static int renameDef(ArmIns_s *d, unsigned int from, unsigned int to)
++{
++    unsigned int w = d->w;
++    switch (d->fmt)
++    {
++    case ARMF_DP:
++    case ARMF_MEDIA:
++        w = setField(w, 12, from, to);
++        break;
++    case ARMF_MUL:
++        w = setField(w, 16, from, to);
++        break;
++    case ARMF_MEM:
++        if (d->kind != ARMK_LOAD)
++            return 0;
++        w = setField(w, 12, from, to);
++        break;
++    default:
++        return 0;
++    }
++    armDecode(d, w);
++    return 1;
++}
++
++#define RENAMABLE 0x5FFEu  /* r1-r12, lr */
++
++static void renameBlock(ArmIns_s *ins, int start, int end, unsigned short liveOut,
++                        unsigned short *liveAfter)
++{
++    int i, j;
++    unsigned short live = liveOut;
++
++    if (end - start < 2)
++        return;
++    for (i = end - 1; i >= start; --i)
++    {
++        liveAfter[i - start] = live;
++        if (ins[i].cond == 14u)
++            live = (unsigned short)(live & ~ins[i].def);
++        live |= insReads(&ins[i]);
++        if (ins[i].kind == ARMK_BARRIER)
++            live = 0xFFFFu;
++    }
++    for (i = start; i < end; ++i)
++    {
++        ArmIns_s *d = &ins[i];
++        unsigned int t, f;
++        int last = -1, ok = 1, bestF = -1, bestAge = 0;
++        unsigned short busy;
++
++        if (d->cond != 14u || d->kind == ARMK_BARRIER || d->kind == ARMK_BRANCH || d->fmt == ARMF_NONE)
++            continue;
++        if (d->def == 0 || (d->def & (d->def - 1)) != 0 || (d->def & RENAMABLE) == 0)
++            continue;
++        if (d->fmt == ARMF_MEM && d->kind != ARMK_LOAD)
++            continue;
++        t = 0;
++        while (((d->def >> t) & 1u) == 0)
++            ++t;
++        if (insReads(d) & (1u << t))
++            continue;                                /* read-modify-write */
++        /* live range of this definition */
++        busy = (unsigned short)(insReads(d) | d->def);
++        for (j = i + 1; j < end; ++j)
++        {
++            ArmIns_s *u = &ins[j];
++            if (insReads(u) & (1u << t))
++            {
++                if (u->cond != 14u || u->fmt == ARMF_NONE || (u->def & (1u << t)) != 0)
++                {
++                    ok = 0;
++                    break;
++                }
++                last = j;
++            }
++            else if (u->def & (1u << t))
++                break;
++            if (u->kind == ARMK_BARRIER)
++            {
++                ok = 0;
++                break;
++            }
++        }
++        if (!ok || last < 0)
++            continue;
++        if (j >= end && (liveOut & (1u << t)))
++            continue;                                /* live out of the block */
++        if (liveAfter[last - start] & (1u << t))
++            continue;
++        for (j = i; j <= last; ++j)
++        {
++            busy |= liveAfter[j - start];
++            busy |= ins[j].def | insReads(&ins[j]);
++        }
++        /* prefer the register untouched for the longest time before i */
++        for (f = 1; f < 15; ++f)
++        {
++            int age;
++            if (((RENAMABLE >> f) & 1u) == 0 || (busy >> f) & 1u || f == t)
++                continue;
++            for (j = i - 1, age = 0; j >= start; --j, ++age)
++                if ((ins[j].def | insReads(&ins[j])) & (1u << f))
++                    break;
++            if (j < start)
++                age = 1000;
++            if (bestF < 0 || age > bestAge)
++            {
++                bestF = (int)f;
++                bestAge = age;
++            }
++        }
++        {
++            int tAge;
++            for (j = i - 1, tAge = 0; j >= start; --j, ++tAge)
++                if ((ins[j].def | insReads(&ins[j])) & (1u << t))
++                    break;
++            if (j < start)
++                tAge = 1000;
++            if (bestF < 0 || bestAge <= tAge)
++                continue;                            /* t itself is as good */
++        }
++        if (!renameDef(d, t, (unsigned int)bestF))
++            continue;
++        for (j = i + 1; j <= last; ++j)
++            if (insReads(&ins[j]) & (1u << t))
++                renameReads(&ins[j], t, (unsigned int)bestF);
++        /* refresh liveness for the renamed range */
++        for (j = i; j < last; ++j)
++        {
++            liveAfter[j - start] = (unsigned short)((liveAfter[j - start] & ~(1u << t)) | (1u << bestF));
++        }
++    }
++}
++
++/* --- redundant frame load elimination --------------------------------------
++ * A second LDR rX, [r0, #imm] of a frame slot that was already loaded in the
++ * same block (and not stored in between) reuses the first value: either the
++ * first destination still holds it, or both live ranges are merged onto a
++ * register that is free over the whole window. */
++
++static void computeLiveAfter(const ArmIns_s *ins, int start, int end, unsigned short liveOut,
++                             unsigned short *liveAfter)
++{
++    int i;
++    unsigned short live = liveOut;
++    for (i = end - 1; i >= start; --i)
++    {
++        liveAfter[i - start] = live;
++        if (ins[i].cond == 14u)
++            live = (unsigned short)(live & ~ins[i].def);
++        live |= insReads(&ins[i]);
++        if (ins[i].kind == ARMK_BARRIER)
++            live = 0xFFFFu;
++    }
++}
++
++/* last reader of the value defined by ins[i] in register t; -1 if the range
++ * cannot be renamed (unrenamable reader, leaves the block, ...), i if unused */
++static int valueRangeEnd(const ArmIns_s *ins, int i, int end, unsigned short liveOut,
++                         const unsigned short *liveAfter, int start, unsigned int t)
++{
++    int j, last = i;
++    for (j = i + 1; j < end; ++j)
++    {
++        const ArmIns_s *u = &ins[j];
++        if (insReads(u) & (1u << t))
++        {
++            if (u->cond != 14u || u->fmt == ARMF_NONE || u->kind == ARMK_BARRIER)
++                return -1;
++            if (u->def & (1u << t))
++            {
++                if ((u->fmt == ARMF_MEM && u->kind != ARMK_LOAD) || u->kind == ARMK_STORE)
++                    return -1;
++                return j;                            /* read-modify-write ends the value */
++            }
++            last = j;
++        }
++        else if (u->def & (1u << t))
++            break;
++        if (u->kind == ARMK_BARRIER)
++            return -1;
++    }
++    if (j >= end && (liveOut & (1u << t)))
++        return -1;
++    if (liveAfter[last - start] & (1u << t))
++        return -1;
++    return last;
++}
++
++static void renameRange(ArmIns_s *ins, int from, int last, unsigned int t, unsigned int f)
++{
++    int j;
++    for (j = from; j <= last; ++j)
++        if (insReads(&ins[j]) & (1u << t))
++            renameReads(&ins[j], t, f);
++}
++
++static void forwardLoadsBlock(ArmIns_s *ins, int start, int end, unsigned short liveOut,
++                              unsigned short *liveAfter)
++{
++    int i, j, k;
++    computeLiveAfter(ins, start, end, liveOut, liveAfter);
++    for (j = start; j < end; ++j)
++    {
++        ArmIns_s *l2 = &ins[j];
++        unsigned int x, y, r;
++        int lastX, lastY, ok;
++        if (l2->kind != ARMK_LOAD || l2->cond != 14u || l2->memBase != 0 || l2->memImm < 0
++            || l2->fmt != ARMF_MEM || (l2->w & 0x0E000000u) != 0x04000000u)
++            continue;
++        x = (l2->w >> 12) & 15u;
++        if (((RENAMABLE >> x) & 1u) == 0)
++            continue;
++        /* find the previous load of the same slot */
++        for (i = j - 1; i >= start; --i)
++        {
++            const ArmIns_s *p = &ins[i];
++            if (p->kind == ARMK_BARRIER)
++            {
++                i = start - 1;
++                break;
++            }
++            if (p->kind == ARMK_STORE && p->memBase == 0 && (p->memImm < 0 || p->memImm == l2->memImm))
++            {
++                i = start - 1;
++                break;
++            }
++            if (p->kind == ARMK_LOAD && p->cond == 14u && ((p->w ^ l2->w) & 0xFFFF0FFFu) == 0)
++                break;
++        }
++        if (i < start)
++            continue;
++        y = (ins[i].w >> 12) & 15u;
++        if (((RENAMABLE >> y) & 1u) == 0)
++            continue;
++        lastX = valueRangeEnd(ins, j, end, liveOut, liveAfter, start, x);
++        if (lastX < 0)
++            continue;
++        if (lastX == j)
++        {
++            armDecode(l2, AS_NOP);                   /* unused load */
++            computeLiveAfter(ins, start, end, liveOut, liveAfter);
++            continue;
++        }
++        /* can y simply stay alive until lastX? */
++        ok = 1;
++        for (k = i + 1; k <= lastX; ++k)
++            if (k != j && (ins[k].def & (1u << y)))
++                ok = 0;
++        if (x == y && ok)
++        {
++            armDecode(l2, AS_NOP);
++            computeLiveAfter(ins, start, end, liveOut, liveAfter);
++            continue;
++        }
++        if (ok)
++        {
++            /* y also must not be read as a different value (it is not: no redef) */
++            renameRange(ins, j + 1, lastX, x, y);
++            armDecode(l2, AS_NOP);
++            computeLiveAfter(ins, start, end, liveOut, liveAfter);
++            continue;
++        }
++        /* merge both ranges onto a register free over [i, lastX] */
++        lastY = valueRangeEnd(ins, i, end, liveOut, liveAfter, start, y);
++        if (lastY < 0 || lastY >= j)
++            continue;
++        {
++            unsigned short busy = 0;
++            for (k = i; k <= lastX; ++k)
++                busy |= (unsigned short)(liveAfter[k - start] | ins[k].def | insReads(&ins[k]));
++            /* live into the first load */
++            busy |= (unsigned short)((liveAfter[i - start] & ~ins[i].def) | insReads(&ins[i]));
++            for (r = 1; r < 15; ++r)
++                if (((RENAMABLE >> r) & 1u) && ((busy >> r) & 1u) == 0)
++                    break;
++            if (r >= 15)
++                continue;
++            if (!renameDef(&ins[i], y, r))
++                continue;
++            renameRange(ins, i + 1, lastY, y, r);
++            renameRange(ins, j + 1, lastX, x, r);
++            armDecode(l2, AS_NOP);
++            computeLiveAfter(ins, start, end, liveOut, liveAfter);
++        }
++    }
++}
++
++static int compactCode(ArmIns_s *ins, int count, ArmBlock_s *blocks, int nBlocks,
++                       int *labelOffsets, int nLabels, int *newIndex)
++{
++    int i, b, out = 0;
++    for (i = 0; i < count; ++i)
++    {
++        newIndex[i] = out;
++        if (ins[i].w != AS_NOP)
++            ins[out++] = ins[i];
++    }
++    for (b = 0; b < nBlocks; ++b)
++        blocks[b].start = (blocks[b].start < count) ? newIndex[blocks[b].start] : out;
++    for (b = 0; b < nBlocks; ++b)
++        blocks[b].end = (b + 1 < nBlocks) ? blocks[b + 1].start : out;
++    for (i = 0; i < nLabels; ++i)
++    {
++        if (labelOffsets[i] >= 0 && labelOffsets[i] < count)
++            labelOffsets[i] = newIndex[labelOffsets[i]];
++        else if (labelOffsets[i] >= count)
++            labelOffsets[i] = out + (labelOffsets[i] - count);
++    }
++    return out;
++}
++
++/* --- driver -------------------------------------------------------------- */
++
++int HCARM_optimizeCode(void *scratch, int scratchSize, unsigned int *code, int count,
++                       const int *labelIds, int *labelOffsets, int nLabels,
++                       const int *usatHints, int nUsatHints, unsigned int flags)
++{
++    ArmIns_s *ins;
++    ArmBlock_s *blocks;
++    int *origIndex;
++    int *newIndex;
++    unsigned char *isLeader;
++    int nBlocks = 0;
++    int i, b, changed, out;
++    SchedWork_s *work;
++    size_t need = (size_t)count * (sizeof(ArmIns_s) + 2 * sizeof(int) + 1 + sizeof(ArmBlock_s))
++                + sizeof(SchedWork_s) + 64;
++
++    if (count <= 0 || need > (size_t)scratchSize)
++        return count;
++    ins = (ArmIns_s *)scratch;
++    blocks = (ArmBlock_s *)(ins + count);
++    origIndex = (int *)(blocks + count);
++    newIndex = origIndex + count;
++    isLeader = (unsigned char *)(newIndex + count);
++    work = (SchedWork_s *)(((size_t)(isLeader + count) + 7u) & ~(size_t)7u);
++
++    for (i = 0; i < count; ++i)
++    {
++        armDecode(&ins[i], code[i]);
++        origIndex[i] = i;
++        isLeader[i] = 0;
++    }
++    isLeader[0] = 1;
++    for (i = 0; i < nLabels; ++i)
++        if (labelOffsets[i] >= 0 && labelOffsets[i] < count)
++            isLeader[labelOffsets[i]] = 1;
++    for (i = 0; i < count; ++i)
++        if ((ins[i].kind == ARMK_BRANCH || ins[i].kind == ARMK_BARRIER) && i + 1 < count)
++            isLeader[i + 1] = 1;
++    for (i = 0; i < count; ++i)
++    {
++        if (isLeader[i])
++        {
++            if (nBlocks > 0)
++                blocks[nBlocks - 1].end = i;
++            blocks[nBlocks].start = i;
++            ++nBlocks;
++        }
++    }
++    blocks[nBlocks - 1].end = count;
++
++    /* CFG + liveness */
++    for (b = 0; b < nBlocks; ++b)
++    {
++        ArmBlock_s *bb = &blocks[b];
++        ArmIns_s *last = &ins[bb->end - 1];
++        unsigned short use = 0, def = 0;
++        bb->succ[0] = bb->succ[1] = -1;
++        for (i = bb->start; i < bb->end; ++i)
++        {
++            use |= (unsigned short)(insReads(&ins[i]) & ~def);
++            def |= ins[i].def;
++            if (ins[i].kind == ARMK_BARRIER)
++            {
++                /* prologue / epilogue: STM reads, LDM writes everything */
++                if ((ins[i].w & 0x00100000u) == 0)
++                    use |= (unsigned short)~def;
++                else
++                    def = 0xFFFFu;
++            }
++        }
++        bb->use = use;
++        bb->def = def;
++        bb->liveIn = bb->liveOut = 0;
++        if (last->kind == ARMK_BRANCH)
++        {
++            int target = labelTarget(labelIds, labelOffsets, nLabels, (int)(last->w & 0x00FFFFFFu));
++            bb->succ[0] = target >= 0 ? findBlock(blocks, nBlocks, target) : -1;
++            if (last->cond != 14u && b + 1 < nBlocks)
++                bb->succ[1] = b + 1;
++            if (target < 0)
++                return count;                        /* unknown label: leave code alone */
++        }
++        else if (last->kind == ARMK_BARRIER && (last->w & 0x00108000u) == 0x00108000u)
++        {
++            /* LDM ... pc: function exit */
++        }
++        else if (b + 1 < nBlocks)
++            bb->succ[0] = b + 1;
++    }
++    do
++    {
++        changed = 0;
++        for (b = nBlocks - 1; b >= 0; --b)
++        {
++            ArmBlock_s *bb = &blocks[b];
++            unsigned short out2 = 0, in2;
++            if (bb->succ[0] >= 0) out2 |= blocks[bb->succ[0]].liveIn;
++            if (bb->succ[1] >= 0) out2 |= blocks[bb->succ[1]].liveIn;
++            in2 = (unsigned short)(bb->use | (out2 & ~bb->def));
++            if (in2 != bb->liveIn || out2 != bb->liveOut)
++            {
++                bb->liveIn = in2;
++                bb->liveOut = out2;
++                changed = 1;
++            }
++        }
++    }
++    while (changed);
++
++    for (b = 0; b < nBlocks; ++b)
++    {
++        if ((flags & HCARM_OPT_PEEPHOLE) != 0)
++            peepholeBlock(ins, blocks[b].start, blocks[b].end, blocks[b].liveOut,
++                          usatHints, nUsatHints, origIndex);
++    }
++
++    /* drop removed words before scheduling (they would only constrain it) */
++    out = compactCode(ins, count, blocks, nBlocks, labelOffsets, nLabels, newIndex);
++
++    if ((flags & HCARM_OPT_FORWARD) != 0)
++    {
++        unsigned short *liveAfter = (unsigned short *)work->tmp;
++        for (b = 0; b < nBlocks; ++b)
++        {
++            int s0 = blocks[b].start, e0 = blocks[b].end;
++            while (s0 < e0)
++            {
++                int chunk = (e0 - s0 > SCHED_MAX) ? SCHED_MAX : e0 - s0;
++                forwardLoadsBlock(ins, s0, s0 + chunk,
++                                  s0 + chunk == e0 ? blocks[b].liveOut : 0xFFFFu, liveAfter);
++                s0 += chunk;
++            }
++        }
++    }
++
++    out = compactCode(ins, out, blocks, nBlocks, labelOffsets, nLabels, newIndex);
++
++    if ((flags & HCARM_OPT_RENAME) != 0)
++    {
++        unsigned short *liveAfter = (unsigned short *)work->tmp;  /* scratch reuse */
++        for (b = 0; b < nBlocks; ++b)
++        {
++            int s0 = blocks[b].start, e0 = blocks[b].end;
++            while (s0 < e0)
++            {
++                int chunk = (e0 - s0 > SCHED_MAX) ? SCHED_MAX : e0 - s0;
++                renameBlock(ins, s0, s0 + chunk,
++                            s0 + chunk == e0 ? blocks[b].liveOut : 0xFFFFu, liveAfter);
++                s0 += chunk;
++            }
++        }
++    }
++
++    if ((flags & HCARM_OPT_SCHEDULE) != 0)
++    {
++        for (b = 0; b < nBlocks; ++b)
++        {
++            int s = blocks[b].start, e = blocks[b].end;
++            if (e > s && ins[e - 1].kind == ARMK_BRANCH)
++                --e;                                  /* the branch stays last */
++            while (s < e)
++            {
++                int chunk = (e - s > SCHED_MAX) ? SCHED_MAX : e - s;
++                scheduleBlock(work, ins, s, s + chunk);
++                s += chunk;
++            }
++        }
++    }
++
++    for (i = 0; i < out; ++i)
++        code[i] = ins[i].w;
++    return out;
++}
+diff --git a/src/gerbera/hc/hcCompiler.c b/src/gerbera/hc/hcCompiler.c
+index 7bcf3ec..24b41fd 100644
+--- a/src/gerbera/hc/hcCompiler.c
++++ b/src/gerbera/hc/hcCompiler.c
+@@ -8,6 +8,14 @@
+  * sub_2C298, HC_compile sub_2C76C).
+  */
+ #include "gerbera/hc/hcCompiler.h"
++#include "gerbera/hc/hcSchedule.h"
++
++/* ARM11 perf work: optimisation toggles (bit n disables pass n) for A/B
++ * measurements; HC_sched_disable is 0 in production. */
++#if !defined(__SYMBIAN32__)
++unsigned int HC_sched_disable = 0;
++#endif
++static int hcSchedEnabled(unsigned int bit) { return (HC_sched_disable & bit) == 0; }
+ #include "gerbera/hc/hcAdjList.h"
+ #include "gerbera/hc/hcAdjMtx.h"
+ #include "gerbera/hc/hcBucketDefs.h"
+@@ -1758,16 +1766,20 @@ static int irTraceShiftedByte(HCInstr_s *lst, int *defPos, unsigned char *defCnt
+     return 0;
+ }
+ 
+-static void peepholeIdentityRepackStore(HCInstr_s *lst)
++static void peepholeIdentityRepackStore(HCArena_s *mgr, HCInstr_s *lst)
+ {
+     int nRegs = scanNumRegs(lst).numRegs;
+     unsigned char *defCnt;
+     int *defPos;
+     int i, nInstr = 0;
++    HCMark_s mark;
+     if (nRegs <= 0) return;
+-    defCnt = (unsigned char *)calloc((size_t)nRegs, 1);
+-    defPos = (int *)malloc(sizeof(int) * (size_t)nRegs);
+-    if (!defCnt || !defPos) { free(defCnt); free(defPos); return; }
++    /* scratch from the compiler arena (the freestanding Symbian build has no
++     * malloc); an overflow takes the arena's usual longjmp escape */
++    mark = HCArena_mark(mgr);
++    defPos = (int *)HCArena_allocBottom(mgr, sizeof(int) * (unsigned int)nRegs);
++    defCnt = (unsigned char *)HCArena_allocBottom(mgr, (unsigned int)nRegs);
++    memset(defCnt, 0, (size_t)nRegs);
+     for (i = 0; i < 100000; ++i) {
+         int op = HC_getOpcodeOper(&lst[i]);
+         int def = HC_getDef(&lst[i]);
+@@ -1827,7 +1839,7 @@ static void peepholeIdentityRepackStore(HCInstr_s *lst)
+         /* Replace store value with original source word. */
+         HC_setOpcodeDst(ins, base);
+     }
+-    free(defCnt); free(defPos);
++    HCArena_release(mgr, &mark);
+ }
+ 
+ static void peepholeFills(HCArena_s *mgr, HCInstr_s *lst)
+@@ -4467,8 +4479,10 @@ static int compileInternal(HCArena_s *mgr, void **output, HCInstr_s *emuDst,
+         if ((optimizationMask & HC_OPT_PEEPHOLE) != 0)
+         {
+             peephole(lst);
++            if (hcSchedEnabled(2))
++                HC_localCSE(lst);
+             cseInvariantR0Loads(lst);
+-            peepholeIdentityRepackStore(lst);
++            peepholeIdentityRepackStore(mgr, lst);
+         }
+         if ((optimizationMask & HC_OPT_SHIFTS) != 0)
+         {
+@@ -4483,7 +4497,7 @@ static int compileInternal(HCArena_s *mgr, void **output, HCInstr_s *emuDst,
+             deadCodeElimination(mgr, lst);
+         if ((optimizationMask & HC_OPT_PEEPHOLE) != 0)
+         {
+-            peepholeIdentityRepackStore(lst);
++            peepholeIdentityRepackStore(mgr, lst);
+             if ((optimizationMask & HC_OPT_DEAD_CODE) != 0)
+                 deadCodeElimination(mgr, lst);
+         }
+@@ -4532,7 +4546,7 @@ static int compileInternal(HCArena_s *mgr, void **output, HCInstr_s *emuDst,
+ 
+         if ((optimizationMask & HC_OPT_PEEPHOLE) != 0)
+         {
+-            peepholeIdentityRepackStore(lst);
++            peepholeIdentityRepackStore(mgr, lst);
+             if ((optimizationMask & HC_OPT_DEAD_CODE) != 0)
+                 deadCodeElimination(mgr, lst);
+         }
+@@ -4540,6 +4554,8 @@ static int compileInternal(HCArena_s *mgr, void **output, HCInstr_s *emuDst,
+         if ((optimizationMask & HC_OPT_REGALLOC) != 0)
+         {
+             int doSpillOpts = 1;
++            if (hcSchedEnabled(1))
++                HC_pressureSchedule(mgr, lst, nHardRegs);
+             lst = registerAllocation(mgr, lst, spillStart, nHardRegs);
+             if (backend->optimizationMask != NULL)
+                 doSpillOpts = (backend->optimizationMask() & 1) == 0;
+diff --git a/src/gerbera/hc/hcSchedule.c b/src/gerbera/hc/hcSchedule.c
+new file mode 100644
+index 0000000..243e185
+--- /dev/null
++++ b/src/gerbera/hc/hcSchedule.c
+@@ -0,0 +1,437 @@
++/* hcSchedule.c - register-pressure driven instruction scheduling of HC IR.
++ *
++ * Not part of the original Gerbera compiler (ARM11 performance work).
++ *
++ * The pixel-pipeline bytecode emits HC IR "breadth first": every colour
++ * interpolant is shifted down, then every texel channel is extracted, then
++ * every multiply is issued and so on. That order keeps a dozen temporaries
++ * alive at the same time, and with 13 allocatable ARM registers the graph
++ * colouring allocator then spills the loop-carried interpolants (a load, a
++ * load + add + store per pixel each).
++ *
++ * HC_pressureSchedule() reorders the straight-line part of every basic
++ * block with a bottom-up list scheduler that minimises the number of live
++ * values (Sethi-Ullman style: a node is chosen when it frees the most
++ * registers, ties continue the expression tree that was started last). The
++ * dependence graph keeps every true/anti/output register dependence and the
++ * order of conflicting memory operations, so the program semantics are
++ * unchanged; only the evaluation order of independent expressions moves.
++ * Latency hiding is left to the target backend scheduler that runs on the
++ * final machine code.
++ */
++#include "gerbera/hc/hcSchedule.h"
++#include "gerbera/hc/hcOpcode.h"
++
++#include <string.h>
++
++#define SCHED_MAX_BLOCK 256
++
++typedef struct SchedNode_s
++{
++    int nUses;
++    int uses[3];       /* register numbers */
++    int useVal[3];     /* producing node index, or -1 - vreg for live-in */
++    int def;           /* register number or -1 */
++    int defLiveOut;    /* value stays live after the block */
++    int nSucc;         /* unscheduled successors */
++    int memKind;       /* 0 none, 1 load, 2 store */
++    int memBase;
++    int memImm;        /* -1 when register indexed */
++    int bornAt;        /* bottom-up schedule step at which the value became live */
++} SchedNode_s;
++
++static int schedIsPlain(HCInstr_s *instr)
++{
++    int op = HC_getOpcodeOper(instr);
++    if (op == HCOP_NOP || op == HCOP_LABEL || op == HCOP_EOP || op == HCOP_ANSA)
++        return 0;
++    if (op >= HCOP_FILLB && op <= HCOP_FILLD)
++        return 0;
++    if (HC_isBranchOp(op) != 0)
++        return 0;
++    return 1;
++}
++
++static int schedMemConflict(const SchedNode_s *a, const SchedNode_s *b)
++{
++    if (a->memKind == 0 || b->memKind == 0)
++        return 0;
++    if (a->memKind == 1 && b->memKind == 1)
++        return 0;
++    /* Hard register 0 is the parameter/spill frame pointer; nothing else
++     * addresses that memory. Frame slots with different offsets are
++     * disjoint (all accesses are word aligned within their own slot). */
++    if ((a->memBase == 0) != (b->memBase == 0))
++        return 0;
++    if (a->memBase == 0 && b->memBase == 0 && a->memImm >= 0 && b->memImm >= 0)
++        return a->memImm == b->memImm;
++    return 1;
++}
++
++/* Add a dependence edge pred -> succ (pred must stay before succ). */
++#define ADJ_ROW(n) (((n) + 7) >> 3)
++#define ADJ_TEST(adj, n, p, s) ((adj)[(p) * ADJ_ROW(n) + ((s) >> 3)] & (1u << ((s) & 7)))
++
++static void schedEdge(unsigned char *adj, int n, SchedNode_s *nodes, int pred, int succ)
++{
++    if (pred < 0 || pred == succ)
++        return;
++    if (!ADJ_TEST(adj, n, pred, succ))
++    {
++        adj[pred * ADJ_ROW(n) + (succ >> 3)] |= (unsigned char)(1u << (succ & 7));
++        nodes[pred].nSucc++;
++    }
++}
++
++static int schedValueLive(const unsigned char *liveVal, const unsigned char *liveIn, int val)
++{
++    return val >= 0 ? liveVal[val] : liveIn[-1 - val];
++}
++
++static void scheduleRange(HCArena_s *mgr, HCInstr_s *lst, int start, int end,
++                          const unsigned short *totalUses, int numRegs, int nHardRegs)
++{
++    int n = end - start;
++    int topMark;
++    SchedNode_s *nodes;
++    unsigned char *adj;
++    int *lastDef;
++    int *order;
++    unsigned char *scheduled;
++    unsigned char *liveVal;
++    unsigned char *liveIn;    /* indexed by register: live-in value currently live */
++    unsigned char *alwaysLive;
++    unsigned short *rangeUses;
++    HCInstr_s *copy;
++    int i, k, j, step;
++
++    if (n < 3)
++        return;
++    if (n > SCHED_MAX_BLOCK)
++    {
++        int s0;
++        for (s0 = start; s0 < end; s0 += SCHED_MAX_BLOCK)
++            scheduleRange(mgr, lst, s0, (end - s0 > SCHED_MAX_BLOCK) ? s0 + SCHED_MAX_BLOCK : end,
++                          totalUses, numRegs, nHardRegs);
++        return;
++    }
++
++    topMark = HCArena_markTop(mgr);
++    nodes = (SchedNode_s *)HCArena_allocTop(mgr, (unsigned int)(n * sizeof(SchedNode_s)));
++    adj = (unsigned char *)HCArena_allocTop(mgr, (unsigned int)(n * ADJ_ROW(n)));
++    lastDef = (int *)HCArena_allocTop(mgr, (unsigned int)(numRegs * sizeof(int)));
++    order = (int *)HCArena_allocTop(mgr, (unsigned int)(n * sizeof(int)));
++    scheduled = (unsigned char *)HCArena_allocTop(mgr, (unsigned int)n);
++    liveVal = (unsigned char *)HCArena_allocTop(mgr, (unsigned int)n);
++    liveIn = (unsigned char *)HCArena_allocTop(mgr, (unsigned int)numRegs);
++    alwaysLive = (unsigned char *)HCArena_allocTop(mgr, (unsigned int)numRegs);
++    rangeUses = (unsigned short *)HCArena_allocTop(mgr, (unsigned int)(numRegs * sizeof(unsigned short)));
++    copy = (HCInstr_s *)HCArena_allocTop(mgr, (unsigned int)(n * sizeof(HCInstr_s)));
++    memset(adj, 0, (size_t)n * (size_t)ADJ_ROW(n));
++    memset(scheduled, 0, (size_t)n);
++    memset(liveVal, 0, (size_t)n);
++    memset(liveIn, 0, (size_t)numRegs);
++    memset(alwaysLive, 0, (size_t)numRegs);
++    memset(rangeUses, 0, (size_t)numRegs * sizeof(unsigned short));
++    for (k = 0; k < numRegs; ++k)
++        lastDef[k] = -1;
++
++    /* nodes, value binding, register dependences */
++    for (i = 0; i < n; ++i)
++    {
++        HCInstr_s *instr = &lst[start + i];
++        SchedNode_s *nd = &nodes[i];
++        int op = HC_getOpcodeOper(instr);
++        int u[4];
++
++        memset(nd, 0, sizeof(*nd));
++        nd->nUses = HC_getUses(instr, u);
++        for (k = 0; k < nd->nUses; ++k)
++        {
++            nd->uses[k] = u[k];
++            nd->useVal[k] = lastDef[u[k]] >= 0 ? lastDef[u[k]] : -1 - u[k];
++            schedEdge(adj, n, nodes, lastDef[u[k]], i);          /* RAW */
++            rangeUses[u[k]]++;
++        }
++        nd->def = HC_getDef(instr);
++        if (HC_getOpcodeTypeOp(op) == HCOP_TYPE_MEMOP)
++        {
++            nd->memKind = HC_isStoreOp(op) ? 2 : 1;
++            nd->memBase = HC_getOpcodeSrc0(instr);
++            nd->memImm = HC_opcodeHasImm(instr) ? HC_getOpcodeImm(instr) : -1;
++        }
++        if (nd->def >= 0)
++        {
++            int r = nd->def;
++            /* WAW */
++            schedEdge(adj, n, nodes, lastDef[r], i);
++            /* WAR: every earlier reader of the previous value */
++            for (j = 0; j < i; ++j)
++            {
++                for (k = 0; k < nodes[j].nUses; ++k)
++                {
++                    if (nodes[j].uses[k] == r)
++                        schedEdge(adj, n, nodes, j, i);
++                }
++            }
++            lastDef[r] = i;
++        }
++        /* memory ordering */
++        if (nd->memKind != 0)
++        {
++            for (j = 0; j < i; ++j)
++            {
++                if (schedMemConflict(&nodes[j], nd))
++                    schedEdge(adj, n, nodes, j, i);
++            }
++        }
++    }
++
++    /* live-out values: the last definition of a register that is used
++     * outside the range, used before its first definition in the range
++     * (loop carried) or is a hard register. */
++    for (i = 0; i < n; ++i)
++    {
++        int r = nodes[i].def;
++        if (r < 0 || lastDef[r] != i)
++            continue;
++        if (r < nHardRegs || totalUses[r] > rangeUses[r])
++            nodes[i].defLiveOut = 1;
++    }
++    for (i = 0; i < n; ++i)
++    {
++        for (k = 0; k < nodes[i].nUses; ++k)
++        {
++            if (nodes[i].useVal[k] < 0)
++            {
++                int r = nodes[i].uses[k];
++                if (lastDef[r] >= 0)
++                    nodes[lastDef[r]].defLiveOut = 1;     /* loop carried */
++                else if (r < nHardRegs || totalUses[r] > rangeUses[r])
++                    alwaysLive[r] = 1;                     /* live through */
++            }
++        }
++    }
++    for (i = 0; i < n; ++i)
++    {
++        if (nodes[i].defLiveOut)
++            liveVal[i] = 1;
++        nodes[i].bornAt = nodes[i].defLiveOut ? 0 : -1;
++    }
++
++    /* bottom-up list scheduling */
++    for (step = n - 1; step >= 0; --step)
++    {
++        int best = -1;
++        int bestDelta = 0;
++        int bestBorn = 0;
++
++        for (i = 0; i < n; ++i)
++        {
++            int delta, born;
++            if (scheduled[i] || nodes[i].nSucc != 0)
++                continue;
++            delta = 0;
++            if (nodes[i].def >= 0 && liveVal[i])
++                delta -= 1;
++            for (k = 0; k < nodes[i].nUses; ++k)
++            {
++                int v = nodes[i].useVal[k];
++                if (v < 0 && alwaysLive[-1 - v])
++                    continue;
++                if (!schedValueLive(liveVal, liveIn, v))
++                    delta += 1;
++            }
++            born = nodes[i].bornAt;
++            if (best < 0 || delta < bestDelta
++                || (delta == bestDelta && born > bestBorn)
++                || (delta == bestDelta && born == bestBorn && i > best))
++            {
++                best = i;
++                bestDelta = delta;
++                bestBorn = born;
++            }
++        }
++        if (best < 0)
++        {
++            /* cannot happen for an acyclic graph; keep the original order */
++            HCArena_releaseTop(mgr, topMark);
++            return;
++        }
++        scheduled[best] = 1;
++        order[step] = best;
++        if (nodes[best].def >= 0)
++            liveVal[best] = 0;
++        for (k = 0; k < nodes[best].nUses; ++k)
++        {
++            int v = nodes[best].useVal[k];
++            if (v >= 0)
++            {
++                if (!liveVal[v])
++                {
++                    liveVal[v] = 1;
++                    nodes[v].bornAt = n - step;
++                }
++            }
++            else
++                liveIn[-1 - v] = 1;
++        }
++        for (j = 0; j < n; ++j)
++        {
++            if (ADJ_TEST(adj, n, j, best))
++                nodes[j].nSucc--;
++        }
++    }
++
++    for (i = 0; i < n; ++i)
++        copy[i] = lst[start + order[i]];
++    memcpy(&lst[start], copy, (size_t)n * sizeof(HCInstr_s));
++    HCArena_releaseTop(mgr, topMark);
++}
++
++void HC_pressureSchedule(HCArena_s *mgr, HCInstr_s *lst, int nHardRegs)
++{
++    int topMark = HCArena_markTop(mgr);
++    int numRegs = nHardRegs;
++    int count = 0;
++    unsigned short *totalUses;
++    int i, k;
++
++    while (HC_getOpcodeOper(&lst[count]) != HCOP_EOP)
++    {
++        int u[4];
++        int nUses = HC_getUses(&lst[count], u);
++        int def = HC_getDef(&lst[count]);
++        for (k = 0; k < nUses; ++k)
++            if (u[k] + 1 > numRegs)
++                numRegs = u[k] + 1;
++        if (def + 1 > numRegs)
++            numRegs = def + 1;
++        ++count;
++    }
++    totalUses = (unsigned short *)HCArena_allocTop(mgr, (unsigned int)(numRegs * sizeof(unsigned short)));
++    memset(totalUses, 0, (size_t)numRegs * sizeof(unsigned short));
++    for (i = 0; i < count; ++i)
++    {
++        int u[4];
++        int nUses = HC_getUses(&lst[i], u);
++        for (k = 0; k < nUses; ++k)
++            totalUses[u[k]]++;
++    }
++
++    i = 0;
++    while (i < count)
++    {
++        int s;
++        while (i < count && !schedIsPlain(&lst[i]))
++            ++i;
++        s = i;
++        while (i < count && schedIsPlain(&lst[i]))
++            ++i;
++        if (i > s)
++            scheduleRange(mgr, lst, s, i, totalUses, numRegs, nHardRegs);
++    }
++    HCArena_releaseTop(mgr, topMark);
++}
++
++/* --- local common subexpression elimination ---------------------------------
++ * Per basic block value table of pure ALU expressions. A recomputation is
++ * replaced by a register copy, which copy propagation / dead code
++ * elimination then remove (the bytecode e.g. recomputes fogColor * fog for
++ * every colour channel). Returns the number of replaced instructions. */
++
++#define CSE_MAX 64
++
++typedef struct CseEntry_s
++{
++    int op, a, b, hasImm, dst;
++} CseEntry_s;
++
++static int cseIsPure(HCInstr_s *instr)
++{
++    int op = HC_getOpcodeOper(instr);
++    if (HC_getOpcodeTypeOp(op) != HCOP_TYPE_ALUOP)
++        return 0;
++    if (op == HCOP_MOV || op == HCOP_MOVN || op == HCOP_NOP || op == HCOP_LABEL || op == HCOP_EOP)
++        return 0;
++    if (HC_opcodeDstFlagsOp(op) != HCOP_DST_NORMAL)
++        return 0;
++    return HC_getOpcodeArgCount(instr) == 3;
++}
++
++int HC_localCSE(HCInstr_s *lst)
++{
++    CseEntry_s tab[CSE_MAX];
++    int nTab = 0;
++    int replaced = 0;
++    int pc;
++
++    for (pc = 0; HC_getOpcodeOper(&lst[pc]) != HCOP_EOP; ++pc)
++    {
++        HCInstr_s *instr = &lst[pc];
++        int op = HC_getOpcodeOper(instr);
++        int def, k;
++
++        if (op == HCOP_LABEL || HC_isBranchOp(op) != 0 || op == HCOP_ANSA
++            || (op >= HCOP_FILLB && op <= HCOP_FILLD))
++        {
++            nTab = 0;
++            continue;
++        }
++        def = HC_getDef(instr);
++        if (cseIsPure(instr))
++        {
++            int a = HC_getOpcodeSrc0(instr);
++            int hasImm = HC_opcodeHasImm(instr) != 0;
++            int b = hasImm ? HC_getOpcodeImm(instr) : HC_getOpcodeSrc1(instr);
++            int found = -1;
++
++            if (!hasImm && HC_opcodeIsCommutative(instr) && b < a)
++            {
++                int t = a; a = b; b = t;
++            }
++            for (k = 0; k < nTab; ++k)
++            {
++                if (tab[k].op == op && tab[k].a == a && tab[k].b == b && tab[k].hasImm == hasImm)
++                {
++                    found = tab[k].dst;
++                    break;
++                }
++            }
++            if (found >= 0 && found != def)
++            {
++                *instr = HC_genOp2(HCOP_MOV, def, found);
++                ++replaced;
++            }
++            /* invalidate entries depending on / held in def */
++            for (k = 0; k < nTab; )
++            {
++                if (tab[k].dst == def || tab[k].a == def || (!tab[k].hasImm && tab[k].b == def))
++                    tab[k] = tab[--nTab];
++                else
++                    ++k;
++            }
++            if (found < 0 && def != a && (hasImm || def != b) && nTab < CSE_MAX)
++            {
++                tab[nTab].op = op;
++                tab[nTab].a = a;
++                tab[nTab].b = b;
++                tab[nTab].hasImm = hasImm;
++                tab[nTab].dst = def;
++                ++nTab;
++            }
++            continue;
++        }
++        if (def >= 0)
++        {
++            for (k = 0; k < nTab; )
++            {
++                if (tab[k].dst == def || tab[k].a == def || (!tab[k].hasImm && tab[k].b == def))
++                    tab[k] = tab[--nTab];
++                else
++                    ++k;
++            }
++        }
++    }
++    return replaced;
++}
+diff --git a/src/include/gerbera/hc/hcARMSched.h b/src/include/gerbera/hc/hcARMSched.h
+new file mode 100644
+index 0000000..274f4be
+--- /dev/null
++++ b/src/include/gerbera/hc/hcARMSched.h
+@@ -0,0 +1,28 @@
++/* hcARMSched.h - ARM11 machine-code peepholes and list scheduler for the HC
++ * ARM backend (ARM11 performance work, not in the original compiler). */
++#ifndef GERBERA_HC_ARMSCHED_H
++#define GERBERA_HC_ARMSCHED_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define HCARM_OPT_PEEPHOLE 1u
++#define HCARM_OPT_SCHEDULE 2u
++#define HCARM_OPT_RENAME   4u
++#define HCARM_OPT_FORWARD  8u
++
++/* Optimises code[0..count) in place (branch words still hold label ids)
++ * and remaps labelOffsets. usatHints lists word indices of USAT
++ * instructions whose source is "LSR #k of a value < 2^31". Returns the new
++ * word count. scratch must hold roughly 40 bytes per word + 8 KB; with less
++ * the code is returned unchanged. */
++int HCARM_optimizeCode(void *scratch, int scratchSize, unsigned int *code, int count,
++                       const int *labelIds, int *labelOffsets, int nLabels,
++                       const int *usatHints, int nUsatHints, unsigned int flags);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/src/include/gerbera/hc/hcSchedule.h b/src/include/gerbera/hc/hcSchedule.h
+new file mode 100644
+index 0000000..6e250e8
+--- /dev/null
++++ b/src/include/gerbera/hc/hcSchedule.h
+@@ -0,0 +1,33 @@
++/* hcSchedule.h - HC IR / ARM machine-code schedulers (ARM11 performance work). */
++#ifndef GERBERA_HC_SCHEDULE_H
++#define GERBERA_HC_SCHEDULE_H
++
++#include "gerbera/hc/hcMemory.h"
++#include "gerbera/hc/hcOpcode.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Pre-register-allocation reordering of every basic block's straight-line
++ * code that minimises the number of simultaneously live values. */
++void HC_pressureSchedule(HCArena_s *mgr, HCInstr_s *lst, int nHardRegs);
++
++/* Local (basic block) common subexpression elimination of pure ALU ops. */
++int HC_localCSE(HCInstr_s *lst);
++
++#ifdef __cplusplus
++}
++#endif
++
++/* Debug switch for measurements (bits: 1 pressure schedule, 2 local CSE,
++ * 4 machine peepholes, 8 ARM11 scheduler, 16 USAT hints, 32 renaming,
++ * 64 frame load forwarding). Symbian DLLs have no writable static data, so
++ * there it is a constant 0. */
++#if defined(__SYMBIAN32__)
++#define HC_sched_disable 0u
++#else
++extern unsigned int HC_sched_disable;
++#endif
++
++#endif
+diff --git a/tests/arm_jit_bench.py b/tests/arm_jit_bench.py
+new file mode 100644
+index 0000000..f0ce22d
+--- /dev/null
++++ b/tests/arm_jit_bench.py
+@@ -0,0 +1,409 @@
++#!/usr/bin/env python3
++"""ARM JIT span benchmark / analyzer for Gerbera pixel pipelines (ARM11 focus).
++
++Extends tests/arm_jit_harness.py with:
++  * realistic spans (N scanlines x L pixels, 64x64 texture, in-range gradients),
++    verified bit-exactly against the host C reference (differential_raster_run);
++  * per-pixel dynamic instruction counts and an ARM1136JF-S cycle estimate
++    (in-order single issue, load-use / multiply / early-shift interlocks);
++  * HC IR dumps (optimized pre-regalloc and post-regalloc) and annotated
++    disassembly of the inner loop.
++
++Usage:
++  .venv/bin/python tests/arm_jit_bench.py [--filter NAME] [--disasm] [--ir pre|post]
++                                         [--len 32] [--rows 4] [--json OUT]
++"""
++from __future__ import annotations
++
++import argparse
++import ctypes as C
++import json
++import random
++import struct
++import sys
++from pathlib import Path
++
++import capstone
++import unicorn
++from unicorn import arm_const as ARM
++
++ROOT = Path(__file__).resolve().parent.parent
++sys.path.insert(0, str(ROOT / "tests"))
++
++from arm_jit_harness import (ArmRunner, base_signature, build_cases, compile_arm,  # noqa: E402
++                             load_lib, make_descriptors)
++from differential_raster import buffer, pixel_texture_record, words  # noqa: E402
++
++OPNAMES = ("ADD AND ASD ASR BIC LSD LSL LSR MAXS MAXU MINS MINU MULS MULU MOV MOVN NOP OR "
++           "ROL ROR SUB SUBR XOR LBS LBU LWS LWU LW2S LW2U LD LD4 SB SW SW2 SD SD4 FILLB "
++           "FILLW FILLD ANSA BRA CBA CBEQ CBGES CBGEU CBGTS CBGTU CBLES CBLEU CBLTS CBLTU "
++           "CBNA CBNEQ EOP LABEL").split()
++
++
++# ---- ARM1136JF-S cycle model ---------------------------------------------------
++
++class Arm11Model:
++    """Approximate ARM1136 timing: single issue, in-order, register interlocks.
++
++    result latency: ALU 1, ALU w/ shift-by-reg 2 (2 issue cycles), LDR 3,
++    MUL/MLA 2 issue + 4 latency, SMULxy/SMLAxy 1 issue + 3, UMULL/SMULL 3 issue + 5,
++    media (USAT/UXTB/PKH/UQADD8...) 2. Registers feeding the barrel shifter or
++    an address are needed one cycle early. Taken branches cost 1 extra cycle
++    (predicted); conditional instructions that fail still issue.
++    """
++
++    MEDIA = {"usat", "ssat", "usat16", "ssat16", "uxtb", "uxth", "uxtb16", "sxtb", "sxth",
++             "sxtb16", "uxtab", "uxtah", "uxtab16", "pkhbt", "pkhtb", "uqadd8", "uqsub8",
++             "uhadd8", "uhsub8", "uadd8", "usub8", "qadd8", "sel", "rev", "rev16", "usad8",
++             "usada8", "uqadd16", "uqsub16", "uadd16", "usub16", "uhadd16", "shadd8", "sadd16",
++             "ssub16", "qadd16", "qsub16", "uqasx", "uqsax"}
++
++    def __init__(self):
++        self.md = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM)
++        self.md.detail = True
++        self.cache = {}
++        self.reset()
++
++    def reset(self):
++        self.t = 0
++        self.ready = {}
++        self.cycles_at = {}
++
++    def decode(self, uc, addr):
++        d = self.cache.get(addr)
++        if d is None:
++            ins = next(self.md.disasm(bytes(uc.mem_read(addr, 4)), addr))
++            mn = ins.mnemonic
++            base = mn
++            for suf in ("eq", "ne", "cs", "cc", "hs", "lo", "mi", "pl", "vs", "vc", "hi", "ls",
++                        "ge", "lt", "gt", "le"):
++                if base.endswith(suf) and len(base) > len(suf) + 1 and base not in ("bic", "teq", "cmp", "mls"):
++                    if base[:-len(suf)] in ("mov", "mvn", "add", "sub", "rsb", "and", "orr", "eor",
++                                            "b", "bx", "ldr", "str", "mul", "mla", "cmp", "bic",
++                                            "movs", "ldrb", "strb", "ldrh", "strh", "pop", "push"):
++                        base = base[:-len(suf)]
++                        break
++            if base.endswith("s") and base[:-1] in ("mov", "mvn", "add", "sub", "rsb", "and",
++                                                     "orr", "eor", "bic", "mul", "mla", "lsl",
++                                                     "lsr", "asr"):
++                base = base[:-1]
++            early, normal, late = set(), set(), set()
++            reg_shift = False
++            for op in ins.operands:
++                if op.type == capstone.arm.ARM_OP_MEM:
++                    if op.mem.base:
++                        early.add(op.mem.base)
++                    if op.mem.index:
++                        early.add(op.mem.index)
++                elif op.type == capstone.arm.ARM_OP_REG:
++                    if op.shift.type != 0 and op.shift.type != capstone.arm.ARM_SFT_INVALID:
++                        early.add(op.reg)
++                        if op.shift.type >= capstone.arm.ARM_SFT_ASR_REG:
++                            reg_shift = True
++                            early.add(op.shift.value)
++            rd_, wr_ = ins.regs_access()
++            reads = set(rd_)
++            writes = set(wr_)
++            if base in ("lsl", "lsr", "asr", "ror") and len(ins.operands) == 3 and \
++                    ins.operands[2].type == capstone.arm.ARM_OP_REG:
++                reg_shift = True
++                early.add(ins.operands[1].reg)
++                early.add(ins.operands[2].reg)
++            elif base in ("lsl", "lsr", "asr", "ror") and len(ins.operands) == 3:
++                early.add(ins.operands[1].reg)
++            if base in ("str", "strb", "strh") and ins.operands:
++                late.add(ins.operands[0].reg)
++            if base == "mla" and len(ins.operands) == 4:
++                late.add(ins.operands[3].reg)
++            if base in ("smlabb", "smlabt", "smlatb", "smlatt", "smlad", "smlsd") and len(ins.operands) == 4:
++                late.add(ins.operands[3].reg)
++            for r in early:
++                reads.discard(r)
++            for r in late:
++                reads.discard(r)
++            pc = capstone.arm.ARM_REG_PC
++            issue, lat = 1, 1
++            if reg_shift:
++                issue, lat = 2, 2
++            if base.startswith("ldr") or base == "pop" or base.startswith("ldm"):
++                lat = 3
++                if base in ("pop",) or base.startswith("ldm"):
++                    issue = max(1, (len(ins.operands) + 1) // 2)
++            elif base == "push" or base.startswith("stm"):
++                issue = max(1, (len(ins.operands) + 1) // 2)
++            elif base in ("mul", "mla", "mls"):
++                issue, lat = 2, 4
++            elif base in ("smulbb", "smulbt", "smultb", "smultt", "smlabb", "smlabt", "smlatb",
++                          "smlatt", "smulwb", "smulwt", "smlawb", "smlawt", "smuad", "smlad",
++                          "smusd", "smlsd"):
++                issue, lat = 1, 3
++            elif base in ("umull", "smull", "umlal", "smlal"):
++                issue, lat = 3, 5
++            elif base in self.MEDIA:
++                lat = 2
++            is_branch = base in ("b", "bl", "bx") or (pc in writes)
++            d = (ins, early, reads, late, writes, issue, lat, is_branch, ins.mnemonic != base and base == "b")
++            self.cache[addr] = d
++        return d
++
++    def step(self, uc, addr):
++        ins, early, reads, late, writes, issue, lat, is_branch, _cond = self.decode(uc, addr)
++        t = self.t
++        for r in early:
++            t = max(t, self.ready.get(r, 0) + 1)
++        for r in reads:
++            t = max(t, self.ready.get(r, 0))
++        for r in late:
++            t = max(t, self.ready.get(r, 0) - 1)
++        start = self.t
++        for r in writes:
++            if r not in (capstone.arm.ARM_REG_PC,):
++                self.ready[r] = t + lat
++        self.t = t + issue
++        self.cycles_at[addr] = self.cycles_at.get(addr, 0) + (self.t - start)
++
++    def branch_taken(self):
++        self.t += 1
++
++
++class BenchRunner(ArmRunner):
++    def __init__(self, model):
++        super().__init__()
++        self.model = model
++        self.counts = {}
++        self.uc.hook_del(self._ic_hook)
++        self._ic_hook = self.uc.hook_add(unicorn.UC_HOOK_CODE, self._hook)
++        self.prev = None
++
++    def _hook(self, uc, address, size, user_data):
++        self.dynamic_insns += 1
++        self.counts[address] = self.counts.get(address, 0) + 1
++        if self.prev is not None and address != self.prev + 4:
++            self.model.branch_taken()
++        self.prev = address
++        self.model.step(uc, address)
++
++    def install_code(self, code):
++        self.model.cache.clear()
++        return super().install_code(code)
++
++    def reset(self):
++        super().reset()
++        self.counts = {}
++        self.model.reset()
++        self.prev = None
++
++
++# ---- scenario ----------------------------------------------------------------
++
++TEX_LOG2 = 6
++
++
++def make_texture(seed, alpha_mode):
++    rnd = random.Random(seed)
++    n = 1 << (2 * TEX_LOG2)
++    px = []
++    for i in range(n):
++        a = 0xFF if alpha_mode == 0 else rnd.choice((0, 0x40, 0x80, 0xC0, 0xFF, rnd.randrange(256)))
++        px.append((a << 24) | rnd.randrange(1 << 24))
++    return px
++
++
++def scenario(case, length, rows):
++    sig = case["sig"]
++    rnd = random.Random(1234)
++    # gradients: z, fog, r, g, b, a, s0, t0, s1, t1 (16.16 colors, 0.32 texcoords)
++    ref = [0x20000000, 40 << 16, 200 << 16, 30 << 16, 120 << 16, 250 << 16, 0x01230000, 0x04560000, 0x00100000, 0x02000000]
++    xadd = [0x00100000, (150 << 16) // max(length, 1), -(170 << 16) // max(length, 1), (200 << 16) // max(length, 1),
++            (100 << 16) // max(length, 1), -(200 << 16) // max(length, 1), 0x04000000 + 0x123, 0x00400000 + 7, 0x05000000, 0x00200000]
++    yadd = [0x00080000, 3 << 16, 2 << 16, 1 << 16, -(1 << 16), 0, 0x00200000, 0x04000000, 0x00300000, 0x03000000]
++    grads = ref + xadd + yadd
++    inputs = case["inputs"]
++    if inputs is None:
++        inputs = [0] * 15
++    inputs = list(inputs)
++    inputs[10] = 0x00305080 if sig[41] == 0 else 0x00A0A0A0  # fog color
++    spans = []
++    for y in range(rows):
++        x0 = (y * 3) % 5
++        spans.append(((length - (y % 3)) << 16) | x0)
++    width = length + 8
++    sampling = []
++    for unit in range(2):
++        rec = sig[56 + 44 * unit:100 + 44 * unit]
++        sh = (32 - TEX_LOG2) if rec[21] == 0 else (20 - TEX_LOG2 + 1)
++        sampling += [(1 << TEX_LOG2) - 1, (1 << TEX_LOG2) - 1, 32 - TEX_LOG2, 32 - TEX_LOG2, TEX_LOG2, rec[19]]
++    return grads, inputs, spans, width, sampling
++
++
++def run_case(lib, runner, case, code, length, rows, check=True):
++    sig = case["sig"]
++    grads, inputs, spans, width, sampling = scenario(case, length, rows)
++    bpp = sig[8] if sig[8] else 4
++    cstride = width * bpp
++    dstride = width * 2
++    sstride = width
++    rnd = random.Random(99)
++    color0 = bytes(rnd.randrange(256) for _ in range(cstride * rows))
++    depth0 = struct.pack("<%dH" % (width * rows), *[rnd.choice((0x1000, 0xFFFF, 0x8000)) for _ in range(width * rows)])
++    sten0 = bytes(rnd.randrange(4) for _ in range(sstride * rows))
++    tex0 = make_texture(5, 1)
++    tex1 = make_texture(6, 1)
++
++    ok = None
++    if check:
++        cbuf, dbuf, sbuf = buffer(color0), buffer(depth0), buffer(sten0)
++        span_arr = (C.c_uint32 * len(spans))(*spans)
++        strides = (C.c_int * 3)(cstride, dstride, sstride)
++        t0 = (C.c_uint32 * len(tex0))(*tex0)
++        t1 = (C.c_uint32 * len(tex1))(*tex1)
++        lib.differential_raster_run(buffer(sig), buffer(words(grads)), cbuf, dbuf, sbuf,
++                                    buffer(words(inputs)), buffer(words(sampling)),
++                                    span_arr, len(spans), strides, t0, t1)
++        ref = (bytes(cbuf), bytes(dbuf), bytes(sbuf))
++
++    runner.reset()
++    bufs = [runner.alloc(len(d), d) for d in (color0, depth0, sten0)]
++    stack = runner.alloc(16384)
++    pipe = stack + 64
++    span_ptr = runner.alloc(4 * len(spans), words(spans))
++    texaddr = [runner.alloc(4 * len(tex0), words(tex0)), runner.alloc(4 * len(tex1), words(tex1))]
++    for unit in range(2):
++        rec = sig[56 + 44 * unit:100 + 44 * unit]
++        if not rec[16]:
++            continue
++        env_color = inputs[8 + unit]
++        s_mask, t_mask, sh_s, sh_t, width_log, linear = sampling[6 * unit:6 * unit + 6]
++        runner.write(pipe + 64 * unit, words([env_color, texaddr[unit], 0, linear,
++                                             s_mask, t_mask, sh_s, sh_t, width_log]))
++    fog_color = inputs[10]
++    if sig[41]:
++        fog_color &= 255
++    runner.write(pipe + 132, words([cstride, dstride, sstride, fog_color, 64, 3, 3, 255, 255]))
++    runner.write(pipe + 168, words([*bufs, len(spans), span_ptr, 0]))
++    runner.write(pipe + 192, words(grads))
++    entry = runner.install_code(code)
++    runner.call(entry, [stack], budget=50_000_000)
++    got = tuple(runner.read(a, len(d)) for a, d in zip(bufs, (color0, depth0, sten0)))
++    if check:
++        ok = got == ref
++    npix = sum(s >> 16 for s in spans)
++    return ok, runner.dynamic_insns, runner.model.t, npix, dict(runner.counts), dict(runner.model.cycles_at)
++
++
++def extra_cases(descriptors):
++    """Further configurations used by the Symbian builds (RGB565/XRGB targets)."""
++    cases = []
++    texels0 = [0xFF204060, 0xFF80A0C0, 0xFF10D070, 0xFFF03090]
++    texels1 = [0xFF8001FE, 0x0100FF7F, 0x7FFE8001, 0x80017FFF]
++    env = [0xFFFFFFFF, 0x80808080]
++
++    def tex_inputs(mode0=3, mode1=3, fog=0, fmt0=2, fmt1=2):
++        return texels0 + texels1 + env + [fog] + [fmt0, fmt1] + [mode0, mode1]
++
++    def add(name, sig, inputs=None):
++        cases.append({"name": name, "sig": bytes(sig), "inputs": inputs, "gradients": None,
++                      "sampling": None, "initial": None})
++
++    for cf, cfn in ((2, "rgba"),):
++        sig = base_signature(descriptors, cf)
++        sig[56:100] = pixel_texture_record(descriptors, fmt=2, mode=0)
++        sig[18] = 1; sig[21] = 1; sig[22] = 3
++        add("x_tex_vcolor_depth_" + cfn, sig, tex_inputs(mode0=0))
++        sig = base_signature(descriptors, cf)
++        sig[56:100] = pixel_texture_record(descriptors, fmt=2, mode=3)
++        sig[18] = 1; sig[21] = 1; sig[22] = 3
++        add("x_tex_replace_depth_" + cfn, sig, tex_inputs(mode0=3))
++        sig = base_signature(descriptors, cf)
++        sig[56:100] = pixel_texture_record(descriptors, fmt=2, mode=0)
++        sig[19] = 1; sig[20] = 4
++        add("x_tex_vcolor_alphatest_" + cfn, sig, tex_inputs(mode0=0))
++    return cases
++
++
++def dump_ir(lib, sig, post):
++    prog = buffer(bytes(32768))
++    count = lib.grExecuteProgram(prog, buffer(sig), 4096)
++    out = buffer(bytes(16384 * 8))
++    lib.differential_raster_compile_ir.argtypes = [C.c_void_p, C.c_uint32, C.c_void_p, C.c_int, C.c_int]
++    n = lib.differential_raster_compile_ir(buffer(bytes(prog)), 0x3FF, out, len(out), 1 if post else 0)
++    raw = bytes(out)
++    lines = []
++    for i in range(max(n, 0)):
++        i0, i1 = struct.unpack_from("<II", raw, 8 * i)
++        op = i0 & 0xFF
++        has_imm = (i0 >> 8) & 1
++        dst = (i0 >> 10) & 0x7FF
++        src0 = (i0 >> 21) & 0x7FF
++        name = OPNAMES[op] if op < len(OPNAMES) else "op%d" % op
++        if name == "LABEL":
++            lines.append("L%d:" % dst)
++            continue
++        s1 = ("#%d" % struct.unpack("<i", struct.pack("<I", i1))[0]) if has_imm else ("r%d" % (i1 & 0x7FF))
++        lines.append("  %-6s r%d, r%d, %s" % (name, dst, src0, s1))
++    return count, lines
++
++
++def main():
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--lib", default=str(ROOT / "build/differential/libgerbera_diff.so"))
++    ap.add_argument("--filter", default="")
++    ap.add_argument("--disasm", action="store_true")
++    ap.add_argument("--ir", choices=("pre", "post"))
++    ap.add_argument("--len", type=int, default=32)
++    ap.add_argument("--rows", type=int, default=4)
++    ap.add_argument("--json")
++    ap.add_argument("--disable", type=lambda v: int(v, 0), default=0,
++                    help="HC_sched_disable bits: 1 pressure schedule, 2 local CSE, 4 ARM peepholes, "
++                         "8 ARM11 scheduler, 16 USAT hints, 32 renaming, 64 frame load forwarding")
++    args = ap.parse_args()
++
++    lib = load_lib(Path(args.lib))
++    C.c_uint.in_dll(lib, "HC_sched_disable").value = args.disable
++    lib.differential_raster_run.argtypes = [C.c_void_p] * 7 + [C.c_void_p, C.c_int, C.c_void_p, C.c_void_p, C.c_void_p]
++    lib.differential_raster_run.restype = None
++    descriptors = make_descriptors(lib)
++    cases = build_cases(descriptors) + extra_cases(descriptors)
++    if args.filter:
++        cases = [c for c in cases if any(f in c["name"] for f in args.filter.split(","))]
++    model = Arm11Model()
++    runner = BenchRunner(model)
++    results = {}
++    print("%-36s %6s %6s %8s %8s %7s %7s %5s" % ("case", "bytes", "insns", "dyn", "cycles", "ins/px", "cyc/px", "ok"))
++    fails = 0
++    for case in cases:
++        hc, code, mask, length = compile_arm(lib, case["sig"])
++        if code is None:
++            print("%-36s COMPILE FAIL %s" % (case["name"], length))
++            fails += 1
++            continue
++        ok, dyn, cyc, npix, counts, cyc_at = run_case(lib, runner, case, code, args.len, args.rows)
++        # per-pixel marginal cost: difference between two lengths removes span overhead
++        ok2, dyn2, cyc2, npix2, _, _ = run_case(lib, runner, case, code, args.len * 2, args.rows)
++        ipx = (dyn2 - dyn) / (npix2 - npix)
++        cpx = (cyc2 - cyc) / (npix2 - npix)
++        good = ok and ok2
++        fails += 0 if good else 1
++        results[case["name"]] = {"bytes": len(code), "dyn": dyn, "cycles": cyc, "npix": npix,
++                                 "ins_px": ipx, "cyc_px": cpx, "ok": good}
++        print("%-36s %6d %6d %8d %8d %7.2f %7.2f %5s" % (case["name"], len(code), len(code) // 4, dyn, cyc,
++                                                        ipx, cpx, "ok" if good else "FAIL"))
++        if args.ir:
++            n, lines = dump_ir(lib, case["sig"], args.ir == "post")
++            print("\n".join(lines))
++        if args.disasm:
++            md = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM)
++            base = runner.CODE
++            for ins in md.disasm(code, base):
++                n = counts.get(ins.address, 0)
++                c = cyc_at.get(ins.address, 0)
++                print("  %6d %6d  %04x: %-8s %s" % (n, c, ins.address - base, ins.mnemonic, ins.op_str))
++            print()
++    print("%d/%d ok" % (len(cases) - fails, len(cases)))
++    if args.json:
++        Path(args.json).write_text(json.dumps(results, indent=1))
++    return 1 if fails else 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/differential_raster_adapter.c b/tests/differential_raster_adapter.c
+index 9326a00..09b9bc9 100644
+--- a/tests/differential_raster_adapter.c
++++ b/tests/differential_raster_adapter.c
+@@ -175,6 +175,111 @@ void differential_raster_span_sample(const _grSignature *signature, const int *g
+     grExecutePixelPipeline(&state);
+ }
+ 
++void differential_raster_run(const _grSignature *signature, const int *gradients,
++                             void *color, void *depth, void *stencil,
++                             const SpanInput *inputs, const int *sampling,
++                             unsigned int *spans, int numSpans, const int *strides,
++                             const void *texPixels0, const void *texPixels1)
++{
++    Gerbera_s state;
++    _grPixelPipe pipe;
++    _grPipelineCache cache;
++    _grTexture texture[2];
++    int unit, operand;
++    static const uint32_t texels[4] = { 0xFF204060u, 0xFF80A0C0u, 0xFF10D070u, 0xFFF03090u };
++    memset(&state, 0, sizeof(state));
++    memset(&pipe, 0, sizeof(pipe));
++    memset(&cache, 0, sizeof(cache));
++    memset(&texture, 0, sizeof(texture));
++    memcpy(&state.drawSurface, &signature->descriptor, sizeof(signature->descriptor));
++    state.colorMask = signature->colorMask;
++    state.depthMask = signature->depthMask;
++    state.depthFunc = signature->depthFunc;
++    state.alphaFunc = signature->alphaFunc;
++    state.alphaReference = 64;
++    state.srcBlendFactor = signature->srcFactor;
++    state.dstBlendFactor = signature->dstFactor;
++    state.stencilFunc = signature->stencilFunc;
++    state.stencilFail = signature->stencilFail;
++    state.stencilZFail = signature->stencilZFail;
++    state.stencilZPass = signature->stencilZPass;
++    state.stencilTestMask = 255;
++    state.stencilWriteMask = 255;
++    state.stencilReference = 3;
++    state.capabilities[GR_CAPABILITY_DEPTH_TEST] = signature->depthTest;
++    state.capabilities[GR_CAPABILITY_ALPHA_TEST] = signature->alphaTest;
++    state.capabilities[GR_CAPABILITY_BLEND] = signature->blendEnabled;
++    state.capabilities[GR_CAPABILITY_STENCIL_TEST] = signature->stencilTest;
++    state.capabilities[GR_CAPABILITY_SMOOTH_SHADING] = 1;
++    state.activeGradientMask = 63;
++    state.capabilities[GR_CAPABILITY_FOG] = signature->fogEnabled;
++    state.fogColor = inputs ? inputs->fogColor : 0;
++    for (unit = 0; unit < 2; ++unit)
++    {
++        const unsigned char *record = signature->texture[unit];
++        _grTextureUnitState *env = &state.textureUnit[2 * unit];
++        _grPixelPipeTextureUnit *sample = &pipe.textureUnit[unit];
++        if (!record[16])
++            continue;
++        texture[unit].mipmap[0].texFormat = inputs ? inputs->textureFormat[unit] : GR_TEXTUREFORMAT_RGBA8;
++        texture[unit].wrapMode[0] = record[21];
++        texture[unit].wrapMode[1] = record[22];
++        env->texture = &texture[unit];
++        env->texEnvColor = inputs ? inputs->envColor[unit] : 0;
++        env->texEnvMode = inputs ? inputs->envMode[unit] : GR_TEXENVMODE_REPLACE;
++        env->texEnvRGBCombFunc = record[36];
++        env->texEnvAlphaCombFunc = record[37];
++        env->texEnvRGBCombScale = 1u << record[38];
++        env->texEnvAlphaCombScale = 1u << record[39];
++        for (operand = 0; operand < 3; ++operand)
++        {
++            env->texEnvRGBCombSrc[operand] = record[24 + 4 * operand];
++            env->texEnvAlphaCombSrc[operand] = record[25 + 4 * operand];
++            env->texEnvRGBCombOperand[operand] = record[26 + 4 * operand];
++            env->texEnvAlphaCombOperand[operand] = record[27 + 4 * operand];
++        }
++        state.useTexUnit[unit] = 1;
++        state.activeGradientMask |= 0xC0 << (2 * unit);
++        sample->pixels = (void *)(unit == 0 ? texPixels0 : texPixels1);
++        (void)texels;
++        sample->sMask = sample->tMask = 1;
++        sample->log2DimS = 1;
++        sample->linear = record[19];
++        sample->rShift[0] = record[21] == GR_WRAPMODE_REPEAT ? 31 : 20;
++        sample->rShift[1] = record[22] == GR_WRAPMODE_REPEAT ? 31 : 20;
++        if (sampling != NULL)
++        {
++            const int *parameters = sampling + 6 * unit;
++            sample->sMask = parameters[0];
++            sample->tMask = parameters[1];
++            sample->rShift[0] = parameters[2];
++            sample->rShift[1] = parameters[3];
++            sample->log2DimS = parameters[4];
++            sample->linear = parameters[5];
++        }
++    }
++    state.drawSurface.buffers[0].data = color;
++    state.drawSurface.buffers[1].data = depth;
++    state.drawSurface.buffers[2].data = stencil;
++    state.drawSurface.buffers[0].stride = strides[0];
++    state.drawSurface.buffers[1].stride = strides[1];
++    state.drawSurface.buffers[2].stride = strides[2];
++    pipe.colorRow = color;
++    pipe.depthRow = depth;
++    pipe.stencilRow = stencil;
++    pipe.scanlineInfo = spans;
++    pipe.numScanlines = numSpans;
++    memcpy(pipe.reference, gradients, 40);
++    memcpy(pipe.xAdder, gradients + 10, 40);
++    memcpy(pipe.yAdder, gradients + 20, 40);
++    state.pixelPipeline = &pipe;
++    state.pixelPipelineCode = raster_pixel_marker;
++    cache.arena = (unsigned char *)(uintptr_t)raster_pixel_marker;
++    cache.arenaSize = 1;
++    state.pipelineCache = &cache;
++    grExecutePixelPipeline(&state);
++}
++
+ void differential_raster_span_inputs(const _grSignature *signature, const int *gradients,
+                                      void *color, void *depth, void *stencil,
+                                      const SpanInput *inputs)
+@@ -467,3 +572,36 @@ void differential_raster_line(const int32_t *in, uint32_t *out)
+     out[LINE_OUTPUT_WORDS - 1] = state.capabilities[GR_CAPABILITY_PERSPECTIVE_CORRECTION];
+     line_capture = NULL;
+ }
++
++/* IR inspection helpers (JIT perf work): optimized HC IR without a backend,
++ * and the post-regalloc IR the ARM backend consumes (via emuDst). */
++int differential_raster_compile_ir(void *instructions, unsigned int optimizationMask,
++                                   void *out, int capacity, int postRegalloc)
++{
++    static union { uint64_t alignment; unsigned char bytes[1024 * 1024]; } arena;
++    static HCInstr_s emu[16384];
++    HCSetjmpConfig_s config;
++    void *output = NULL;
++    unsigned char mask[16];
++    int length, n = 0;
++    config.setjmpWrap = raster_compile_wrap;
++    config.longjmp = raster_compile_jump;
++    config.jmpbufSize = (unsigned int)((sizeof(jmp_buf) + 15u) & ~15u);
++    memset(emu, 0, sizeof(emu));
++    length = HC_compilePriv(arena.bytes, sizeof(arena.bytes), &config, &output,
++                            postRegalloc ? emu : NULL, (HCInstr_s *)instructions,
++                            postRegalloc ? HCARMBackend_create() : NULL, optimizationMask,
++                            mask, (unsigned char *)g_mutableParamsMask, 78);
++    if (length < 0)
++        return length;
++    {
++        const HCInstr_s *src = postRegalloc ? emu : (const HCInstr_s *)output;
++        while (n < 16384 && (src[n].instr0 & 0xFF) != 53)
++            ++n;
++        ++n;
++        if ((int)(n * sizeof(HCInstr_s)) > capacity)
++            return -2;
++        memcpy(out, src, n * sizeof(HCInstr_s));
++    }
++    return n;
++}

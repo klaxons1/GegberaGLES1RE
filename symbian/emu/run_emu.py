@@ -159,7 +159,7 @@ def summarize(runner):
                     name = runner.where(pc)
                     prof[name] = prof.get(name, 0) + 1
                     break
-        info["profile"] = sorted(prof.items(), key=lambda kv: -kv[1])[:12]
+        info["profile"] = sorted(prof.items(), key=lambda kv: -kv[1])
     return scenes
 
 
